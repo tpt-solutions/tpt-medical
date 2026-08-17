@@ -1,0 +1,1224 @@
+# Design Document: Medical Devices & Biomechanics
+**Organization:** TPT Solutions (`tpt-solutions`)
+**Repository:** `tpt-medical`
+**Crate Prefix:** `tpt-med-*`
+**License Strategy:** Strict MIT-Only Chain
+
+---
+
+## 1. Executive Summary
+Designing orthopedic implants, cardiovascular stents, and prosthetics requires intense, FDA-mandated Finite Element Analysis (FEA) and fluid dynamics. Legacy biomechanics tools (FEBio, OpenSim) often carry restrictive academic or copyleft licenses that prevent commercial SaaS wrapping. MedTech companies desperately need to run simulations in the cloud or in-browser to collaborate with surgeons, which legacy desktop Fortran/C++ solvers cannot do.
+
+`tpt-medical` provides a cloud-native, browser-compilable (WASM) simulation stack for surgical planning, implant design, and FDA submission generation, strictly adhering to 21 CFR Part 11 audit requirements.
+
+## 2. Substrate Leverage
+*   **`tpt-fem`**: Non-linear hyperelastic material modeling, large-deformation contact mechanics.
+*   **`tpt-science`**: Incompressible Navier-Stokes for bio-fluids (blood, synovial fluid).
+*   **`tpt-engineering`**: Biocompatible material libraries (PEEK, Nitinol shape-memory, porous titanium, cortical/cancellous bone).
+
+## 3. Crate Taxonomy & Data Models
+
+### Core & Ingestion
+*   **`tpt-med-core`**: Patient models, anatomical coordinate systems (e.g., ISB recommendations), HIPAA-safe audit traits.
+*   **`tpt-med-dicom`**: DICOM to STL/Voxel meshing pipeline. Includes Hounsfield Unit (HU) to material density mapping for patient-specific bone models.
+
+### Biomechanics & Implants
+*   **`tpt-med-biomechanics`**: 
+    *   *Data Models:* `HyperelasticMaterial`, `TissueLayer`.
+    *   *Math:* Mooney-Rivlin, Ogden, and Yeoh strain energy density functions for soft tissue and elastomers.
+*   **`tpt-med-implants`**: Bone-implant interface contact modeling, micromotion analysis, and fatigue life prediction for orthopedic screws and plates.
+*   **`tpt-med-nitinol`**: Superelastic and shape-memory alloy constitutive models for stent deployment simulations.
+
+### Hemodynamics
+*   **`tpt-med-hemodynamics`**: Blood flow simulation, Wall Shear Stress (WSS) calculation, and Oscillatory Shear Index (OSI) for predicting aneurysm rupture or stent thrombosis.
+
+### Compliance
+*   **`tpt-med-fda`**: 21 CFR Part 11 compliant event sourcing. Generates immutable, cryptographically signed audit trails of every simulation parameter change for FDA 510(k) submissions.
+
+## 4. Dependency Graph & MIT Chain
+*   **Allowed:** `tpt-fem`, `tpt-science`, `tpt-math`, `dicom-rs` (MIT), `nifti` (MIT/Apache), `ndarray` (MIT/Apache).
+*   **Banned:** `FEBio` (custom restrictive license), `ITK` (Apache-2.0 allowed but heavy, prefer lightweight Rust voxelization), `VTK` (BSD but massive C++ footprint, breaks WASM).
+*   **Rendering Strategy:** Use WebGL/WebGPU via WASM for the 3D anatomical viewer to avoid heavy C++ rendering dependencies like VTK or OpenGL.
+
+## 5. Verification & Validation (V&V) Strategy
+*   **ASME V&V 40:** Follow the ASME V&V 40 standard for assessing credibility of computational modeling in medical devices.
+*   **ISO 10993 / ASTM Standards:** Automate test cases based on ASTM F2028 (tibial trays) and ASTM F2079 (intramedullary rods).
+
+## 6. Phased Delivery
+1.  **Phase 1:** `tpt-med-dicom` (Patient-specific bone meshing and density mapping).
+2.  **Phase 2:** `tpt-med-biomechanics` (Hyperelastic soft-tissue and bone FEM).
+3.  **Phase 3:** `tpt-med-nitinol` & `tpt-med-hemodynamics` (Stent deployment and blood flow).
+4.  **Phase 4:** `tpt-med-fda` (Immutable audit trail generation).
+
+## 7. Business Wedge
+**Web-Based Stent Deployment Simulator.** Sell a white-label web component to MedTech companies (e.g., Boston Scientific, Medtronic). Doctors can upload a patient's CT scan, and the WASM-compiled FEM solver simulates the stent expanding in the specific artery in real-time, directly in the browser.
+
+
+
+
+
+# TPT Medical: Open Source Design Document
+
+**Organization:** TPT Solutions (`tpt-solutions`)
+**Repository:** `tpt-medical`
+**Crate Prefix:** `tpt-med-*`
+**License:** `MIT OR Apache-2.0`
+**Status:** Open Source Master Plan
+**Philosophy:** 100% Open Source. Zero-Cloud Patient Privacy. No GPL/Academic Lock-in.
+
+---
+
+## 1. Open Source Declaration
+
+`tpt-medical` is a fully open-source, MIT-licensed computational biomechanics and medical device simulation engine. Every crate, every constitutive model, and every regulatory audit tool is freely available under MIT OR Apache-2.0.
+
+### Why Fully Open Source for Medical?
+
+The medical device and biomechanics simulation space suffers from three critical bottlenecks:
+
+1.  **Proprietary Black Boxes:** Tools like Abaqus, Ansys, and FEBio (via commercial wrappers) charge exorbitant fees, hiding their solver mechanics behind NDAs.
+2.  **Academic License Traps:** Open-source biomechanics tools (OpenSim, SimVascular, FEBio) often rely on restrictive academic licenses, heavy C++ dependencies (VTK, ITK), or GPL-adjacent meshing tools (Gmsh), making commercial SaaS integration legally and technically painful.
+3.  **Cloud Privacy Risks:** Modern "cloud simulation" requires uploading patient DICOM scans to third-party servers, creating massive HIPAA/GDPR compliance hurdles and data breach risks.
+
+`tpt-medical` eliminates all three:
+
+*   **No License Barrier:** MedTech startups and enterprises can integrate it into proprietary surgical planning software without copyleft contamination.
+*   **Zero-Cloud Patient Privacy:** Because it compiles to WebAssembly (WASM) and runs purely in Rust, patient DICOM scans can be processed **entirely in the browser or on a local hospital workstation**. No patient data ever touches a cloud server.
+*   **Reproducible FDA Submissions:** Open-source solvers allow the FDA and regulatory bodies to inspect the exact mathematics used, increasing credibility under ASME V&V 40.
+
+### Open Source Governance
+
+```text
+┌─────────────────────────────────────────────────────────────┐
+│                    TPT MEDICAL GOVERNANCE                    │
+├─────────────────────────────────────────────────────────────┤
+│                                                             │
+│  License:        MIT OR Apache-2.0 (dual)                   │
+│  Contributions:  MIT OR Apache-2.0 (CLA-free via DCO)       │
+│  Trademark:      "TPT Medical" name reserved by TPT         │
+│  Governance:     Benevolent Dictator + RFC process          │
+│  Roadmap:        Public GitHub Projects board               │
+│  Releases:       SemVer, 6-week cadence                     │
+│  Security:       SECURITY.md, private disclosure            │
+│  Compliance:     Designed for 21 CFR Part 11 & ASME V&V 40  │
+│                                                             │
+└─────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## 2. Executive Vision
+
+`tpt-medical` provides a cloud-native, browser-compilable simulation stack for surgical planning, implant design, and FDA submission generation.
+
+It covers the complete medical device lifecycle:
+
+```text
+┌─────────────────────────────────────────────────────────────┐
+│                      TPT MEDICAL STACK                       │
+├─────────────────────────────────────────────────────────────┤
+│                                                             │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐     │
+│  │   IMAGING    │  │  SOLID /     │  │  BIOFLUIDS   │     │
+│  │ & SEGMENT-   │  │  TISSUE      │  │  (HEMO-      │     │
+│  │  ATION       │  │  BIOMECH     │  │  DYNAMICS)   │     │
+│  └──────────────┘  └──────────────┘  └──────────────┘     │
+│                                                             │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐     │
+│  │  IMPLANTS    │  │  SURGICAL    │  │  REGULATORY  │     │
+│  │  & DEVICES   │  │  PLANNING    │  │  & FDA       │     │
+│  └──────────────┘  └──────────────┘  └──────────────┘     │
+│                                                             │
+├─────────────────────────────────────────────────────────────┤
+│  tpt-math │ tpt-engineering │ tpt-science │ tpt-fem        │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### Why Rust for Medical Simulation
+
+| Requirement | Rust Advantage |
+|---|---|
+| Patient Privacy (HIPAA/GDPR) | WASM runs entirely client-side. No cloud upload. |
+| Real-time Surgical Feedback | Multithreaded WASM solves FEM in seconds, not hours. |
+| Regulatory Credibility | Open-source math is auditable by FDA/reviewers. |
+| Memory Safety | No segfaults during critical surgical planning. |
+| Enterprise Integration | MIT-only chain, no GPL audit risk for MedTech SaaS. |
+
+---
+
+## 3. Substrate Integration Map
+
+```text
+tpt-math
+├── tpt-math-linalg-fixed     → 3x3 deformation gradients, stress tensors
+├── tpt-math-optimize-general → Inverse FEM (finding material properties from imaging)
+├── tpt-math-prob-dist        → Patient population variability, uncertainty quantification
+└── tpt-math-signal-filter    → ECG/PPG signal processing for cardiac boundary conditions
+
+tpt-engineering
+├── Material properties       → PEEK, Nitinol, Titanium, UHMWPE, PMMA
+├── Hyperelasticity           → Strain energy density functions
+├── Viscoelasticity           → Prony series, relaxation moduli
+└── Wear / Tribology          → Archard's wear law for joint implants
+
+tpt-science
+├── Fluid dynamics            → Navier-Stokes, non-Newtonian blood models
+├── Transport phenomena       → Drug elution from stents, oxygen diffusion
+└── Electrophysiology         → Cardiac action potential propagation (monodomain)
+
+tpt-fem
+├── Mesh generation           → Voxel-to-hex meshing from DICOM masks
+├── Element types             → 8-node hex, 4-node tet, shell elements
+├── Contact mechanics         → Frictional contact (implant-bone, stent-artery)
+├── Solvers                   → Newton-Raphson, Conjugate Gradient
+└── Post-processing           → Stress, strain, Wall Shear Stress extraction
+```
+
+---
+
+## 4. Workspace Layout
+
+```text
+tpt-medical/
+├── Cargo.toml
+├── LICENSE-MIT
+├── LICENSE-APACHE
+├── README.md
+├── CONTRIBUTING.md
+├── SECURITY.md
+├── CODE_OF_CONDUCT.md
+├── CHANGELOG.md
+├── deny.toml
+├── rustfmt.toml
+├── clippy.toml
+├── .github/
+│   ├── workflows/
+│   │   ├── ci.yml
+│   │   ├── license.yml
+│   │   ├── benchmark.yml
+│   │   ├── docs.yml
+│   │   └── release.yml
+│   ├── ISSUE_TEMPLATE/
+│   │   ├── bug_report.md
+│   │   ├── feature_request.md
+│   │   └── rfc.md
+│   └── PULL_REQUEST_TEMPLATE.md
+├── crates/
+│   ├── core/
+│   │   ├── tpt-med-core/
+│   │   ├── tpt-med-units/
+│   │   ├── tpt-med-geometry/
+│   │   └── tpt-med-wasm/
+│   ├── imaging/
+│   │   ├── tpt-med-dicom/
+│   │   ├── tpt-med-nifti/
+│   │   ├── tpt-med-segmentation/
+│   │   └── tpt-med-meshing/
+│   ├── solid/
+│   │   ├── tpt-med-biomechanics/
+│   │   ├── tpt-med-tissue/
+│   │   ├── tpt-med-bone/
+│   │   ├── tpt-med-cartilage/
+│   │   └── tpt-med-viscoelastic/
+│   ├── fluid/
+│   │   ├── tpt-med-hemodynamics/
+│   │   ├── tpt-med-cardiovascular/
+│   │   ├── tpt-med-respiratory/
+│   │   └── tpt-med-csf/
+│   ├── devices/
+│   │   ├── tpt-med-stents/
+│   │   ├── tpt-med-orthopedics/
+│   │   ├── tpt-med-valves/
+│   │   ├── tpt-med-wear/
+│   │   └── tpt-med-drug-delivery/
+│   ├── surgical/
+│   │   ├── tpt-med-surgical-planning/
+│   │   ├── tpt-med-osteotomy/
+│   │   └── tpt-med-implant-sizing/
+│   └── regulatory/
+│       ├── tpt-med-fda/
+│       ├── tpt-med-vv40/
+│       └── tpt-med-audit/
+├── examples/
+│   ├── femur-stress-analysis/
+│   ├── stent-deployment/
+│   ├── aortic-aneurysm-cfd/
+│   └── knee-replacement-wear/
+├── test-data/
+│   ├── dicom/
+│   ├── nifti/
+│   ├── meshes/
+│   └── golden/
+├── benches/
+│   ├── dicom-parsing.rs
+│   ├── hyperelastic-fem.rs
+│   └── hemodynamics-cfd.rs
+├── docs/
+│   ├── book/
+│   ├── rfc/
+│   └── api/
+└── rfcs/
+    ├── 0001-dicom-ingestion.md
+    ├── 0002-hyperelastic-tissue.md
+    └── 0003-fda-audit-trail.md
+```
+
+---
+
+## 5. Crate Taxonomy (Complete)
+
+### Domain 1: Core & Imaging
+
+#### `tpt-med-core`
+
+Fundamental domain types for medical simulations.
+
+```rust
+pub struct PatientModel {
+    pub id: PatientId,
+    pub demographics: Demographics,
+    pub anatomy: AnatomicalModel,
+    pub materials: HashMap<TissueId, TissueProperties>,
+}
+
+pub struct AnatomicalModel {
+    pub coordinate_system: CoordinateSystem,
+    pub regions: Vec<AnatomicalRegion>,
+    pub landmarks: Vec<Landmark>,
+}
+
+pub enum AnatomicalRegion {
+    Bone { bone_type: BoneType },
+    Organ { organ_type: OrganType },
+    Vessel { vessel_type: VesselType },
+    Implant { implant_type: ImplantType },
+    SoftTissue { tissue_type: SoftTissueType },
+}
+
+pub enum BoneType {
+    Femur,
+    Tibia,
+    Pelvis,
+    Vertebra { level: String },
+    Skull,
+    Custom(String),
+}
+
+pub enum VesselType {
+    Artery { name: String },
+    Vein { name: String },
+    Aorta { segment: AortaSegment },
+    Coronary { branch: String },
+}
+```
+
+#### `tpt-med-dicom`
+
+DICOM parsing and Hounsfield Unit (HU) mapping.
+
+```rust
+pub struct DicomParser;
+
+pub struct ParsedDicom {
+    pub patient_id: String,
+    pub study_date: String,
+    pub modality: Modality,
+    pub series: Vec<DicomSeries>,
+}
+
+pub struct DicomSeries {
+    pub series_instance_uid: String,
+    pub slices: Vec<DicomSlice>,
+    pub pixel_spacing: (f64, f64),
+    pub slice_thickness: f64,
+    pub rescale_intercept: f64,
+    pub rescale_slope: f64,
+}
+
+pub struct DicomSlice {
+    pub instance_number: u32,
+    pub position: [f64; 3],
+    pub orientation: [[f64; 3]; 2],
+    pub pixels: Vec<i16>,
+}
+
+impl DicomParser {
+    pub fn parse(path: &Path) -> Result<ParsedDicom, DicomError> {
+        // Parse DICOM tags, extract pixel data
+        // Handle transfer syntaxes (JPEG 2000, RLE, etc.)
+    }
+}
+
+// Hounsfield Unit to Material Mapping
+pub struct HounsfieldMapper;
+
+impl HounsfieldMapper {
+    pub fn hu_to_density(hu: f64) -> f64 {
+        // Convert HU to apparent density (g/cm³)
+        // ρ = (HU + 1000) / 1000 (approximation for CT)
+    }
+    
+    pub fn density_to_youngs_modulus(density: f64, region: BoneRegion) -> f64 {
+        // Empirical relationships (e.g., Morgan, Keaveny)
+        // Cortical: E = 10500 * ρ^2.0
+        // Trabecular: E = 6850 * ρ^1.49
+    }
+}
+```
+
+#### `tpt-med-segmentation`
+
+Image segmentation for extracting anatomy.
+
+```rust
+pub struct Segmenter;
+
+pub enum SegmentationMethod {
+    Threshold { min_hu: f64, max_hu: f64 },
+    RegionGrowing { seed: (u32, u32, u32), tolerance: f64 },
+    ActiveContour,
+    MachineLearning { model_path: String },
+}
+
+impl Segmenter {
+    pub fn segment(
+        dicom: &ParsedDicom,
+        method: SegmentationMethod,
+    ) -> Result<SegmentationMask, SegmentationError> {
+        // Generate binary mask of anatomy
+    }
+}
+
+pub struct SegmentationMask {
+    pub dimensions: (u32, u32, u32),
+    pub voxels: Vec<bool>,
+    pub label_map: HashMap<u8, String>,
+}
+```
+
+#### `tpt-med-meshing`
+
+Voxel-to-mesh conversion for FEM.
+
+```rust
+pub struct MedicalMesher;
+
+impl MedicalMesher {
+    pub fn voxels_to_hex_mesh(
+        mask: &SegmentationMask,
+        material_map: &HashMap<u8, MaterialId>,
+    ) -> VoxelGrid {
+        // Convert binary mask to hexahedral FEM mesh
+        // Assign material IDs per element
+    }
+    
+    pub fn smooth_mesh(
+        mesh: &mut VoxelGrid,
+        iterations: u32,
+        relaxation: f64,
+    ) {
+        // Laplacian smoothing for surface visualization
+    }
+}
+```
+
+---
+
+### Domain 2: Solid Biomechanics
+
+#### `tpt-med-biomechanics`
+
+Core biomechanics FEM solver.
+
+```rust
+pub struct BiomechanicsSolver {
+    mesh: VoxelGrid,
+    materials: HashMap<MaterialId, BiomechanicalMaterial>,
+    boundary_conditions: Vec<BiomechanicalBC>,
+}
+
+pub enum BiomechanicalBC {
+    Fixed { nodes: Vec<u32> },
+    Displacement { nodes: Vec<u32>, displacement: Vector3 },
+    Force { nodes: Vec<u32>, force: Vector3 },
+    Pressure { surface: Vec<u32>, pressure: f64 },
+    JointContact { surface1: Vec<u32>, surface2: Vec<u32>, friction: f64 },
+}
+
+impl BiomechanicsSolver {
+    pub fn solve_static(&self) -> Result<BiomechanicsResult, SolverError> {
+        // Assemble global stiffness matrix
+        // Apply non-linear material models
+        // Newton-Raphson iteration
+    }
+}
+
+pub struct BiomechanicsResult {
+    pub displacements: Vec<Vector3>,
+    pub strains: Vec<StrainTensor>,
+    pub stresses: Vec<StressTensor>,
+    pub von_mises: Vec<f64>,
+    pub max_principal_strain: Vec<f64>,
+}
+```
+
+#### `tpt-med-tissue`
+
+Soft tissue constitutive models.
+
+```rust
+pub enum TissueModel {
+    NeoHookean { c1: f64, d1: f64 },
+    MooneyRivlin { c1: f64, c2: f64, d1: f64 },
+    Ogden { mu: Vec<f64>, alpha: Vec<f64>, d: f64 },
+    HolzapfelGasserOgden {
+        c: f64,      // Ground substance
+        k1: f64,     // Fiber stiffness
+        k2: f64,     // Fiber non-linearity
+        kappa: f64,  // Fiber dispersion
+        fiber_directions: Vec<Vector3>,
+    },
+    Fung { c: f64, b: [f64; 6] },
+}
+
+pub struct SoftTissueMaterial {
+    pub model: TissueModel,
+    pub density: f64,
+    pub is_incompressible: bool,
+}
+
+impl SoftTissueMaterial {
+    pub fn strain_energy(&self, deformation_gradient: &Matrix3<f64>) -> f64 {
+        match &self.model {
+            TissueModel::NeoHookean { c1, d1 } => {
+                // W = C1 * (I1 - 3) + (1/D1) * (J - 1)^2
+            }
+            TissueModel::HolzapfelGasserOgden { c, k1, k2, kappa, fiber_directions } => {
+                // W = (c/2)*(I1-3) + (k1/2k2)*Σ[exp(k2*(κ*I1+(1-3κ)*I4i-1)^2)-1]
+            }
+            // ... other models
+        }
+    }
+    
+    pub fn second_piola_kirchhoff(
+        &self,
+        deformation_gradient: &Matrix3<f64>,
+    ) -> Matrix3<f64> {
+        // Calculate stress tensor from strain energy derivative
+    }
+}
+```
+
+#### `tpt-med-bone`
+
+Bone mechanics and remodeling.
+
+```rust
+pub struct BoneMaterial {
+    pub bone_type: BoneType,
+    pub youngs_modulus: f64,
+    pub poissons_ratio: f64,
+    pub yield_stress: f64,
+    pub ultimate_stress: f64,
+    pub anisotropy: Option<Anisotropy>,
+}
+
+pub enum Anisotropy {
+    Isotropic,
+    TransverselyIsotropic { axis: Vector3, e_long: f64, e_trans: f64 },
+    Orthotropic { axes: [Vector3; 3], e: [f64; 3] },
+}
+
+// Wolff's Law bone remodeling
+pub struct BoneRemodelingModel {
+    pub stimulus: RemodelingStimulus,
+    pub apposition_rate: f64,
+    pub resorption_rate: f64,
+    pub lazy_zone: (f64, f64),
+}
+
+pub enum RemodelingStimulus {
+    StrainEnergyDensity,
+    PrincipalStrain,
+    DamageAccumulation,
+}
+
+impl BoneRemodelingModel {
+    pub fn update_density(
+        &self,
+        current_density: f64,
+        stimulus: f64,
+        dt: f64,
+    ) -> f64 {
+        // Update bone density based on mechanical stimulus
+        // If stimulus > upper threshold: apposition
+        // If stimulus < lower threshold: resorption
+    }
+}
+```
+
+#### `tpt-med-viscoelastic`
+
+Time-dependent tissue behavior.
+
+```rust
+pub struct ViscoelasticMaterial {
+    pub elastic_model: TissueModel,
+    pub prony_series: Vec<PronyTerm>,
+}
+
+pub struct PronyTerm {
+    pub g_i: f64,      // Relative modulus
+    pub tau_i: f64,    // Relaxation time (seconds)
+}
+
+impl ViscoelasticMaterial {
+    pub fn relaxation_modulus(&self, time: f64) -> f64 {
+        // G(t) = G_inf + Σ G_i * exp(-t / tau_i)
+        let g_inf = 1.0 - self.prony_series.iter().map(|t| t.g_i).sum::<f64>();
+        g_inf + self.prony_series.iter()
+            .map(|t| t.g_i * (-time / t.tau_i).exp())
+            .sum::<f64>()
+    }
+}
+```
+
+---
+
+### Domain 3: Biofluids & Hemodynamics
+
+#### `tpt-med-hemodynamics`
+
+Blood flow simulation.
+
+```rust
+pub struct HemodynamicsSolver {
+    mesh: VoxelGrid,
+    boundary_conditions: Vec<HemodynamicBC>,
+    blood_model: BloodModel,
+}
+
+pub enum BloodModel {
+    Newtonian { viscosity: f64 },
+    CarreauYasuda {
+        mu_0: f64,      // Zero-shear viscosity
+        mu_inf: f64,    // Infinite-shear viscosity
+        lambda: f64,    // Time constant
+        a: f64,         // Power-law index
+        n: f64,         // Slope
+    },
+    Casson { k0: f64, k1: f64 },
+}
+
+pub enum HemodynamicBC {
+    InletVelocity { surface: Vec<u32>, profile: VelocityProfile },
+    InletFlowRate { surface: Vec<u32>, waveform: FlowWaveform },
+    OutletPressure { surface: Vec<u32>, pressure: f64 },
+    Windkessel {
+        surface: Vec<u32>,
+        r_proximal: f64,
+        r_distal: f64,
+        c_compliance: f64,
+    },
+    NoSlipWall { surface: Vec<u32> },
+    RigidWall { surface: Vec<u32> },
+    FsiWall { surface: Vec<u32>, structural_solver: Box<dyn StructuralSolver> },
+}
+
+impl HemodynamicsSolver {
+    pub fn solve_steady(&self) -> Result<HemodynamicsResult, SolverError> {
+        // Solve Navier-Stokes for blood flow
+    }
+    
+    pub fn solve_transient(
+        &self,
+        cardiac_cycle: f64,
+        time_step: f64,
+    ) -> Result<HemodynamicsResult, SolverError> {
+        // Time-resolved CFD over cardiac cycle
+    }
+}
+
+pub struct HemodynamicsResult {
+    pub velocities: Vec<Vector3>,
+    pub pressures: Vec<f64>,
+    pub wall_shear_stress: Vec<Vector3>,
+    pub oscillatory_shear_index: Vec<f64>,
+    pub fractional_flow_reserve: Option<Vec<f64>>,
+}
+```
+
+#### `tpt-med-cardiovascular`
+
+Cardiovascular-specific models.
+
+```rust
+pub struct FractionalFlowReserve {
+    pub hyperemic_flow: f64,
+    pub aortic_pressure: f64,
+}
+
+impl FractionalFlowReserve {
+    pub fn calculate(
+        pressure_distal: f64,
+        pressure_aortic: f64,
+    ) -> f64 {
+        // FFR = Pd / Pa during maximal hyperemia
+        pressure_distal / pressure_aortic
+    }
+}
+
+// Windkessel model for arterial boundary conditions
+pub struct WindkesselModel {
+    pub r_proximal: f64,
+    pub r_distal: f64,
+    pub c_compliance: f64,
+}
+
+impl WindkesselModel {
+    pub fn pressure_at_flow(&self, flow: f64, t: f64) -> f64 {
+        // Solve ODE: dP/dt = (Q - P/R_distal) / C
+    }
+}
+```
+
+---
+
+### Domain 4: Implants & Devices
+
+#### `tpt-med-stents`
+
+Stent deployment simulation.
+
+```rust
+pub struct StentModel {
+    pub geometry: StentGeometry,
+    pub material: StentMaterial,
+    pub crimped_diameter: f64,
+    pub expanded_diameter: f64,
+}
+
+pub enum StentMaterial {
+    StainlessSteel316L,
+    CobaltChromium,
+    Nitinol { superelastic: bool },
+    Bioresorbable { degradation_rate: f64 },
+}
+
+pub struct StentDeployment {
+    pub stent: StentModel,
+    pub balloon: BalloonModel,
+    pub artery: ArteryModel,
+}
+
+impl StentDeployment {
+    pub fn simulate_crimping(&self) -> Result<StentResult, SolverError> {
+        // Simulate stent being crimped onto balloon
+    }
+    
+    pub fn simulate_expansion(
+        &self,
+        balloon_pressure: f64,
+    ) -> Result<StentResult, SolverError> {
+        // Simulate balloon inflation, stent expansion, artery contact
+        // Large deformation, frictional contact, plasticity/superelasticity
+    }
+}
+
+pub struct StentResult {
+    pub stent_strain: Vec<f64>,
+    pub artery_strain: Vec<f64>,
+    pub contact_pressure: Vec<f64>,
+    pub recoil: f64,
+    pub dog_boning: f64,
+}
+```
+
+#### `tpt-med-orthopedics`
+
+Joint replacement and fracture fixation.
+
+```rust
+pub struct JointReplacement {
+    pub implant_type: ImplantType,
+    pub bone_model: BoneModel,
+    pub cement: Option<CementModel>,
+    pub loading: GaitCycle,
+}
+
+pub enum ImplantType {
+    TotalHip { stem: StemType, cup: CupType },
+    TotalKnee { femoral: FemoralComponent, tibial: TibialComponent },
+    PartialKnee,
+    Shoulder,
+    SpinalFusion { levels: Vec<String> },
+    Plate { bone: BoneType, screw_count: u32 },
+}
+
+impl JointReplacement {
+    pub fn micromotion_analysis(
+        &self,
+        load_case: LoadCase,
+    ) -> Result<MicromotionResult, SolverError> {
+        // Calculate implant-bone relative motion
+        // Critical for osseointegration (< 50 μm)
+    }
+    
+    pub fn stress_shielding_analysis(
+        &self,
+        baseline: &BiomechanicsResult,
+    ) -> StressShieldingResult {
+        // Compare bone stress with/without implant
+        // Predict bone resorption risk
+    }
+}
+
+pub struct MicromotionResult {
+    pub max_micromotion: f64,
+    pub micromotion_map: Vec<f64>,
+    pub osseointegration_risk: RiskLevel,
+}
+```
+
+#### `tpt-med-wear`
+
+Implant wear simulation.
+
+```rust
+pub struct WearModel {
+    pub wear_law: WearLaw,
+    pub gait_cycles: u64,
+}
+
+pub enum WearLaw {
+    Archard { k: f64 },
+    CrossLand { k: f64, pressure_dependent: bool },
+}
+
+impl WearModel {
+    pub fn simulate_wear(
+        &self,
+        contact_pressures: &[f64],
+        sliding_distances: &[f64],
+        cycles: u64,
+    ) -> WearResult {
+        // Calculate volumetric wear
+        // Update surface geometry
+    }
+}
+
+pub struct WearResult {
+    pub volumetric_wear: f64,
+    pub linear_wear: f64,
+    pub wear_map: Vec<f64>,
+    pub particle_count: u64,
+}
+```
+
+---
+
+### Domain 5: Regulatory & Compliance
+
+#### `tpt-med-fda`
+
+21 CFR Part 11 compliant audit trails.
+
+```rust
+pub struct AuditTrail {
+    pub entries: Vec<AuditEntry>,
+}
+
+pub struct AuditEntry {
+    pub timestamp: DateTime<Utc>,
+    pub user_id: UserId,
+    pub action: AuditAction,
+    pub object_id: ObjectId,
+    pub old_value: Option<String>,
+    pub new_value: Option<String>,
+    pub reason: String,
+    pub signature: Option<ElectronicSignature>,
+}
+
+pub enum AuditAction {
+    Create,
+    Modify,
+    Delete,
+    Approve,
+    Reject,
+    Export,
+    Simulate,
+}
+
+pub struct ElectronicSignature {
+    pub user_id: UserId,
+    pub timestamp: DateTime<Utc>,
+    pub meaning: SignatureMeaning,
+    pub hash: String,
+}
+
+pub enum SignatureMeaning {
+    Author,
+    Reviewer,
+    Approver,
+    ResponsibleParty,
+}
+
+impl AuditTrail {
+    pub fn append(&mut self, entry: AuditEntry) {
+        // Cryptographically hash previous entry + new entry
+        // Ensure immutability
+    }
+    
+    pub fn verify_integrity(&self) -> bool {
+        // Verify chain of hashes
+    }
+}
+```
+
+#### `tpt-med-vv40`
+
+ASME V&V 40 credibility assessment.
+
+```rust
+pub struct CredibilityAssessment {
+    pub model_risk: RiskLevel,
+    pub model_influence: ModelInfluence,
+    pub verification_activities: Vec<VerificationActivity>,
+    pub validation_activities: Vec<ValidationActivity>,
+}
+
+pub enum RiskLevel {
+    Low,
+    Medium,
+    High,
+}
+
+pub enum ModelInfluence {
+    DirectDecision,
+    Informative,
+    Exploratory,
+}
+
+pub struct VerificationActivity {
+    pub type_: VerificationType,
+    pub description: String,
+    pub results: String,
+}
+
+pub enum VerificationType {
+    CodeVerification,
+    CalculationVerification,
+    SensitivityAnalysis,
+    UncertaintyQuantification,
+}
+
+pub struct ValidationActivity {
+    pub type_: ValidationType,
+    pub experimental_data: String,
+    pub comparison_metrics: Vec<Metric>,
+    pub agreement: AgreementLevel,
+}
+
+pub enum ValidationType {
+    InVitro,
+    InVivo,
+    ClinicalData,
+    BenchmarkModel,
+}
+```
+
+---
+
+## 6. WASM Integration
+
+`tpt-med-wasm` compiles the entire simulation stack to WebAssembly for browser-based surgical planning.
+
+```rust
+#[wasm_bindgen]
+pub struct WasmBiomechanicsSolver {
+    solver: BiomechanicsSolver,
+}
+
+#[wasm_bindgen]
+impl WasmBiomechanicsSolver {
+    #[wasm_bindgen(constructor)]
+    pub fn new(dicom_data: &[u8], config_json: &str) -> WasmBiomechanicsSolver {
+        // Parse DICOM, segment, mesh, create solver
+        // All done client-side, no cloud upload
+    }
+    
+    pub fn solve(&self) -> WasmBiomechanicsResult {
+        // Run FEM simulation in browser
+    }
+    
+    pub fn get_stress_map(&self) -> Vec<f64> {
+        // Return von Mises stress for WebGL visualization
+    }
+}
+
+#[wasm_bindgen]
+pub struct WasmStentDeployment {
+    deployment: StentDeployment,
+}
+
+#[wasm_bindgen]
+impl WasmStentDeployment {
+    pub fn simulate(&self, balloon_pressure: f64) -> WasmStentResult {
+        // Simulate stent deployment in real-time
+    }
+}
+```
+
+**WASM Use Cases:**
+- **Zero-Cloud Surgical Planning:** Surgeon uploads patient DICOM locally, browser simulates implant placement, no data leaves hospital network.
+- **Real-time Stent Sizing:** Interventional cardiologist adjusts stent diameter, sees artery strain instantly.
+- **FDA Submission Generator:** Export reproducible simulation pipeline as a cryptographically signed package.
+
+---
+
+## 7. MIT Chain Enforcement
+
+### `deny.toml`
+
+```toml
+[licenses]
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "Unicode-3.0"
+]
+
+copyleft = "deny"
+unlicensed = "deny"
+allow-osi-fsf-free = "neither"
+```
+
+### License Traps to Avoid
+
+| Domain | GPL/Academic Trap | MIT Solution |
+|---|---|---|
+| FEM Solvers | FEBio (custom), Abaqus (proprietary) | Pure Rust FEM via `tpt-fem` |
+| Mesh Generation | Gmsh (GPL), Netgen (LGPL) | Custom voxel-to-hex meshing |
+| Medical Imaging | ITK (Apache but heavy C++), DICOM toolkits | `dicom-rs` (MIT), pure Rust parsers |
+| Biomechanics | OpenSim (Apache but C++/SWIG) | Pure Rust hyperelastic models |
+| Hemodynamics | SimVascular (MIT but C++/VTK) | Pure Rust CFD via `tpt-science` |
+| Visualization | VTK (BSD but massive) | WebGPU/WASM rendering |
+
+---
+
+## 8. Testing & Validation Strategy
+
+### Verification & Validation (V&V)
+
+Following **ASME V&V 40** standard for computational modeling of medical devices.
+
+```rust
+#[cfg(test)]
+mod verification_tests {
+    use super::*;
+    
+    #[test]
+    fn test_uniaxial_tension_neo_hookean() {
+        // Analytical solution for uniaxial tension
+        // Compare FEM result to closed-form equation
+    }
+    
+    #[test]
+    fn test_poiseuille_flow_blood() {
+        // Validate CFD against analytical Poiseuille flow
+        // Parabolic velocity profile in cylindrical tube
+    }
+    
+    #[test]
+    fn test_stent_radial_stiffness() {
+        // Compare against published ASTM F2394 data
+    }
+}
+```
+
+### Benchmark Models
+
+```text
+test-data/golden/
+├── solid/
+│   ├── femur_loading.json
+│   ├── lumbar_spine_compression.json
+│   └── arterial_wall_inflation.json
+├── fluid/
+│   ├── carotid_bifurcation_cfd.json
+│   ├── aortic_aneurysm_flow.json
+│   └── coronary_ffr.json
+├── devices/
+│   ├── stent_expansion.json
+│   ├── hip_stem_micromotion.json
+│   └── knee_wear_10mcycles.json
+└── regulatory/
+    ├── fda_audit_trail.json
+    └── vv40_credibility_matrix.json
+```
+
+### Validation Standards
+
+- **ASTM F2394:** Standard Guide for Measuring Securedment of Self-Expanding Stents
+- **ASTM F2028:** Standard Test Methods for Dynamic Evaluation of Total Knee Replacements
+- **ASTM F2079:** Standard Test Method for Measuring Intrinsic Securement of Endovascular Stents
+- **ISO 7206:** Implants for surgery — Hip joint prostheses
+- **ISO 14879:** Implants for surgery — Wear of total knee-replacement prostheses
+- **FDA 21 CFR Part 11:** Electronic Records; Electronic Signatures
+- **ASME V&V 40:** Assessing Credibility of Computational Modeling
+
+---
+
+## 9. Open Source Community & Contribution
+
+### Contribution Workflow
+
+```text
+1. Fork repository
+2. Create feature branch: `feature/hyperelastic-model`
+3. Write code + tests
+4. Run `cargo fmt`, `cargo clippy`, `cargo test`
+5. Run `cargo deny check licenses`
+6. Submit PR with DCO sign-off
+7. RFC discussion for new constitutive models
+8. Merge after 2 approvals
+```
+
+### RFC Process
+
+New constitutive models or regulatory features require an RFC:
+
+```text
+rfcs/
+├── 0001-dicom-ingestion.md
+├── 0002-hyperelastic-tissue.md
+├── 0003-fda-audit-trail.md
+├── 0004-nitinol-superelasticity.md
+└── 0005-cardiac-electrophysiology.md
+```
+
+---
+
+## 10. Phased Delivery Plan
+
+### Phase 1: Foundation (Months 1-3)
+- `tpt-med-core`, `tpt-med-units`, `tpt-med-geometry`
+- `tpt-med-dicom` (DICOM parsing, HU mapping)
+- `tpt-med-meshing` (voxel-to-hex)
+- **Milestone:** CLI tool that takes DICOM CT scan, outputs bone mesh CSV
+
+### Phase 2: Solid Biomechanics (Months 4-6)
+- `tpt-med-biomechanics` (FEM solver core)
+- `tpt-med-bone` (linear elastic bone mechanics)
+- `tpt-med-tissue` (Neo-Hookean, Mooney-Rivlin)
+- **Milestone:** Femur stress analysis under physiological loading
+
+### Phase 3: Advanced Tissue Models (Months 7-9)
+- `tpt-med-tissue` (Holzapfel-Gasser-Ogden for arteries)
+- `tpt-med-viscoelastic` (Prony series)
+- `tpt-med-cartilage` (biphasic/poroelastic models)
+- **Milestone:** Arterial wall inflation simulation
+
+### Phase 4: Hemodynamics (Months 10-12)
+- `tpt-med-hemodynamics` (Navier-Stokes CFD)
+- `tpt-med-cardiovascular` (Windkessel, FFR)
+- **Milestone:** Carotid bifurcation Wall Shear Stress calculation
+
+### Phase 5: Implants & Devices (Months 13-15)
+- `tpt-med-stents` (Nitinol superelasticity, deployment)
+- `tpt-med-orthopedics` (micromotion, stress shielding)
+- `tpt-med-wear` (Archard wear law)
+- **Milestone:** Stent deployment simulation with artery contact
+
+### Phase 6: Surgical Planning (Months 16-18)
+- `tpt-med-surgical-planning` (osteotomy cuts, implant sizing)
+- `tpt-med-implant-sizing` (automated sizing from anatomy)
+- **Milestone:** Virtual total knee replacement planning
+
+### Phase 7: Regulatory & Compliance (Months 19-21)
+- `tpt-med-fda` (21 CFR Part 11 audit trails)
+- `tpt-med-vv40` (ASME V&V 40 credibility matrices)
+- `tpt-med-audit` (cryptographic signature verification)
+- **Milestone:** Export FDA-submission-ready simulation package
+
+### Phase 8: WASM & Ecosystem (Months 22-24)
+- `tpt-med-wasm` (browser compilation)
+- Web-based surgical planning viewer
+- **Milestone:** Zero-cloud, in-browser patient-specific simulation
+
+---
+
+## 12. README Template
+
+```markdown
+# tpt-medical
+
+A fully open-source, MIT-licensed computational biomechanics and medical device simulation engine.
+
+## Crates
+
+| Crate | Description | Status |
+|---|---|---|
+| `tpt-med-core` | Core domain types | ✅ Stable |
+| `tpt-med-dicom` | DICOM parsing & HU mapping | ✅ Stable |
+| `tpt-med-biomechanics` | Solid biomechanics FEM | ✅ Stable |
+| `tpt-med-tissue` | Hyperelastic tissue models | ✅ Stable |
+| `tpt-med-hemodynamics` | Blood flow CFD | 🚧 Alpha |
+| `tpt-med-stents` | Stent deployment simulation | 🚧 Alpha |
+| `tpt-med-orthopedics` | Joint replacement analysis | 🚧 Alpha |
+| `tpt-med-fda` | 21 CFR Part 11 audit trails | 📋 Planned |
+
+## Quick Start
+
+```rust
+use tpt_med_dicom::DicomParser;
+use tpt_med_meshing::MedicalMesher;
+use tpt_med_biomechanics::BiomechanicsSolver;
+
+fn main() {
+    let dicom = DicomParser::parse("patient_ct.dcm").unwrap();
+    let mask = segment_bone(&dicom);
+    let mesh = MedicalMesher::voxels_to_hex_mesh(&mask, &material_map);
+    let solver = BiomechanicsSolver::new(mesh);
+    let result = solver.solve_static().unwrap();
+    println!("Max von Mises stress: {} MPa", result.von_mises.iter().fold(0.0f64, f64::max));
+}
+```
+
+## Zero-Cloud Patient Privacy
+
+All simulations can run entirely in the browser via WebAssembly. Patient DICOM scans never leave the hospital network.
+
+## License
+
+Licensed under either of
+
+- MIT license ([LICENSE-MIT](LICENSE-MIT))
+- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE))
+
+at your option.
+
+## Regulatory Disclaimer
+
+This software is for research and development purposes only. It is not cleared or approved by the FDA for clinical diagnostic use. Regulatory submissions require validation against ASME V&V 40 standards.
+
+---
+
+## 13. Summary
+
+`tpt-medical` is a fully open-source, MIT-licensed, pure-Rust computational biomechanics and medical device simulation engine covering:
+
+- **Imaging** — DICOM parsing, segmentation, voxel-to-hex meshing
+- **Solid Biomechanics** — Hyperelastic tissue, bone remodeling, viscoelasticity
+- **Hemodynamics** — Blood flow CFD, FFR, Windkessel boundary conditions
+- **Implants & Devices** — Stent deployment, orthopedic micromotion, wear simulation
+- **Surgical Planning** — Osteotomy, implant sizing, virtual surgery
+- **Regulatory** — FDA 21 CFR Part 11 audit trails, ASME V&V 40 credibility
+
+All crates maintain the strict MIT chain, leverage the TPT substrates (`tpt-math`, `tpt-engineering`, `tpt-science`, `tpt-fem`), and compile to WebAssembly for zero-cloud, privacy-preserving surgical planning.
+
+No proprietary cores. No academic license traps. No cloud data exfiltration. Just open source.
