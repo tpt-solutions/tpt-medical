@@ -1,0 +1,20 @@
+[package]
+name = "tpt-med-bone"
+description = "Linear elastic bone mechanics, HU-based properties, and Wolff's-law remodeling"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+tpt-med-core = { path = "../../core/tpt-med-core", version = "0.1.0" }
+tpt-med-dicom = { path = "../../imaging/tpt-med-dicom", version = "0.1.0" }
+tpt-med-geometry = { path = "../../core/tpt-med-geometry", version = "0.1.0" }
+tpt-med-units = { path = "../../core/tpt-med-units", version = "0.1.0" }
+
+[lints]
+workspace = true

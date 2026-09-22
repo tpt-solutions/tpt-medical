@@ -1,0 +1,18 @@
+[package]
+name = "tpt-med-viscoelastic"
+description = "Prony-series viscoelasticity for soft tissue"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+tpt-med-tissue = { path = "../tpt-med-tissue", version = "0.1.0" }
+tpt-med-geometry = { path = "../../core/tpt-med-geometry", version = "0.1.0" }
+
+[lints]
+workspace = true

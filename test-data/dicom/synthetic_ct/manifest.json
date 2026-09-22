@@ -1,0 +1,29 @@
+{
+  "series_uid": "1.2.826.0.1.3680043.8.498.9001.1",
+  "slices": [
+    "slice_0001.dcm",
+    "slice_0002.dcm",
+    "slice_0003.dcm",
+    "slice_0004.dcm",
+    "slice_0005.dcm",
+    "slice_0006.dcm",
+    "slice_0007.dcm",
+    "slice_0008.dcm",
+    "slice_0009.dcm",
+    "slice_0010.dcm",
+    "slice_0011.dcm",
+    "slice_0012.dcm",
+    "slice_0013.dcm",
+    "slice_0014.dcm",
+    "slice_0015.dcm",
+    "slice_0016.dcm",
+    "slice_0017.dcm",
+    "slice_0018.dcm",
+    "slice_0019.dcm",
+    "slice_0020.dcm",
+    "slice_0021.dcm",
+    "slice_0022.dcm",
+    "slice_0023.dcm",
+    "slice_0024.dcm"
+  ]
+}

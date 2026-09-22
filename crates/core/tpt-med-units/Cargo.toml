@@ -1,0 +1,17 @@
+[package]
+name = "tpt-med-units"
+description = "Type-safe unit system for biomedical simulation (mm, MPa, N, g/cm3)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+
+
+[lints]
+workspace = true

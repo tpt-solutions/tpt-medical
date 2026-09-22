@@ -1,0 +1,20 @@
+[package]
+name = "tpt-med-surgical-planning"
+description = "Osteotomy cuts and virtual surgery on voxel anatomical models"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+tpt-med-core = { path = "../../core/tpt-med-core", version = "0.1.0" }
+tpt-med-meshing = { path = "../../imaging/tpt-med-meshing", version = "0.1.0" }
+tpt-med-geometry = { path = "../../core/tpt-med-geometry", version = "0.1.0" }
+tpt-med-units = { path = "../../core/tpt-med-units", version = "0.1.0" }
+
+[lints]
+workspace = true

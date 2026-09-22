@@ -1,0 +1,42 @@
+{
+  "$schema": "golden/v1",
+  "name": "lumbar_spine_compression",
+  "description": "Verification scaffold for lumbar vertebral-body compression: single-voxel-column analytical reference and trabecular modulus law.",
+  "provenance": "analytical",
+  "model": {
+    "geometry": "prismatic column, 10x10 mm cross-section, 20 mm height, 2 mm voxels",
+    "materials": {
+      "trabecular": "E = 6850 * rho^1.49 [MPa] at rho = 0.3 g/cm3 (screening osteoporotic range)",
+      "cortical_shell": "E = 10500 * rho^2.0 [MPa] at rho = 1.7 g/cm3"
+    },
+    "boundary_conditions": { "base": "fixed", "top": "uniform compression 500 N" }
+  },
+  "expected": {
+    "metrics": [
+      {
+        "name": "trabecular_modulus_mpa",
+        "value": 6850.0,
+        "multiplier_exponent": 1.49,
+        "note": "E = 6850 * 0.3^1.49 = 1266 MPa; tolerance guards the power-law evaluation",
+        "value_mpa": 1266.0,
+        "tolerance_percent": 0.1
+      },
+      {
+        "name": "cortical_modulus_mpa",
+        "value_mpa": 30345.0,
+        "note": "E = 10500 * 1.7^2.0",
+        "tolerance_percent": 0.1
+      },
+      {
+        "name": "uniform_column_axial_displacement_mm",
+        "value": -0.0105,
+        "note": "delta = F*L/(A*E) = 500*20/(100*1266) for the trabecular column; linear field is exact for Q1 hexes",
+        "tolerance_percent": 0.5
+      }
+    ]
+  },
+  "notes": [
+    "The Q1 hex core reproduces uniform compression exactly (patch test class).",
+    "Follow-up: replace with the OSF/literature validated vertebral model when curated data land (see rfcs/0002)."
+  ]
+}

@@ -1,0 +1,39 @@
+[package]
+name = "tpt-med-benches"
+description = "Workspace benchmark suite for tpt-medical"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+publish = false
+
+[dependencies]
+tpt-med-dicom = { path = "../crates/imaging/tpt-med-dicom", version = "0.1.0" }
+tpt-med-meshing = { path = "../crates/imaging/tpt-med-meshing", version = "0.1.0" }
+tpt-med-biomechanics = { path = "../crates/solid/tpt-med-biomechanics", version = "0.1.0" }
+tpt-med-tissue = { path = "../crates/solid/tpt-med-tissue", version = "0.1.0" }
+tpt-med-hemodynamics = { path = "../crates/fluid/tpt-med-hemodynamics", version = "0.1.0" }
+tpt-med-geometry = { path = "../crates/core/tpt-med-geometry", version = "0.1.0" }
+tpt-med-units = { path = "../crates/core/tpt-med-units", version = "0.1.0" }
+
+[[bench]]
+name = "dicom-parsing"
+path = "dicom-parsing.rs"
+harness = false
+
+[[bench]]
+name = "hyperelastic-fem"
+path = "hyperelastic-fem.rs"
+harness = false
+
+[[bench]]
+name = "hemodynamics-cfd"
+path = "hemodynamics-cfd.rs"
+harness = false
+
+[lints]
+workspace = true

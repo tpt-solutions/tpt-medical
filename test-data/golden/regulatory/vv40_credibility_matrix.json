@@ -1,0 +1,41 @@
+{
+  "$schema": "golden/v1",
+  "name": "vv40_credibility_matrix",
+  "description": "ASME V&V 40 risk-influence-credibility matrix as encoded by tpt-med-vv40, with the shipped screening assessment as the worked example.",
+  "provenance": "analytical",
+  "matrix": {
+    "axes": {
+      "risk": ["low", "medium", "high"],
+      "influence": ["contributing", "significant", "direct"]
+    },
+    "goals": {
+      "low_contributing":        { "verification_types": 1, "validation_types": 0, "quantitative": false, "code_review": false },
+      "low_significant":         { "verification_types": 1, "validation_types": 1, "quantitative": false, "code_review": false },
+      "medium_contributing":     { "verification_types": 1, "validation_types": 1, "quantitative": false, "code_review": false },
+      "low_direct":              { "verification_types": 2, "validation_types": 1, "quantitative": false, "code_review": true },
+      "medium_significant":      { "verification_types": 2, "validation_types": 1, "quantitative": false, "code_review": true },
+      "high_contributing":       { "verification_types": 2, "validation_types": 1, "quantitative": false, "code_review": true },
+      "medium_direct":           { "verification_types": 3, "validation_types": 2, "quantitative": true, "code_review": true },
+      "high_significant":        { "verification_types": 3, "validation_types": 2, "quantitative": true, "code_review": true },
+      "high_direct":             { "verification_types": 4, "validation_types": 3, "quantitative": true, "code_review": true }
+    },
+    "properties": [
+      "monotone along the risk axis (fixed influence)",
+      "monotone along the influence axis (fixed risk)"
+    ]
+  },
+  "worked_example": {
+    "question_of_interest": "Does peak cortical stress under 3x body-weight stance loading remain below yield?",
+    "risk": "medium",
+    "influence": "significant",
+    "goals": { "verification_types": 2, "validation_types": 1, "quantitative": false, "code_review": true },
+    "evidence": {
+      "verification": ["code_verification (analytical uniaxial + patch tests)", "calculation_verification (cantilever vs Euler-Bernoulli)"],
+      "validation": ["benchmark_model (synthetic femur phantom, quantitative)"]
+    },
+    "credible": true
+  },
+  "notes": [
+    "The matrix encodes the standard's monotone bands as a 3x3 lookup; a submission assessment maps evidence coverage against these goals via CredibilityAssessment::evaluate()."
+  ]
+}

@@ -1,0 +1,22 @@
+{
+  "$schema": "golden/v1",
+  "name": "aortic_aneurysm_flow",
+  "description": "Dilated-tube CFD screening scaffold: the aneurysm workflow reuses the verified Poiseuille chain with a larger radius profile; metrics are conservation + WSS scaling laws.",
+  "provenance": "analytical",
+  "model": {
+    "geometry": "straight tube with 1.6x dilated segment (FluidDomain::cylinder builder + radius profile)",
+    "fluid": "Newtonian 0.0035 Pa.s for the scaling law; blood-analog 0.08 Pa.s for the march",
+    "law": "tau_w = 4 mu Q / (pi R^3); dilated segment carries ~1/(1.6^3) = 24% of healthy-tube WSS at equal flow"
+  },
+  "expected": {
+    "metrics": [
+      { "name": "mass_conservation", "assert": "|Q_out - Q_in| / Q_in < 0.10" },
+      { "name": "wss_in_dilation_over_healthy", "value": 0.244, "tolerance_percent": 30, "note": "R ratio^3 scaling; stair-step tolerance" },
+      { "name": "low_wss_flag", "assert": "dilated-segment mean WSS < 1.0 Pa at mean aortic flow screening conditions" }
+    ]
+  },
+  "notes": [
+    "Low time-averaged WSS (< ~1 Pa) is the classical aneurysm-growth risk marker this screening targets.",
+    "Full aneurysm sac geometry (bulged 3D mask) lands with mask assembly tools."
+  ]
+}

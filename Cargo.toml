@@ -1,0 +1,108 @@
+[workspace]
+resolver = "2"
+members = [
+    # Core & imaging
+    "crates/core/tpt-med-core",
+    "crates/core/tpt-med-units",
+    "crates/core/tpt-med-geometry",
+    "crates/core/tpt-med-wasm",
+    "crates/imaging/tpt-med-dicom",
+    "crates/imaging/tpt-med-meshing",
+    # Solid biomechanics
+    "crates/solid/tpt-med-biomechanics",
+    "crates/solid/tpt-med-tissue",
+    "crates/solid/tpt-med-bone",
+    "crates/solid/tpt-med-cartilage",
+    "crates/solid/tpt-med-viscoelastic",
+    # Biofluids
+    "crates/fluid/tpt-med-hemodynamics",
+    "crates/fluid/tpt-med-cardiovascular",
+    # Devices
+    "crates/devices/tpt-med-stents",
+    "crates/devices/tpt-med-orthopedics",
+    "crates/devices/tpt-med-wear",
+    # Surgical planning
+    "crates/surgical/tpt-med-surgical-planning",
+    "crates/surgical/tpt-med-implant-sizing",
+    # Regulatory
+    "crates/regulatory/tpt-med-fda",
+    "crates/regulatory/tpt-med-vv40",
+    "crates/regulatory/tpt-med-audit",
+    # Applications
+    "examples",
+    "benches",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+# MSRV floor: const float arithmetic in tpt-med-units (1.82) and
+# wasm-bindgen 0.2.128 in tpt-med-wasm (1.77). CI enforces this.
+rust-version = "1.82"
+license = "MIT OR Apache-2.0"
+authors = ["TPT Solutions"]
+repository = "https://github.com/tpt-solutions/tpt-medical"
+homepage = "https://github.com/tpt-solutions/tpt-medical"
+keywords = ["biomechanics", "medical", "fem", "dicom", "simulation"]
+categories = ["science", "simulation"]
+
+[workspace.dependencies]
+# ---------------------------------------------------------------------------
+# TPT substrate — confirmed & pinned (published on crates.io, see todo.md
+# "Substrate Dependency Status"). Medical crates are std-only today; these
+# pins are the sanctioned integration points for nonlinear FEM (`tpt-fem`),
+# bio-fluid transport (`tpt-science`), material libraries (`tpt-engineering`)
+# and advanced linalg (`tpt-math`). Bump deliberately, one PR per bump, with
+# V&V re-run (ASME V&V 40 credibility evidence is version-sensitive).
+# ---------------------------------------------------------------------------
+tpt-math-linalg-fixed = { version = "=0.1.0", package = "tpt-math-linalg-fixed" }
+tpt-math-optimize-general = { version = "=0.1.0", package = "tpt-math-optimize-general" }
+tpt-math-prob-dist = { version = "=0.1.0", package = "tpt-math-prob-dist" }
+tpt-math-signal-filter = { version = "=0.1.0", package = "tpt-math-signal-filter" }
+tpt-eng-materials = { version = "=0.1.0", package = "tpt-eng-materials" }
+tpt-eng-biomech = { version = "=0.1.0", package = "tpt-eng-biomech" }
+tpt-sci-cfd-core = { version = "=0.1.0", package = "tpt-sci-cfd-core" }
+tpt-sci-hemodynamics = { version = "=0.1.0", package = "tpt-sci-hemodynamics" }
+tpt-fem = { version = "=0.1.0", package = "tpt-fem" }
+tpt-fem-hyperelastic = { version = "=0.1.0", package = "tpt-fem-hyperelastic" }
+tpt-fem-contact = { version = "=0.1.0", package = "tpt-fem-contact" }
+
+# Internal workspace crates (path + version pinned for consumers)
+tpt-med-core = { path = "crates/core/tpt-med-core", version = "0.1.0" }
+tpt-med-units = { path = "crates/core/tpt-med-units", version = "0.1.0" }
+tpt-med-geometry = { path = "crates/core/tpt-med-geometry", version = "0.1.0" }
+tpt-med-dicom = { path = "crates/imaging/tpt-med-dicom", version = "0.1.0" }
+tpt-med-meshing = { path = "crates/imaging/tpt-med-meshing", version = "0.1.0" }
+tpt-med-biomechanics = { path = "crates/solid/tpt-med-biomechanics", version = "0.1.0" }
+tpt-med-tissue = { path = "crates/solid/tpt-med-tissue", version = "0.1.0" }
+tpt-med-bone = { path = "crates/solid/tpt-med-bone", version = "0.1.0" }
+tpt-med-cartilage = { path = "crates/solid/tpt-med-cartilage", version = "0.1.0" }
+tpt-med-viscoelastic = { path = "crates/solid/tpt-med-viscoelastic", version = "0.1.0" }
+tpt-med-hemodynamics = { path = "crates/fluid/tpt-med-hemodynamics", version = "0.1.0" }
+tpt-med-cardiovascular = { path = "crates/fluid/tpt-med-cardiovascular", version = "0.1.0" }
+tpt-med-stents = { path = "crates/devices/tpt-med-stents", version = "0.1.0" }
+tpt-med-orthopedics = { path = "crates/devices/tpt-med-orthopedics", version = "0.1.0" }
+tpt-med-wear = { path = "crates/devices/tpt-med-wear", version = "0.1.0" }
+tpt-med-surgical-planning = { path = "crates/surgical/tpt-med-surgical-planning", version = "0.1.0" }
+tpt-med-implant-sizing = { path = "crates/surgical/tpt-med-implant-sizing", version = "0.1.0" }
+tpt-med-audit = { path = "crates/regulatory/tpt-med-audit", version = "0.1.0" }
+tpt-med-fda = { path = "crates/regulatory/tpt-med-fda", version = "0.1.0" }
+tpt-med-vv40 = { path = "crates/regulatory/tpt-med-vv40", version = "0.1.0" }
+
+[workspace.lints.rust]
+missing_docs = "warn"
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+# Numerical code legitimately produces long constant expressions; keep the
+# noise-level lints off, keep correctness lints on.
+unreadable_literal = "allow"
+# Numerical kernels index multiple arrays in one loop; iterator chains
+# obscure the math.
+needless_range_loop = "allow"
+assigning_clones = "warn"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1

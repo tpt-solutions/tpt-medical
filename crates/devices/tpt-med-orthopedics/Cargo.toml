@@ -1,0 +1,19 @@
+[package]
+name = "tpt-med-orthopedics"
+description = "Implant-bone micromotion and stress-shielding analysis"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+tpt-med-biomechanics = { path = "../../solid/tpt-med-biomechanics", version = "0.1.0" }
+tpt-med-geometry = { path = "../../core/tpt-med-geometry", version = "0.1.0" }
+tpt-med-units = { path = "../../core/tpt-med-units", version = "0.1.0" }
+
+[lints]
+workspace = true

@@ -1,0 +1,639 @@
+//! Projection-method Navier–Stokes solver on the staggered (MAC) grid.
+//!
+//! Algorithm per time step:
+//! 1. Boundary application (inlet plug velocity, no-slip walls, zero-
+//!    gradient outlet).
+//! 2. Explicit sub-step: `u* = u + dt(−(u·∇)u + ν∇²u)` on active faces
+//!    (both adjacent cells fluid); wall faces pinned to zero.
+//! 3. Projection: solve `∇²φ = ∇·u*/dt` by Jacobi with Neumann walls and
+//!    the mean φ removed each sweep to pin the gauge; `u = u* − dt ∇φ`,
+//!    `p += φ`.
+//! 4. Non-Newtonian viscosity update from the local shear rate.
+
+use crate::blood::BloodModel;
+use crate::domain::FluidDomain;
+
+/// Solver run configuration.
+#[derive(Debug, Clone)]
+pub struct SolverConfig {
+    /// Physical time step (s).
+    pub dt: f64,
+    /// Jacobi sweeps per projection.
+    pub poisson_iterations: usize,
+    /// Include convective term (disable for Stokes-like creeping flows and
+    /// faster convergence).
+    pub include_convection: bool,
+    /// Under-relaxation for the non-Newtonian viscosity update.
+    pub viscosity_relaxation: f64,
+    /// Density of blood (g/mm³ = kg/m³ × 1e-6; 1.06e-3 g/mm³ = 1060 kg/m³).
+    pub density: f64,
+}
+
+impl Default for SolverConfig {
+    fn default() -> Self {
+        Self {
+            dt: 2.0e-4,
+            poisson_iterations: 400,
+            include_convection: false,
+            viscosity_relaxation: 0.2,
+            density: 1.06e-3,
+        }
+    }
+}
+
+/// Scalars reported after a steady run.
+#[derive(Debug, Clone, Copy)]
+pub struct SteadyStats {
+    /// Marching steps performed.
+    pub steps: usize,
+    /// Maximum velocity magnitude (mm/s).
+    pub max_velocity: f64,
+    /// Flow through the inlet face (mm³/s).
+    pub inlet_flow: f64,
+    /// Flow through the outlet face (mm³/s).
+    pub outlet_flow: f64,
+    /// Mean pressure over inlet-plane fluid cells (internal units).
+    pub mean_pressure_inlet: f64,
+    /// Mean pressure over outlet-plane fluid cells (internal units).
+    pub mean_pressure_outlet: f64,
+    /// Pressure drop inlet→outlet (internal units).
+    pub pressure_drop: f64,
+}
+
+/// MAC-grid hemodynamics solver. Flow runs along **x** (the low-x face is
+/// the inlet, high-x the outlet); other axes are fully wall-bounded by the
+/// mask.
+pub struct HemodynamicsSolver {
+    /// Domain.
+    pub domain: FluidDomain,
+    /// Blood model.
+    pub blood: BloodModel,
+    /// Configuration.
+    pub config: SolverConfig,
+    /// x-face velocities (mm/s), dims (nx+1, ny, nz).
+    pub u: Vec<f64>,
+    /// y-face velocities (mm/s), dims (nx, ny+1, nz).
+    pub v: Vec<f64>,
+    /// z-face velocities (mm/s), dims (nx, ny, nz+1).
+    pub w: Vec<f64>,
+    /// Accumulated pressure potential Π = (p/ρ)·dt-units (mm²/s² per
+    /// step); its gradient enters the predictor, its increments come from
+    /// the projection.
+    pub p: Vec<f64>,
+    /// Cell apparent viscosity (Pa·s).
+    pub mu: Vec<f64>,
+    /// Inlet speed (mm/s).
+    pub inlet_velocity: f64,
+}
+
+impl HemodynamicsSolver {
+    /// Creates a solver over `domain` with the given blood model and inlet
+    /// plug velocity.
+    pub fn new(
+        domain: FluidDomain,
+        blood: BloodModel,
+        inlet_velocity: f64,
+        config: SolverConfig,
+    ) -> Self {
+        assert_eq!(domain.flow_axis, 0, "v0 solver drives flow along x only");
+        let (nx, ny, nz) = domain.dims;
+        let mu0 = match blood {
+            BloodModel::Newtonian { viscosity } => viscosity,
+            _ => 0.0035,
+        };
+        Self {
+            u: vec![0.0; (nx + 1) * ny * nz],
+            v: vec![0.0; nx * (ny + 1) * nz],
+            w: vec![0.0; nx * ny * (nz + 1)],
+            p: vec![0.0; nx * ny * nz],
+            mu: vec![mu0; nx * ny * nz],
+            domain,
+            blood,
+            config,
+            inlet_velocity,
+        }
+    }
+
+    #[inline]
+    pub(crate) fn uid(&self, i: usize, j: usize, k: usize) -> usize {
+        let (_, ny, nz) = self.domain.dims;
+        (i * ny + j) * nz + k
+    }
+
+    /// Active x-face: both adjacent cells are fluid.
+    fn ux_active(&self, i: usize, j: usize, k: usize) -> bool {
+        self.domain.is_fluid(i as i64, j as i64, k as i64)
+            && self.domain.is_fluid(i as i64 - 1, j as i64, k as i64)
+    }
+
+    fn vy_active(&self, i: usize, j: usize, k: usize) -> bool {
+        self.domain.is_fluid(i as i64, j as i64, k as i64)
+            && self.domain.is_fluid(i as i64, j as i64 - 1, k as i64)
+    }
+
+    fn wz_active(&self, i: usize, j: usize, k: usize) -> bool {
+        self.domain.is_fluid(i as i64, j as i64, k as i64)
+            && self.domain.is_fluid(i as i64, j as i64, k as i64 - 1)
+    }
+
+    /// Applies BCs: plug inlet at x=0, zero-gradient outlet at x=nx,
+    /// no-slip walls elsewhere.
+    pub fn apply_boundary(&mut self) {
+        let (nx, ny, nz) = self.domain.dims;
+        // Inlet: x = 0 faces with fluid cell (0,j,k).
+        for j in 0..ny {
+            for k in 0..nz {
+                let idx = self.uid(0, j, k);
+                if self.domain.is_fluid(0, j as i64, k as i64) {
+                    self.u[idx] = self.inlet_velocity;
+                } else {
+                    self.u[idx] = 0.0;
+                }
+            }
+        }
+        // Outlet: zero gradient: u[nx] = u[nx-1] where fluid at nx-1.
+        for j in 0..ny {
+            for k in 0..nz {
+                let idx_out = self.uid(nx, j, k);
+                let idx_in = self.uid(nx - 1, j, k);
+                if self.domain.is_fluid((nx - 1) as i64, j as i64, k as i64) {
+                    self.u[idx_out] = self.u[idx_in];
+                } else {
+                    self.u[idx_out] = 0.0;
+                }
+            }
+        }
+        // No-slip on all v/w faces and on interior u faces adjacent to
+        // solids.
+        let (_, ny1, _) = (nx, ny + 1, nz);
+        let _ = ny1;
+        for i in 0..nx {
+            for j in 0..=ny {
+                for k in 0..nz {
+                    let idx = i * (ny + 1) * nz + j * nz + k;
+                    self.v[idx] = if self.vy_active(i, j, k) {
+                        self.v[idx]
+                    } else {
+                        0.0
+                    };
+                }
+            }
+        }
+        for i in 0..nx {
+            for j in 0..ny {
+                for k in 0..=nz {
+                    let idx = i * ny * (nz + 1) + j * (nz + 1) + k;
+                    self.w[idx] = if self.wz_active(i, j, k) {
+                        self.w[idx]
+                    } else {
+                        0.0
+                    };
+                }
+            }
+        }
+        for i in 1..nx {
+            for j in 0..ny {
+                for k in 0..nz {
+                    let idx = self.uid(i, j, k);
+                    self.u[idx] = if self.ux_active(i, j, k) {
+                        self.u[idx]
+                    } else {
+                        0.0
+                    };
+                }
+            }
+        }
+    }
+
+    /// Explicit advection+viscous sub-step; returns max change.
+    fn substep(&mut self) -> f64 {
+        let (nx, ny, nz) = self.domain.dims;
+        let (dx, dy, dz) = self.domain.spacing;
+        let dt = self.config.dt;
+        let rho = self.config.density;
+        let mut mu_eff = 0.0;
+        let mut count = 0;
+        for i in 0..nx {
+            for j in 0..ny {
+                for k in 0..nz {
+                    if self.domain.mask[self.domain.index(i, j, k)] {
+                        mu_eff += self.mu[self.domain.index(i, j, k)];
+                        count += 1;
+                    }
+                }
+            }
+        }
+        mu_eff /= count.max(1) as f64;
+        let nu = mu_eff / rho; // mm²/s
+
+        let u0 = self.u.clone();
+        let v0 = self.v.clone();
+        let w0 = self.w.clone();
+
+        // x-faces
+        for i in 1..nx {
+            for j in 0..ny {
+                for k in 0..nz {
+                    if !self.ux_active(i, j, k) {
+                        continue;
+                    }
+                    let idx = self.uid(i, j, k);
+                    let mut dudt = 0.0;
+                    // Persistent pressure gradient (cell-centred Π).
+                    dudt -= (self.p[self.domain.index(i, j, k)]
+                        - self.p[self.domain.index(i - 1, j, k)])
+                        / dx;
+                    dudt += nu
+                        * (u0[self.uid(i + 1, j, k)] - 2.0 * u0[idx] + u0[self.uid(i - 1, j, k)])
+                        / (dx * dx);
+                    if j > 0 && j + 1 < ny {
+                        dudt += nu
+                            * (u0[self.uid(i, j + 1, k)] - 2.0 * u0[idx]
+                                + u0[self.uid(i, j - 1, k)])
+                            / (dy * dy);
+                    }
+                    if k > 0 && k + 1 < nz {
+                        dudt += nu
+                            * (u0[self.uid(i, j, k + 1)] - 2.0 * u0[idx]
+                                + u0[self.uid(i, j, k - 1)])
+                            / (dz * dz);
+                    }
+                    // Convection via cell-centered interpolation (skipped in
+                    // creeping-flow configuration).
+                    if self.config.include_convection {
+                        let uc = |a: usize, b: usize, c: usize| {
+                            0.5 * (u0[self.uid(a, b, c)] + u0[self.uid(a + 1, b, c)])
+                        };
+                        let uu = uc(i, j, k);
+                        let duudx =
+                            (u0[self.uid(i + 1, j, k)] - u0[self.uid(i - 1, j, k)]) / (2.0 * dx);
+                        dudt -= uu * duudx;
+                    }
+                    self.u[idx] = u0[idx] + dt * dudt;
+                }
+            }
+        }
+        // y-faces: viscous Laplacian only (screening simplification).
+        for i in 0..nx {
+            for j in 1..ny {
+                for k in 0..nz {
+                    if !self.vy_active(i, j, k) {
+                        continue;
+                    }
+                    let idx = i * (ny + 1) * nz + j * nz + k;
+                    let mut dvdt = 0.0;
+                    dvdt -= (self.p[self.domain.index(i, j, k)]
+                        - self.p[self.domain.index(i, j - 1, k)])
+                        / dy;
+                    if i > 0 && i + 1 < nx {
+                        dvdt += nu
+                            * (v0[idx + (ny + 1) * nz] - 2.0 * v0[idx] + v0[idx - (ny + 1) * nz])
+                            / (dx * dx);
+                    }
+                    if j < ny && j >= 1 {
+                        dvdt += nu * (v0[idx + nz] - 2.0 * v0[idx] + v0[idx - nz]) / (dy * dy);
+                    }
+                    self.v[idx] = v0[idx] + dt * dvdt;
+                }
+            }
+        }
+        // z-faces.
+        for i in 0..nx {
+            for j in 0..ny {
+                for k in 1..nz {
+                    if !self.wz_active(i, j, k) {
+                        continue;
+                    }
+                    let idx = i * ny * (nz + 1) + j * (nz + 1) + k;
+                    let mut dwdt = 0.0;
+                    dwdt -= (self.p[self.domain.index(i, j, k)]
+                        - self.p[self.domain.index(i, j, k - 1)])
+                        / dz;
+                    if i > 0 && i + 1 < nx {
+                        dwdt += nu
+                            * (w0[idx + ny * (nz + 1)] - 2.0 * w0[idx] + w0[idx - ny * (nz + 1)])
+                            / (dx * dx);
+                    }
+                    if k < nz && k >= 1 {
+                        dwdt += nu * (w0[idx + 1] - 2.0 * w0[idx] + w0[idx - 1]) / (dz * dz);
+                    }
+                    self.w[idx] = w0[idx] + dt * dwdt;
+                }
+            }
+        }
+        let mut max_change = 0.0f64;
+        for (a, b) in u0.iter().zip(&self.u) {
+            max_change = max_change.max((a - b).abs());
+        }
+        max_change
+    }
+
+    /// Face divergence per fluid cell (1/s).
+    pub(crate) fn divergence(&self) -> Vec<f64> {
+        let (nx, ny, nz) = self.domain.dims;
+        let (dx, dy, dz) = self.domain.spacing;
+        let mut div = vec![0.0; nx * ny * nz];
+        for i in 0..nx {
+            for j in 0..ny {
+                for k in 0..nz {
+                    if !self.domain.mask[self.domain.index(i, j, k)] {
+                        continue;
+                    }
+                    let du = (self.u[self.uid(i + 1, j, k)] - self.u[self.uid(i, j, k)]) / dx;
+                    let dv = (self.v[i * (ny + 1) * nz + (j + 1) * nz + k]
+                        - self.v[i * (ny + 1) * nz + j * nz + k])
+                        / dy;
+                    let dw = (self.w[i * ny * (nz + 1) + j * (nz + 1) + (k + 1)]
+                        - self.w[i * ny * (nz + 1) + j * (nz + 1) + k])
+                        / dz;
+                    div[self.domain.index(i, j, k)] = du + dv + dw;
+                }
+            }
+        }
+        div
+    }
+
+    /// SOR (in-place Gauss–Seidel with over-relaxation) Poisson solve for
+    /// φ with Neumann walls and a Dirichlet φ = 0 outlet layer. SOR at
+    /// ω = 1.9 converges an order of magnitude faster than Jacobi on this
+    /// grid, which is required to keep the post-projection divergence
+    /// near zero.
+    fn solve_poisson(&self, rhs: &[f64]) -> Vec<f64> {
+        let (nx, ny, nz) = self.domain.dims;
+        let (dx, dy, dz) = self.domain.spacing;
+        let mut phi = vec![0.0; nx * ny * nz];
+        let denom = 2.0 * (1.0 / (dx * dx) + 1.0 / (dy * dy) + 1.0 / (dz * dz));
+        let omega = 1.9;
+        let rhs_scale = rhs.iter().fold(0.0f64, |m, &v| m.max(v.abs())).max(1e-10);
+        // Natural φ magnitude is rhs/denom; exit when per-sweep updates are
+        // a 1e-4 fraction of it (post-projection divergence ≪ gradients).
+        let residual_exit = 1e-4 * rhs_scale / denom;
+
+        for _ in 0..self.config.poisson_iterations {
+            let mut max_update = 0.0f64;
+            for i in 0..nx {
+                for j in 0..ny {
+                    for k in 0..nz {
+                        let idx = self.domain.index(i, j, k);
+                        if !self.domain.mask[idx] {
+                            continue;
+                        }
+                        if i + 1 == nx {
+                            phi[idx] = 0.0; // Dirichlet outlet
+                            continue;
+                        }
+                        // Neumann walls: mirror the centre value across
+                        // non-fluid neighbours; the outlet layer is the
+                        // Dirichlet φ = 0 anchor.
+                        let xm = if i > 0 && self.domain.mask[self.domain.index(i - 1, j, k)] {
+                            phi[self.domain.index(i - 1, j, k)]
+                        } else {
+                            phi[idx]
+                        };
+                        let xp = if i + 1 == nx {
+                            0.0
+                        } else if self.domain.mask[self.domain.index(i + 1, j, k)] {
+                            phi[self.domain.index(i + 1, j, k)]
+                        } else {
+                            phi[idx]
+                        };
+                        let ym = if j > 0 && self.domain.mask[self.domain.index(i, j - 1, k)] {
+                            phi[self.domain.index(i, j - 1, k)]
+                        } else {
+                            phi[idx]
+                        };
+                        let yp = if j + 1 < ny && self.domain.mask[self.domain.index(i, j + 1, k)] {
+                            phi[self.domain.index(i, j + 1, k)]
+                        } else {
+                            phi[idx]
+                        };
+                        let zm = if k > 0 && self.domain.mask[self.domain.index(i, j, k - 1)] {
+                            phi[self.domain.index(i, j, k - 1)]
+                        } else {
+                            phi[idx]
+                        };
+                        let zp = if k + 1 < nz && self.domain.mask[self.domain.index(i, j, k + 1)] {
+                            phi[self.domain.index(i, j, k + 1)]
+                        } else {
+                            phi[idx]
+                        };
+                        let sum = xm / (dx * dx)
+                            + xp / (dx * dx)
+                            + ym / (dy * dy)
+                            + yp / (dy * dy)
+                            + zm / (dz * dz)
+                            + zp / (dz * dz);
+                        let target = (sum - rhs[idx]) / denom;
+                        let update = omega * (target - phi[idx]);
+                        phi[idx] += update;
+                        max_update = max_update.max(update.abs());
+                    }
+                }
+            }
+            if max_update < residual_exit {
+                break;
+            }
+        }
+        phi
+    }
+
+    /// One full step; returns max |velocity change| (mm/s).
+    pub fn step(&mut self) -> f64 {
+        self.apply_boundary();
+        let change = self.substep();
+        self.apply_boundary();
+
+        let div = self.divergence();
+        let dt = self.config.dt;
+        let rhs: Vec<f64> = div.iter().map(|&d| d / dt).collect();
+        let phi = self.solve_poisson(&rhs);
+
+        let (nx, ny, nz) = self.domain.dims;
+        let (dx, dy, dz) = self.domain.spacing;
+        // Pressure correction on faces.
+        for i in 1..nx {
+            for j in 0..ny {
+                for k in 0..nz {
+                    if self.ux_active(i, j, k) {
+                        let idx = self.uid(i, j, k);
+                        self.u[idx] -= dt
+                            * (phi[self.domain.index(i, j, k)]
+                                - phi[self.domain.index(i - 1, j, k)])
+                            / dx;
+                    }
+                }
+            }
+        }
+        for i in 0..nx {
+            for j in 1..ny {
+                for k in 0..nz {
+                    if self.vy_active(i, j, k) {
+                        let idx = i * (ny + 1) * nz + j * nz + k;
+                        self.v[idx] -= dt
+                            * (phi[self.domain.index(i, j, k)]
+                                - phi[self.domain.index(i, j - 1, k)])
+                            / dy;
+                    }
+                }
+            }
+        }
+        for i in 0..nx {
+            for j in 0..ny {
+                for k in 1..nz {
+                    if self.wz_active(i, j, k) {
+                        let idx = i * ny * (nz + 1) + j * (nz + 1) + k;
+                        self.w[idx] -= dt
+                            * (phi[self.domain.index(i, j, k)]
+                                - phi[self.domain.index(i, j, k - 1)])
+                            / dz;
+                    }
+                }
+            }
+        }
+        // Zero-gradient outlet re-applied POST-correction so the outlet
+        // face participates in mass balance (it has no adjacent correction
+        // cell).
+        let nx_out = nx;
+        for j in 0..ny {
+            for k in 0..nz {
+                let idx_out = self.uid(nx_out, j, k);
+                let idx_in = self.uid(nx_out - 1, j, k);
+                self.u[idx_out] = self.u[idx_in];
+            }
+        }
+
+        // Pressure accumulation.
+        for (pp, &ph) in self.p.iter_mut().zip(&phi) {
+            *pp += ph;
+        }
+        // Non-Newtonian viscosity update.
+        if !matches!(self.blood, BloodModel::Newtonian { .. }) {
+            self.update_viscosity();
+        }
+        change
+    }
+
+    fn update_viscosity(&mut self) {
+        let (nx, ny, nz) = self.domain.dims;
+        let (dx, dy, dz) = self.domain.spacing;
+        for i in 0..nx {
+            for j in 0..ny {
+                for k in 0..nz {
+                    let idx = self.domain.index(i, j, k);
+                    if !self.domain.mask[idx] {
+                        continue;
+                    }
+                    // Velocity gradients from face values (central).
+                    let dudx = (self.u[self.uid(i + 1, j, k)] - self.u[self.uid(i, j, k)]) / dx;
+                    let dvdy = (self.v[i * (ny + 1) * nz + (j + 1) * nz + k]
+                        - self.v[i * (ny + 1) * nz + j * nz + k])
+                        / dy;
+                    let dwdz = (self.w[i * ny * (nz + 1) + j * (nz + 1) + (k + 1)]
+                        - self.w[i * ny * (nz + 1) + j * (nz + 1) + k])
+                        / dz;
+                    let dudy = 0.5
+                        * (self.u[self.uid(i, core::cmp::min(j + 1, ny - 1), k)]
+                            - self.u[self.uid(i, j.saturating_sub(1), k)])
+                        / dy;
+                    let g = (dudx * dudx
+                        + dvdy * dvdy
+                        + dwdz * dwdz
+                        + 0.5 * (dudy * dudy + dvdy * dvdy))
+                        .max(0.0)
+                        .sqrt()
+                        + 1e-6;
+                    let mu_target = self.blood.viscosity(g);
+                    let relax = self.config.viscosity_relaxation;
+                    self.mu[idx] = self.mu[idx] * (1.0 - relax) + mu_target * relax;
+                }
+            }
+        }
+    }
+
+    /// Marches to steady state; stops when the velocity change per step is
+    /// below `tolerance` (mm/s) or `max_steps` is exhausted.
+    pub fn run_steady(&mut self, max_steps: usize, tolerance: f64) -> SteadyStats {
+        let mut steps = 0;
+        for _ in 0..max_steps {
+            let change = self.step();
+            steps += 1;
+            if change < tolerance {
+                break;
+            }
+        }
+        self.stats(steps)
+    }
+
+    /// Face-integrated flows and pressures.
+    pub fn stats(&self, steps: usize) -> SteadyStats {
+        let (nx, ny, nz) = self.domain.dims;
+        let (_dx, dy, dz) = self.domain.spacing;
+        let cell_face = dy * dz;
+        let mut inlet = 0.0;
+        for j in 0..ny {
+            for k in 0..nz {
+                if self.domain.is_fluid(0, j as i64, k as i64) {
+                    inlet += self.u[self.uid(0, j, k)] * cell_face;
+                }
+            }
+        }
+        let mut outlet = 0.0;
+        for j in 0..ny {
+            for k in 0..nz {
+                if self.domain.is_fluid((nx - 1) as i64, j as i64, k as i64) {
+                    outlet += self.u[self.uid(nx, j, k)] * cell_face;
+                }
+            }
+        }
+        let mut max_v = 0.0f64;
+        for &uv in &self.u {
+            max_v = max_v.max(uv.abs());
+        }
+        let mut pin = 0.0;
+        let mut nin = 0;
+        for j in 0..ny {
+            for k in 0..nz {
+                if self.domain.is_fluid(0, j as i64, k as i64) {
+                    pin += self.p[self.domain.index(0, j, k)];
+                    nin += 1;
+                }
+            }
+        }
+        let mut pout = 0.0;
+        let mut nout = 0;
+        for j in 0..ny {
+            for k in 0..nz {
+                if self.domain.is_fluid((nx - 1) as i64, j as i64, k as i64) {
+                    pout += self.p[self.domain.index(nx - 1, j, k)];
+                    nout += 1;
+                }
+            }
+        }
+        SteadyStats {
+            steps,
+            max_velocity: max_v,
+            inlet_flow: inlet,
+            outlet_flow: outlet,
+            mean_pressure_inlet: pin / nin.max(1) as f64,
+            mean_pressure_outlet: pout / nout.max(1) as f64,
+            pressure_drop: pin / nin.max(1) as f64 - pout / nout.max(1) as f64,
+        }
+    }
+
+    /// Cell-centered axial velocity at plane `i` (mm/s) — verification
+    /// helper.
+    pub fn axial_velocity_profile(&self, i: usize) -> Vec<f64> {
+        let (_, ny, nz) = self.domain.dims;
+        let mut out = Vec::with_capacity(ny * nz);
+        for j in 0..ny {
+            for k in 0..nz {
+                let fluid = self.domain.is_fluid(i as i64, j as i64, k as i64);
+                if fluid {
+                    let val = 0.5 * (self.u[self.uid(i, j, k)] + self.u[self.uid(i + 1, j, k)]);
+                    out.push(val);
+                }
+            }
+        }
+        out
+    }
+}

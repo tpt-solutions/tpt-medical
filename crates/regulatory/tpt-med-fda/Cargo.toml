@@ -1,0 +1,18 @@
+[package]
+name = "tpt-med-fda"
+description = "21 CFR Part 11 compliant audit trails and electronic signatures"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+tpt-med-audit = { path = "../tpt-med-audit", version = "0.1.0" }
+tpt-med-core = { path = "../../core/tpt-med-core", version = "0.1.0" }
+
+[lints]
+workspace = true

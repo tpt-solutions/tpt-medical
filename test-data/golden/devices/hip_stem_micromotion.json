@@ -1,0 +1,28 @@
+{
+  "$schema": "golden/v1",
+  "name": "hip_stem_micromotion",
+  "description": "Winkler-foundation interface micromotion reference (press-fit femoral stem screening).",
+  "provenance": "synthetic-model",
+  "model": {
+    "interface": {
+      "foundation_stiffness_n_per_mm3": 5.0,
+      "contact_area_mm2": 800.0,
+      "friction": 0.5,
+      "tangential_load_fraction": 0.3
+    },
+    "loads_n": [500.0, 1500.0, 2000.0, 4000.0],
+    "note": "Loads span stair-climb peak (~3x BW = 2.2 kN for 75 kg) with margin."
+  },
+  "expected": {
+    "metrics": [
+      { "name": "micromotion_monotone_in_load", "assert": "delta(4000 N) > delta(2000 N) > delta(500 N)" },
+      { "name": "stiffness_sensitivity", "assert": "4x stiffer foundation reduces micromotion 4x (Winkler linearity)" },
+      { "name": "classification_thresholds_um", "values": { "low": 50, "moderate": 150, "high": 150 }, "assert": "risk bands match classify()" },
+      { "name": "2000n_micromotion_um", "value": 27.0, "tolerance_percent": 5, "note": "delta = (0.3*2000/800 + 0.1*0.5*2000/800) / 5 / 1000 mm = 2.75e-2 mm; check against crate formula" }
+    ]
+  },
+  "notes": [
+    "Thresholds follow the workspace convention: <50 um primary stability, <150 um osseointegration, above = fibrous fixation risk.",
+    "Stress-shielding companion metric: Engh-style 1 - SED_implant/SED_intact per Gruen zone (crate test covers the severe-shielding flag)."
+  ]
+}

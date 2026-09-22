@@ -1,0 +1,28 @@
+[package]
+name = "tpt-med-wasm"
+description = "WebAssembly bindings for the tpt-medical zero-cloud simulation stack"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# Exact pin: the wasm-bindgen CLI (scripts/build-web) must match this
+# version for glue generation, and it fixes the transitive MSRV floor.
+wasm-bindgen = "=0.2.128"
+tpt-med-dicom = { path = "../../imaging/tpt-med-dicom", version = "0.1.0" }
+tpt-med-meshing = { path = "../../imaging/tpt-med-meshing", version = "0.1.0" }
+tpt-med-biomechanics = { path = "../../solid/tpt-med-biomechanics", version = "0.1.0" }
+tpt-med-stents = { path = "../../devices/tpt-med-stents", version = "0.1.0" }
+tpt-med-geometry = { path = "../tpt-med-geometry", version = "0.1.0" }
+tpt-med-units = { path = "../tpt-med-units", version = "0.1.0" }
+
+[lints]
+workspace = true

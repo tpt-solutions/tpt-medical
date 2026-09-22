@@ -1,0 +1,17 @@
+[package]
+name = "tpt-med-audit"
+description = "SHA-256 hash chains and HMAC-SHA256 signatures for tamper-evident audit logs"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+
+
+[lints]
+workspace = true

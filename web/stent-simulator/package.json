@@ -1,0 +1,34 @@
+{
+  "name": "@tpt-solutions/stent-simulator",
+  "version": "0.1.0",
+  "description": "White-label, zero-cloud stent deployment simulator web component (pure Rust -> WASM)",
+  "license": "(MIT OR Apache-2.0)",
+  "author": "TPT Solutions",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/tpt-solutions/tpt-medical.git",
+    "directory": "web/stent-simulator"
+  },
+  "type": "module",
+  "main": "tpt-stent-simulator.js",
+  "exports": {
+    ".": "./tpt-stent-simulator.js"
+  },
+  "files": [
+    "tpt-stent-simulator.js",
+    "README.md"
+  ],
+  "scripts": {
+    "build:engine": "sh ../../scripts/build-web.sh",
+    "serve": "python3 -m http.server 8080"
+  },
+  "keywords": [
+    "stent",
+    "nitinol",
+    "wasm",
+    "web-component",
+    "medical-device",
+    "simulation",
+    "custom-element"
+  ]
+}

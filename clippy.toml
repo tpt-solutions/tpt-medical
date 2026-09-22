@@ -1,0 +1,5 @@
+# Clippy thresholds tuned for numerical/simulation code where long
+# scientific parameter lists and complex formula bodies are normal.
+cognitive-complexity-threshold = 40
+too-many-arguments-threshold = 12
+type-complexity-threshold = 400

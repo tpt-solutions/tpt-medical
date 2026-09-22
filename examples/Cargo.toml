@@ -1,0 +1,65 @@
+[package]
+name = "tpt-med-examples"
+description = "Runnable end-to-end example binaries for tpt-medical"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+publish = false
+
+[[bin]]
+name = "dicom-to-mesh"
+path = "src/bin/dicom_to_mesh.rs"
+
+[[bin]]
+name = "gen-synthetic-ct"
+path = "src/bin/gen_synthetic_ct.rs"
+
+[[bin]]
+name = "femur-stress-analysis"
+path = "src/bin/femur_stress_analysis.rs"
+
+[[bin]]
+name = "carotid-wss-screening"
+path = "src/bin/carotid_wss_screening.rs"
+
+[[bin]]
+name = "stent-deployment"
+path = "src/bin/stent_deployment.rs"
+
+[[bin]]
+name = "knee-replacement-planning"
+path = "src/bin/knee_replacement_planning.rs"
+
+[[bin]]
+name = "fda-package"
+path = "src/bin/fda_package.rs"
+
+[dependencies]
+tpt-med-core = { path = "../crates/core/tpt-med-core", version = "0.1.0" }
+tpt-med-units = { path = "../crates/core/tpt-med-units", version = "0.1.0" }
+tpt-med-geometry = { path = "../crates/core/tpt-med-geometry", version = "0.1.0" }
+tpt-med-dicom = { path = "../crates/imaging/tpt-med-dicom", version = "0.1.0" }
+tpt-med-meshing = { path = "../crates/imaging/tpt-med-meshing", version = "0.1.0" }
+tpt-med-biomechanics = { path = "../crates/solid/tpt-med-biomechanics", version = "0.1.0" }
+tpt-med-tissue = { path = "../crates/solid/tpt-med-tissue", version = "0.1.0" }
+tpt-med-bone = { path = "../crates/solid/tpt-med-bone", version = "0.1.0" }
+tpt-med-viscoelastic = { path = "../crates/solid/tpt-med-viscoelastic", version = "0.1.0" }
+tpt-med-cartilage = { path = "../crates/solid/tpt-med-cartilage", version = "0.1.0" }
+tpt-med-hemodynamics = { path = "../crates/fluid/tpt-med-hemodynamics", version = "0.1.0" }
+tpt-med-cardiovascular = { path = "../crates/fluid/tpt-med-cardiovascular", version = "0.1.0" }
+tpt-med-stents = { path = "../crates/devices/tpt-med-stents", version = "0.1.0" }
+tpt-med-orthopedics = { path = "../crates/devices/tpt-med-orthopedics", version = "0.1.0" }
+tpt-med-wear = { path = "../crates/devices/tpt-med-wear", version = "0.1.0" }
+tpt-med-surgical-planning = { path = "../crates/surgical/tpt-med-surgical-planning", version = "0.1.0" }
+tpt-med-implant-sizing = { path = "../crates/surgical/tpt-med-implant-sizing", version = "0.1.0" }
+tpt-med-audit = { path = "../crates/regulatory/tpt-med-audit", version = "0.1.0" }
+tpt-med-fda = { path = "../crates/regulatory/tpt-med-fda", version = "0.1.0" }
+tpt-med-vv40 = { path = "../crates/regulatory/tpt-med-vv40", version = "0.1.0" }
+
+[lints]
+workspace = true

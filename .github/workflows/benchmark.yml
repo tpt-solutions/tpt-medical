@@ -1,0 +1,24 @@
+name: Benchmark
+
+on:
+  pull_request:
+    paths:
+      - "crates/**"
+      - "benches/**"
+  workflow_dispatch:
+
+jobs:
+  bench:
+    name: Run benchmarks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Run benchmark suite
+        run: cargo bench --workspace --no-fail-fast 2>&1 | tee bench_output.txt
+      - name: Upload benchmark results
+        uses: actions/upload-artifact@v4
+        with:
+          name: bench-results
+          path: bench_output.txt

@@ -1,0 +1,70 @@
+name: Release
+
+# Tag-driven release. Local verification only until crates are published;
+# publishing to crates.io is intentionally manual (see RELEASE checklist in
+# each repo's publishing runbook) and is NOT automated here.
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write
+
+jobs:
+  verify:
+    name: Verify workspace at tag
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo test --workspace --release
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo deny check licenses
+
+  artifacts:
+    name: Package artifacts
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+          - target: aarch64-apple-darwin
+            os: macos-latest
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - run: cargo build --release -p tpt-med-examples --target ${{ matrix.target }}
+      - name: Archive CLI binaries
+        shell: bash
+        run: |
+          out="tpt-medical-${{ matrix.target }}"
+          mkdir -p "$out"
+          for bin in dicom-to-mesh gen-synthetic-ct; do
+            cp "target/${{ matrix.target }}/release/$bin" "$out/" || true
+            cp "target/${{ matrix.target }}/release/$bin.exe" "$out/" || true
+          done
+          tar czf "$out.tar.gz" "$out"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bins-${{ matrix.target }}
+          path: "*.tar.gz"
+
+  github-release:
+    needs: [verify, artifacts]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: "*.tar.gz"

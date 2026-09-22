@@ -1,0 +1,18 @@
+[package]
+name = "tpt-med-core"
+description = "Patient models, anatomical taxonomy, and HIPAA-safe audit traits"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+tpt-med-geometry = { path = "../tpt-med-geometry", version = "0.1.0" }
+tpt-med-units = { path = "../tpt-med-units", version = "0.1.0" }
+
+[lints]
+workspace = true

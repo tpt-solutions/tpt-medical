@@ -34,6 +34,10 @@ Thumbs.db
 /docs/api/
 /site/
 
+# wasm-bindgen glue output (regenerate with scripts/build-web.ps1|.sh)
+/web/pkg/
+
+
 # Coverage
 /coverage/
 *.lcov

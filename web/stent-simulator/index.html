@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="data:,">
+<title>tpt-stent-simulator — white-label demo</title>
+<style>
+  :root { color-scheme: light dark; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; font: 14px/1.5 system-ui, sans-serif;
+    background: #eef1f5; color: #1b2733;
+    display: grid; grid-template-columns: 300px 1fr; min-height: 100vh;
+  }
+  aside { padding: 18px; background: #161d26; color: #d8e0e8; overflow-y: auto; }
+  h1 { font-size: 16px; margin: 0 0 4px; }
+  .tag { color: #6fb3ff; font-size: 12px; margin-bottom: 14px; }
+  h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .08em;
+       color: #8fa3b8; margin: 18px 0 8px; }
+  label { display: block; margin: 8px 0 3px; font-size: 12px; color: #aebdcd; }
+  input[type=text], input[type=color] {
+    width: 100%; padding: 6px 8px; border-radius: 5px;
+    border: 1px solid #2c3a4a; background: #0d1218; color: #d8e0e8; font: inherit;
+  }
+  input[type=color] { height: 34px; padding: 2px; }
+  .note { color: #7d8fa3; font-size: 12px; margin-top: 16px; }
+  main { padding: 24px; max-width: 980px; }
+  .lede { margin: 0 0 18px; color: #44515f; max-width: 62ch; }
+  pre.embed {
+    display: block; margin-top: 22px; padding: 12px 14px; border-radius: 8px;
+    background: #10151b; color: #9fe8c7; font: 12px/1.5 ui-monospace, monospace;
+    white-space: pre-wrap; word-break: break-all; border: 1px solid #232d3a;
+  }
+  .swatches { display: flex; gap: 6px; margin-top: 6px; }
+  .swatches button {
+    width: 26px; height: 26px; border-radius: 50%; border: 2px solid #2c3a4a;
+    cursor: pointer; padding: 0;
+  }
+  .swatches button:hover { border-color: #6fb3ff; }
+  code.inline { background: #10151b; color: #9fe8c7; padding: 1px 5px; border-radius: 4px; }
+</style>
+</head>
+<body>
+<aside>
+  <h1>White-label demo</h1>
+  <div class="tag">embeddable stent simulator — branding is attribute-only</div>
+
+  <h2>Branding</h2>
+  <label for="brand">Brand name</label>
+  <input type="text" id="brand" value="Acme Vascular">
+  <label for="brand-url">Brand URL</label>
+  <input type="text" id="brand-url" value="https://example.com">
+  <label for="accent">Accent colour</label>
+  <input type="color" id="accent" value="#0e7c86">
+  <div class="swatches">
+    <button data-c="#0e7c86" style="background:#0e7c86" title="teal"></button>
+    <button data-c="#2c7ef8" style="background:#2c7ef8" title="blue"></button>
+    <button data-c="#b4348a" style="background:#b4348a" title="magenta"></button>
+    <button data-c="#c4551f" style="background:#c4551f" title="burnt orange"></button>
+  </div>
+  <label for="theme-sel">Theme</label>
+  <select id="theme-sel" style="width:100%;padding:6px;border-radius:5px;background:#0d1218;color:#d8e0e8;border:1px solid #2c3a4a">
+    <option value="light" selected>light</option>
+    <option value="dark">dark</option>
+  </select>
+  <label for="note">Report note</label>
+  <input type="text" id="note" placeholder="default disclaimer">
+
+  <h2>Engine</h2>
+  <div class="note">
+    The WASM engine lives in <code class="inline">web/pkg/</code> — build it once
+    with <code class="inline">scripts/build-web.ps1</code> (or <code class="inline">.sh</code>),
+    then serve the repository root:
+    <br><br>
+    <code class="inline">python -m http.server 8080</code><br>
+    open <code class="inline">http://localhost:8080/web/stent-simulator/</code>
+  </div>
+  <div class="note">
+    Research use only. Not FDA cleared. All simulation runs in your browser.
+  </div>
+</aside>
+<main>
+  <p class="lede">
+    The same engine as the viewer, packaged as a brandable custom element.
+    Change the controls — the component, its accent, and the embed snippet
+    below all update live. Drop the element into any MedTech marketing or
+    configurator page; nothing leaves the visitor's browser.
+  </p>
+
+  <tpt-stent-simulator id="sim"></tpt-stent-simulator>
+
+  <pre class="embed" id="embed"></pre>
+</main>
+
+<script type="module" src="./tpt-stent-simulator.js"></script>
+<script type="module">
+const sim = document.getElementById("sim");
+const embed = document.getElementById("embed");
+
+function apply() {
+  const brand = document.getElementById("brand").value;
+  const url = document.getElementById("brand-url").value;
+  const accent = document.getElementById("accent").value;
+  const theme = document.getElementById("theme-sel").value;
+  const note = document.getElementById("note").value;
+
+  sim.setAttribute("brand-name", brand);
+  sim.setAttribute("brand-url", url);
+  sim.setAttribute("accent-color", accent);
+  sim.setAttribute("theme", theme);
+  if (note) sim.setAttribute("report-note", note);
+  else sim.removeAttribute("report-note");
+
+  embed.textContent =
+`<!-- once per page -->
+<script type="module" src="https://your-cdn.example/tpt-stent-simulator.js"><\/script>
+
+<tpt-stent-simulator
+  brand-name="${brand}"
+  brand-url="${url}"
+  accent-color="${accent}"
+  theme="${theme}"
+  wasm-base="../pkg/">
+</tpt-stent-simulator>`;
+}
+
+for (const id of ["brand", "brand-url", "accent", "theme-sel", "note"]) {
+  document.getElementById(id).addEventListener("input", apply);
+}
+for (const btn of document.querySelectorAll(".swatches button")) {
+  btn.addEventListener("click", () => {
+    document.getElementById("accent").value = btn.dataset.c;
+    apply();
+  });
+}
+sim.addEventListener("tpt-deploy", e => console.log("tpt-deploy", e.detail));
+apply();
+</script>
+</body>
+</html>

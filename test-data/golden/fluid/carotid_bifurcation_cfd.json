@@ -1,0 +1,33 @@
+{
+  "$schema": "golden/v1",
+  "name": "carotid_bifurcation_cfd",
+  "description": "Voxel CFD screening: WSS/OSI behaviour under a carotid-like pulsatile waveform, anchored by the Poiseuille verification and a stenosed-tube reference run.",
+  "provenance": "synthetic-model",
+  "verification_chain": [
+    {
+      "name": "poiseuille_profile",
+      "fluid": { "viscosity_pa_s": 0.08, "note": "blood-analog; real-blood development time R^2/nu ~ 1 s is outside the test march budget" },
+      "expected": [
+        { "name": "mass_conservation", "assert": "|Q_out - Q_in| / Q_in < 0.10" },
+        { "name": "paraboloid_profile", "assert": "constant radial second derivative (within 10%), symmetric about axis, wall intercept at mask radius + ghost" },
+        { "name": "wall_shear_vs_tube_law", "value": "tau_sim / (4 mu Q / pi R^3) in [0.4, 1.6]" }
+      ]
+    }
+  ],
+  "model": {
+    "geometry": "24x12x12 voxels, 0.5 mm pitch, 40% Gaussian stenosis (carotid-wss-screening example)",
+    "blood": "Carreau-Yasuda (mu0=0.056, mu_inf=0.0035, lambda=11.5 s, a=1.9, n=0.22)",
+    "inflow": "mean 30 mm/s, +-60% sinusoidal pulsatility, 1 Hz"
+  },
+  "expected": {
+    "metrics": [
+      { "name": "throat_wss_over_field_mean", "value": 2.42, "tolerance_percent": 25, "note": "accelerated flow through the stenosis throat" },
+      { "name": "cycle_osi_wall_averaged", "value": 0.018, "tolerance_absolute": 0.03, "note": "half-cycle sampled, forward-dominant waveform" },
+      { "name": "shear_thinning_resistance", "assert": "Carreau-Yasuda pressure drop > Newtonian (same geometry/inflow)" }
+    ]
+  },
+  "notes": [
+    "Stair-step walls over-estimate wall gradients; ratios are screening anchors, not clinical WSS values.",
+    "True bifurcation geometry (Y-split mask) lands with mask assembly tools; the stenosed tube exercises the same solver paths."
+  ]
+}

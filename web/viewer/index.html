@@ -1,0 +1,628 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="data:,">
+<title>tpt-medical viewer</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; font: 14px/1.5 system-ui, sans-serif; background: #10151b; color: #d8e0e8;
+    display: grid; grid-template-columns: 320px 1fr; height: 100vh;
+  }
+  aside {
+    padding: 16px; background: #161d26; border-right: 1px solid #232d3a; overflow-y: auto;
+  }
+  h1 { font-size: 17px; margin: 0 0 4px; }
+  .tag { color: #6fb3ff; font-size: 12px; margin-bottom: 16px; }
+  h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .08em; color: #8fa3b8; margin: 18px 0 8px; }
+  label { display: block; margin: 10px 0 4px; color: #aebdcd; font-size: 13px; }
+  input[type=file] { width: 100%; }
+  input[type=range] { width: 100%; }
+  button {
+    margin-top: 12px; padding: 8px 12px; width: 100%; border: 1px solid #2c7ef8;
+    background: #1c3a5e; color: #d8eaff; border-radius: 6px; cursor: pointer;
+  }
+  button:hover { background: #24507f; }
+  button:disabled { opacity: .5; cursor: default; }
+  .stat { display: flex; justify-content: space-between; font-size: 13px; margin: 4px 0; }
+  .stat b { font-variant-numeric: tabular-nums; color: #fff; }
+  .note { color: #7d8fa3; font-size: 12px; margin-top: 14px; }
+  input[type=number] { width: 100%; background: #0d1218; color: #d8e0e8;
+    border: 1px solid #2c3a4a; border-radius: 4px; padding: 4px 6px; }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 8px; }
+  .grid2 label { margin: 6px 0 2px; font-size: 12px; }
+  .actions { display: flex; gap: 8px; }
+  .actions button { margin-top: 8px; }
+  canvas { width: 100%; height: 100%; display: block; }
+  main { position: relative; }
+  .hud {
+    position: absolute; top: 10px; left: 12px; font-size: 12px; color: #7d90a5;
+    background: #10151bcc; padding: 4px 8px; border-radius: 4px;
+  }
+  .legend {
+    position: absolute; bottom: 12px; left: 12px; font-size: 11px; color: #9db0c4;
+    background: #10151bcc; padding: 6px 10px; border-radius: 4px;
+  }
+  .bar { width: 140px; height: 8px; margin-top: 4px;
+    background: linear-gradient(90deg, #2a6fd8, #39c9a0, #e8c84a, #e85d5d); border-radius: 3px; }
+</style>
+</head>
+<body>
+<aside>
+  <h1>tpt-medical viewer</h1>
+  <div class="tag">zero-cloud surgical planning — WebGL2 + WASM, no dependencies</div>
+
+  <h2>Model</h2>
+  <label for="mesh-file">Load mesh CSV (dicom-to-mesh output)</label>
+  <input type="file" id="mesh-file" accept=".csv,text/csv">
+  <button id="demo">Load synthetic demo mesh</button>
+
+  <h2>Simulation (WASM)</h2>
+  <div class="stat"><span>Engine</span><b id="wasm-status">loading…</b></div>
+  <label for="dicom-files">DICOM series (select all slices)</label>
+  <input type="file" id="dicom-files" multiple accept=".dcm,application/dicom" disabled>
+  <div class="grid2">
+    <div>
+      <label for="hu">Bone threshold (HU)</label>
+      <input type="number" id="hu" value="200" step="10">
+    </div>
+    <div>
+      <label for="load-n">Load (N)</label>
+      <input type="number" id="load-n" value="100" step="10" min="0">
+    </div>
+  </div>
+  <div class="actions">
+    <button id="build-ct" disabled>Mesh from CT</button>
+    <button id="ct-demo" disabled>Synthetic CT demo</button>
+  </div>
+  <button id="solve" disabled>Solve stance load</button>
+  <div class="stat"><span>Max displacement</span><b id="sim-umax">–</b></div>
+  <div class="stat"><span>Peak von Mises</span><b id="sim-smax">–</b></div>
+  <div class="stat"><span>Mean von Mises</span><b id="sim-smean">–</b></div>
+  <div class="stat"><span>CG iterations</span><b id="sim-iters">–</b></div>
+
+  <h2>Stent deployment (WASM)</h2>
+  <div class="grid2">
+    <div><label for="st-exp">Expanded ⌀ (mm)</label>
+      <input type="number" id="st-exp" value="6.0" step="0.1" min="0"></div>
+    <div><label for="st-crimp">Crimped ⌀ (mm)</label>
+      <input type="number" id="st-crimp" value="1.8" step="0.1" min="0"></div>
+    <div><label for="st-crowns">Crowns</label>
+      <input type="number" id="st-crowns" value="12" step="1" min="3"></div>
+    <div><label for="st-k">Stiffness (N/mm)</label>
+      <input type="number" id="st-k" value="0.5" step="0.05" min="0"></div>
+    <div><label for="st-lumen">Lumen ⌀ (mm)</label>
+      <input type="number" id="st-lumen" value="4.6" step="0.1" min="0"></div>
+    <div><label for="st-comp">Compliance (mm/MPa)</label>
+      <input type="number" id="st-comp" value="6.0" step="0.5" min="0"></div>
+    <div><label for="st-p">Pressure (kPa)</label>
+      <input type="number" id="st-p" value="100" step="10" min="0"></div>
+  </div>
+  <button id="deploy" disabled>Deploy stent</button>
+  <div class="stat"><span>Equilibrium ⌀</span><b id="stent-d">–</b></div>
+  <div class="stat"><span>Radial force</span><b id="stent-f">–</b></div>
+  <div class="stat"><span>Contact pressure</span><b id="stent-pc">–</b></div>
+  <div class="stat"><span>Recoil</span><b id="stent-recoil">–</b></div>
+  <div class="stat"><span>Dogboning</span><b id="stent-dogbone">–</b></div>
+
+  <h2>Display</h2>
+  <label>Colour by</label>
+  <select id="mode" style="width:100%">
+    <option value="modulus">Young's modulus</option>
+    <option value="solid">Uniform</option>
+  </select>
+  <label>Point size <span id="ps-val">1.5</span></label>
+  <input type="range" id="ps" min="1" max="6" step="0.5" value="1.5">
+
+  <h2>Statistics</h2>
+  <div class="stat"><span>Nodes</span><b id="st-nodes">–</b></div>
+  <div class="stat"><span>Elements</span><b id="st-elems">–</b></div>
+  <div class="stat"><span>E mean</span><b id="st-emean">–</b></div>
+  <div class="stat"><span>E max</span><b id="st-emax">–</b></div>
+
+  <h2>Privacy</h2>
+  <div class="note">
+    This viewer runs entirely in your browser. Mesh files are parsed and
+    rendered locally; nothing is uploaded. Never load real patient data on a
+    shared machine — and never commit PHI to the repository.
+  </div>
+  <div class="note">
+    Research use only. Not FDA cleared for clinical decision making.
+  </div>
+</aside>
+<main>
+  <canvas id="gl"></canvas>
+  <div class="hud" id="hud">drop a mesh CSV or load the demo</div>
+  <div class="legend">
+    <span id="legend-lo">low</span> … <span id="legend-hi">high</span> E [MPa]
+    <div class="bar"></div>
+  </div>
+</main>
+
+<script>
+"use strict";
+
+// ---------------------------------------------------------------------------
+// Mesh CSV parsing (format: tpt-medical voxel hex mesh v1)
+// ---------------------------------------------------------------------------
+function parseMeshCsv(text) {
+  const nodes = [];
+  const hexes = [];
+  for (const raw of text.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line || line.startsWith("#")) continue;
+    const parts = line.split(",");
+    if (parts[0] === "node" && parts.length >= 5) {
+      nodes.push([+parts[2], +parts[3], +parts[4]]);
+    } else if (parts[0] === "hex" && parts.length >= 12) {
+      hexes.push(parts.slice(2, 10).map(Number).concat([+parts[10], +parts[11]]));
+    }
+  }
+  return { nodes, hexes };
+}
+
+// The mesh CSV gives one hex per voxel; the canonical visual is the voxel
+// corner grid. We reconstruct shared corners from node records.
+function buildCloud(mesh) {
+  // Render each hex as 12 edges from its 8 corner nodes.
+  const edges = [
+    [0,1],[1,2],[2,3],[3,0],
+    [4,5],[5,6],[6,7],[7,4],
+    [0,4],[1,5],[2,6],[3,7],
+  ];
+  const positions = [];
+  const colors = [];
+  const values = [];
+  let eMin = Infinity, eMax = -Infinity;
+  for (const hex of mesh.hexes) {
+    const modulus = hex[8];
+    eMin = Math.min(eMin, modulus);
+    eMax = Math.max(eMax, modulus);
+    for (const [a, b] of edges) {
+      for (const idx of [a, b]) {
+        const p = mesh.nodes[hex[idx]];
+        if (!p) continue;
+        positions.push(p[0], p[1], p[2]);
+        values.push(modulus);
+      }
+    }
+  }
+  return { positions, values, eMin: isFinite(eMin) ? eMin : 0, eMax: isFinite(eMax) ? eMax : 1 };
+}
+
+// ---------------------------------------------------------------------------
+// WebGL2 renderer (points + wireframe, orbit camera, stress colour map)
+// ---------------------------------------------------------------------------
+const canvas = document.getElementById("gl");
+const gl = canvas.getContext("webgl2", { antialias: true });
+if (!gl) {
+  document.getElementById("hud").textContent = "WebGL2 unavailable in this browser";
+  throw new Error("no webgl2");
+}
+
+const VS = `#version 300 es
+in vec3 aPos;
+in float aVal;
+uniform mat4 uMVP;
+uniform vec3 uCenter;
+uniform float uScale;
+uniform float uPointSize;
+out float vVal;
+void main() {
+  vec3 p = (aPos - uCenter) * uScale;
+  gl_Position = uMVP * vec4(p, 1.0);
+  gl_PointSize = uPointSize;
+  vVal = aVal;
+}`;
+
+const FS = `#version 300 es
+precision mediump float;
+in float vVal;
+uniform float uValMin;
+uniform float uValMax;
+uniform int uMode;
+out vec4 outColor;
+vec3 ramp(float t) {
+  // blue -> teal -> yellow -> red
+  if (t < 0.33) return mix(vec3(0.16,0.44,0.85), vec3(0.22,0.79,0.63), t/0.33);
+  if (t < 0.66) return mix(vec3(0.22,0.79,0.63), vec3(0.91,0.78,0.29), (t-0.33)/0.33);
+  return mix(vec3(0.91,0.78,0.29), vec3(0.91,0.36,0.36), (t-0.66)/0.34);
+}
+void main() {
+  float t = clamp((vVal - uValMin) / max(uValMax - uValMin, 1e-6), 0.0, 1.0);
+  vec3 c = uMode == 1 ? vec3(0.62, 0.72, 0.82) : ramp(pow(t, 0.5));
+  outColor = vec4(c, 1.0);
+}`;
+
+function shader(type, src) {
+  const s = gl.createShader(type);
+  gl.shaderSource(s, src);
+  gl.compileShader(s);
+  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) {
+    throw new Error(gl.getShaderInfoLog(s));
+  }
+  return s;
+}
+const prog = gl.createProgram();
+gl.attachShader(prog, shader(gl.VERTEX_SHADER, VS));
+gl.attachShader(prog, shader(gl.FRAGMENT_SHADER, FS));
+gl.linkProgram(prog);
+if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) {
+  throw new Error(gl.getProgramInfoLog(prog));
+}
+gl.useProgram(prog);
+
+const u = {
+  mvp: gl.getUniformLocation(prog, "uMVP"),
+  center: gl.getUniformLocation(prog, "uCenter"),
+  scale: gl.getUniformLocation(prog, "uScale"),
+  pointSize: gl.getUniformLocation(prog, "uPointSize"),
+  valMin: gl.getUniformLocation(prog, "uValMin"),
+  valMax: gl.getUniformLocation(prog, "uValMax"),
+  mode: gl.getUniformLocation(prog, "uMode"),
+};
+
+let scene = null; // { vboPositions, vboValues, count, center, radius, eMin, eMax }
+
+function uploadScene(mesh) {
+  const data = buildCloud(mesh);
+  if (!data.positions.length) return;
+  // bounds
+  const n = data.positions.length / 3;
+  let min = [Infinity, Infinity, Infinity], max = [-Infinity, -Infinity, -Infinity];
+  for (let i = 0; i < n; i++) {
+    for (let a = 0; a < 3; a++) {
+      const v = data.positions[3 * i + a];
+      min[a] = Math.min(min[a], v);
+      max[a] = Math.max(max[a], v);
+    }
+  }
+  const center = [(min[0]+max[0])/2, (min[1]+max[1])/2, (min[2]+max[2])/2];
+  const radius = Math.hypot(max[0]-min[0], max[1]-min[1], max[2]-min[2]) / 2 || 1;
+
+  if (scene) {
+    gl.deleteBuffer(scene.pos);
+    gl.deleteBuffer(scene.val);
+  }
+  const pos = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, pos);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(data.positions), gl.STATIC_DRAW);
+  const val = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, val);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(data.values), gl.STATIC_DRAW);
+
+  const aPos = gl.getAttribLocation(prog, "aPos");
+  const aVal = gl.getAttribLocation(prog, "aVal");
+  gl.bindBuffer(gl.ARRAY_BUFFER, pos);
+  gl.enableVertexAttribArray(aPos);
+  gl.vertexAttribPointer(aPos, 3, gl.FLOAT, false, 0, 0);
+  gl.bindBuffer(gl.ARRAY_BUFFER, val);
+  gl.enableVertexAttribArray(aVal);
+  gl.vertexAttribPointer(aVal, 1, gl.FLOAT, false, 0, 0);
+
+  scene = { pos, val, count: n, center, radius, eMin: data.eMin, eMax: data.eMax, aPos, aVal };
+  document.getElementById("st-nodes").textContent = mesh.nodes.length.toLocaleString();
+  document.getElementById("st-elems").textContent = mesh.hexes.length.toLocaleString();
+  const mods = mesh.hexes.map(h => h[8]);
+  document.getElementById("st-emean").textContent =
+    (mods.reduce((a, b) => a + b, 0) / mods.length).toFixed(0);
+  document.getElementById("st-emax").textContent = Math.max(...mods).toFixed(0);
+  document.getElementById("hud").textContent =
+    `${mesh.hexes.length.toLocaleString()} hex elements — drag to orbit, wheel to zoom`;
+  document.getElementById("legend-lo").textContent = data.eMin.toFixed(0);
+  document.getElementById("legend-hi").textContent = data.eMax.toFixed(0);
+}
+
+// --- camera -----------------------------------------------------------------
+const cam = { yaw: 0.7, pitch: 0.4, dist: 2.6 };
+function mat4Mul(a, b) {
+  const o = new Float32Array(16);
+  for (let c = 0; c < 4; c++) for (let r = 0; r < 4; r++) {
+    o[4*c+r] = a[r]*b[4*c] + a[4+r]*b[4*c+1] + a[8+r]*b[4*c+2] + a[12+r]*b[4*c+3];
+  }
+  return o;
+}
+function viewProj(aspect) {
+  const { yaw, pitch, dist } = cam;
+  const eye = [
+    dist * Math.cos(pitch) * Math.sin(yaw),
+    dist * Math.sin(pitch),
+    dist * Math.cos(pitch) * Math.cos(yaw),
+  ];
+  // look-at
+  const up = [0, 1, 0];
+  let z = eye.map(v => -v);
+  const zl = Math.hypot(...z); z = z.map(v => v / zl);
+  let x = [up[1]*z[2]-up[2]*z[1], up[2]*z[0]-up[0]*z[2], up[0]*z[1]-up[1]*z[0]];
+  const xl = Math.hypot(...x) || 1; x = x.map(v => v / xl);
+  const y = [z[1]*x[2]-z[2]*x[1], z[2]*x[0]-z[0]*x[2], z[0]*x[1]-z[1]*x[0]];
+  const view = new Float32Array([x[0],y[0],z[0],0, x[1],y[1],z[1],0, x[2],y[2],z[2],0,
+    -(x[0]*eye[0]+x[1]*eye[1]+x[2]*eye[2]),
+    -(y[0]*eye[0]+y[1]*eye[1]+y[2]*eye[2]),
+    -(z[0]*eye[0]+z[1]*eye[1]+z[2]*eye[2]), 1]);
+  const f = 1 / Math.tan(0.9 / 2), fn = 1 / 100;
+  const proj = new Float32Array([f/aspect,0,0,0, 0,f,0,0, 0,0,(100+0.1)*fn,-1, 0,0,200*fn,0]);
+  return mat4Mul(proj, view);
+}
+
+let dragging = false, lastX = 0, lastY = 0;
+canvas.addEventListener("pointerdown", e => { dragging = true; lastX = e.clientX; lastY = e.clientY; });
+window.addEventListener("pointerup", () => dragging = false);
+window.addEventListener("pointermove", e => {
+  if (!dragging) return;
+  cam.yaw += (e.clientX - lastX) * 0.01;
+  cam.pitch = Math.max(-1.4, Math.min(1.4, cam.pitch + (e.clientY - lastY) * 0.01));
+  lastX = e.clientX; lastY = e.clientY;
+});
+canvas.addEventListener("wheel", e => {
+  e.preventDefault();
+  cam.dist = Math.max(1.1, Math.min(8, cam.dist * (1 + Math.sign(e.deltaY) * 0.1)));
+}, { passive: false });
+
+function resize() {
+  const dpr = window.devicePixelRatio || 1;
+  const w = canvas.clientWidth * dpr, h = canvas.clientHeight * dpr;
+  if (canvas.width !== w || canvas.height !== h) {
+    canvas.width = w; canvas.height = h;
+  }
+}
+function frame() {
+  resize();
+  gl.viewport(0, 0, canvas.width, canvas.height);
+  gl.clearColor(0.063, 0.082, 0.106, 1);
+  gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+  if (scene) {
+    const aspect = canvas.width / Math.max(canvas.height, 1);
+    gl.uniformMatrix4fv(u.mvp, false, viewProj(aspect));
+    gl.uniform3f(u.center, scene.center[0], scene.center[1], scene.center[2]);
+    gl.uniform1f(u.scale, 1.6 / scene.radius);
+    gl.uniform1f(u.pointSize, parseFloat(document.getElementById("ps").value));
+    const mode = document.getElementById("mode").value === "solid" ? 1 : 0;
+    gl.uniform1i(u.mode, mode);
+    gl.uniform1f(u.valMin, mode ? 0 : scene.eMin);
+    gl.uniform1f(u.valMax, mode ? 1 : scene.eMax);
+    gl.drawArrays(gl.LINES, 0, scene.count);
+  }
+  requestAnimationFrame(frame);
+}
+gl.enable(gl.DEPTH_TEST);
+frame();
+
+// --- data plumbing -----------------------------------------------------------
+let pipeline = null; // WasmMeshPipeline | null — set by the CT path
+
+function loadCsvText(text, label) {
+  try {
+    const mesh = parseMeshCsv(text);
+    if (!mesh.hexes.length) throw new Error("no hex records found");
+    pipeline = null;
+    updateSolveState();
+    uploadScene(mesh);
+  } catch (err) {
+    document.getElementById("hud").textContent = "parse error: " + err.message;
+  }
+}
+
+document.getElementById("mesh-file").addEventListener("change", async e => {
+  const file = e.target.files[0];
+  if (file) loadCsvText(await file.text(), file.name);
+});
+document.getElementById("ps").addEventListener("input", e =>
+  document.getElementById("ps-val").textContent = e.target.value);
+
+// Demo mesh generated by `cargo run -p tpt-med-examples --bin gen-synthetic-ct`
+// followed by `dicom-to-mesh`; fetched from the repository tree when served
+// from the workspace root.
+document.getElementById("demo").addEventListener("click", async () => {
+  const paths = ["../../test-data/meshes/synthetic_femur.csv",
+                 "../test-data/meshes/synthetic_femur.csv",
+                 "synthetic_femur.csv"];
+  for (const p of paths) {
+    try {
+      const r = await fetch(p);
+      if (r.ok) { loadCsvText(await r.text(), p); return; }
+    } catch (_) { /* try next */ }
+  }
+  document.getElementById("hud").textContent =
+    "demo mesh not found — run dicom-to-mesh and load the CSV manually";
+});
+
+// --- WASM engine: CT → mesh → FEM solve + stent deployment -------------------
+// The glue is produced by `scripts/build-web.ps1` (or `.sh`) into `web/pkg/`
+// and imported dynamically so the viewer still works standalone from CSV
+// uploads before the engine is built.
+let wasm = null;
+
+const $ = id => document.getElementById(id);
+const nextPaint = () => new Promise(r => requestAnimationFrame(() => setTimeout(r, 0)));
+const setHud = msg => { $("hud").textContent = msg; };
+
+function updateSolveState() {
+  $("solve").disabled = !(wasm && pipeline);
+}
+
+async function initWasm() {
+  try {
+    const mod = await import("../pkg/tpt_med_wasm.js");
+    await mod.default();
+    wasm = mod;
+    $("wasm-status").textContent = "ready";
+    $("wasm-status").style.color = "#39c9a0";
+    $("dicom-files").disabled = false;
+    $("build-ct").disabled = false;
+    $("ct-demo").disabled = false;
+    $("deploy").disabled = false;
+    updateSolveState();
+  } catch (err) {
+    $("wasm-status").textContent = "not built";
+    $("wasm-status").style.color = "#e8c84a";
+    console.warn("WASM glue missing — run scripts/build-web.ps1", err);
+  }
+}
+
+// DICOM framing: [u32-le length][file bytes] repeated (see split_framed).
+function frameDicom(buffers) {
+  const parts = [];
+  for (const buf of buffers) {
+    const header = new Uint8Array(4);
+    new DataView(header.buffer).setUint32(0, buf.byteLength, true);
+    parts.push(header, buf instanceof Uint8Array ? buf : new Uint8Array(buf));
+  }
+  const total = parts.reduce((n, p) => n + p.length, 0);
+  const out = new Uint8Array(total);
+  let off = 0;
+  for (const p of parts) { out.set(p, off); off += p.length; }
+  return out;
+}
+
+// Rebuilds the viewer's {nodes, hexes} structure from pipeline buffers.
+function pipelineToMesh(p) {
+  const pos = p.node_positions();
+  const conn = p.element_nodes();
+  const mods = p.element_moduli();
+  const nodes = [];
+  for (let i = 0; i < pos.length; i += 3) nodes.push([pos[i], pos[i + 1], pos[i + 2]]);
+  const hexes = [];
+  for (let e = 0; e < mods.length; e++) {
+    hexes.push(Array.from(conn.subarray(e * 8, e * 8 + 8)).concat([mods[e]]));
+  }
+  return { nodes, hexes };
+}
+
+async function buildFromBuffers(buffers) {
+  if (!wasm || !buffers.length) return;
+  setHud(`segmenting & meshing ${buffers.length} slice(s)…`);
+  await nextPaint();
+  const threshold = parseFloat($("hu").value) || 200;
+  const t0 = performance.now();
+  try {
+    pipeline = new wasm.WasmMeshPipeline(frameDicom(buffers), threshold);
+  } catch (err) {
+    pipeline = null;
+    updateSolveState();
+    setHud("pipeline error: " + err);
+    return;
+  }
+  uploadScene(pipelineToMesh(pipeline));
+  updateSolveState();
+  setHud(`mesh built in ${(performance.now() - t0).toFixed(0)} ms — ` +
+         `${pipeline.element_count.toLocaleString()} elements, ` +
+         `E max ${pipeline.max_modulus.toFixed(0)} MPa — press Solve`);
+}
+
+async function readFile(file) { return file.arrayBuffer(); }
+
+async function loadSelectedDicom(input) {
+  const files = Array.from(input.files || []);
+  if (!files.length) return;
+  setHud(`reading ${files.length} file(s)…`);
+  await nextPaint();
+  await buildFromBuffers(await Promise.all(files.map(readFile)));
+}
+
+$("dicom-files").addEventListener("change", e => loadSelectedDicom(e.target));
+$("build-ct").addEventListener("click", () => loadSelectedDicom($("dicom-files")));
+
+// Synthetic CT demo: contiguous slice_0001.dcm.. under test-data/dicom
+// (manifest.json gives an exact list when present — no probe 404s).
+$("ct-demo").addEventListener("click", async () => {
+  const bases = ["../../test-data/dicom/synthetic_ct",
+                 "../test-data/dicom/synthetic_ct",
+                 "test-data/dicom/synthetic_ct"];
+  setHud("locating synthetic CT…");
+  let base = null, names = null;
+  for (const b of bases) {
+    try {
+      const m = await fetch(b + "/manifest.json");
+      if (m.ok) {
+        base = b;
+        names = (await m.json()).slices;
+        break;
+      }
+      if ((await fetch(b + "/slice_0001.dcm")).ok) { base = b; break; }
+    } catch (_) { /* try next */ }
+  }
+  if (!base) {
+    setHud("synthetic CT not found — serve from the repository root");
+    return;
+  }
+  const buffers = [];
+  if (names) {
+    for (let i = 0; i < names.length; i++) {
+      const r = await fetch(`${base}/${names[i]}`);
+      if (!r.ok) break;
+      buffers.push(await r.arrayBuffer());
+      if (i % 8 === 7) {
+        setHud(`fetching slices ${i + 1}/${names.length}…`);
+        await nextPaint();
+      }
+    }
+  } else {
+    for (let i = 1; i <= 256; i++) {
+      const name = `slice_${String(i).padStart(4, "0")}.dcm`;
+      const r = await fetch(`${base}/${name}`);
+      if (!r.ok) break;
+      buffers.push(await r.arrayBuffer());
+      if (i % 8 === 0) {
+        setHud(`fetching slices ${i}…`);
+        await nextPaint();
+      }
+    }
+  }
+  if (!buffers.length) {
+    setHud("synthetic CT not found — serve from the repository root");
+    return;
+  }
+  await buildFromBuffers(buffers);
+});
+
+$("solve").addEventListener("click", async () => {
+  if (!wasm || !pipeline) return;
+  const load = parseFloat($("load-n").value) || 0;
+  setHud(`solving stance load (${load} N)…`);
+  await nextPaint();
+  const t0 = performance.now();
+  try {
+    const r = wasm.wasm_solve_stance_load(pipeline, load);
+    $("sim-umax").textContent = r.max_displacement.toFixed(4) + " mm";
+    $("sim-smax").textContent = r.max_von_mises.toFixed(3) + " MPa";
+    $("sim-smean").textContent = r.mean_von_mises.toFixed(3) + " MPa";
+    $("sim-iters").textContent = r.iterations.toLocaleString();
+    setHud(`solved in ${(performance.now() - t0).toFixed(0)} ms — peak ` +
+           `${r.max_von_mises.toFixed(2)} MPa von Mises`);
+  } catch (err) {
+    setHud("solve error: " + err);
+  }
+});
+
+$("deploy").addEventListener("click", async () => {
+  if (!wasm) return;
+  const num = (id, fallback) => parseFloat($(id).value) || fallback;
+  setHud("deploying stent…");
+  await nextPaint();
+  try {
+    const r = wasm.wasm_deploy_stent(
+      num("st-exp", 6.0), num("st-crimp", 1.8),
+      Math.max(3, num("st-crowns", 12) | 0), num("st-k", 0.5),
+      num("st-lumen", 4.6), num("st-p", 100) / 1000.0,
+      num("st-comp", 6.0),
+    );
+    $("stent-d").textContent = r.diameter.toFixed(3) + " mm";
+    $("stent-f").textContent = r.radial_force.toFixed(2) + " N";
+    $("stent-pc").textContent = (r.contact_pressure * 1000).toFixed(1) + " kPa";
+    $("stent-recoil").textContent = (100 * r.recoil).toFixed(2) + " %";
+    $("stent-dogbone").textContent = (100 * r.dogboning).toFixed(2) + " %";
+    setHud(`stent deployed — D_eq ${r.diameter.toFixed(2)} mm, ` +
+           `F_rad ${r.radial_force.toFixed(2)} N`);
+  } catch (err) {
+    setHud("deploy error: " + err);
+  }
+});
+
+initWasm();
+</script>
+</body>
+</html>

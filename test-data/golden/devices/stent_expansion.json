@@ -1,0 +1,42 @@
+{
+  "$schema": "golden/v1",
+  "name": "stent_expansion",
+  "description": "Nitinol stent deployment reference: superelastic loop closure and radial-force/deployment metrics from the stent-deployment example.",
+  "provenance": "synthetic-model",
+  "model": {
+    "material": {
+      "type": "simplified Lagoudas superelastic (1D)",
+      "parameters": {
+        "e_austenite_mpa": 55000,
+        "e_martensite_mpa": 28000,
+        "transformation_strain": 0.05,
+        "sigma_ms_mpa": 480,
+        "sigma_mf_mpa": 560,
+        "sigma_as_mpa": 380,
+        "sigma_af_mpa": 260
+      }
+    },
+    "stent": {
+      "expanded_diameter_mm": 6.0,
+      "crimped_diameter_mm": 1.8,
+      "n_crowns": 12,
+      "crown_stiffness_n_per_mm": 0.5
+    },
+    "vessel": "compliant tube law D = 4.6 + 6.0 p (mm at MPa)"
+  },
+  "expected": {
+    "metrics": [
+      { "name": "loop_closure", "assert": "stress at zero strain after a full cycle is 0 (superelastic recovery)" },
+      { "name": "hysteresis", "assert": "unloading stress < loading stress at mid strain" },
+      { "name": "peak_strut_stress_mpa", "value": 1115.0, "tolerance_percent": 1, "note": "8% cycle: sigma_mf + E_m (0.08 - sigma_mf/E_a - eps_L)" },
+      { "name": "radial_force_at_0_10mpa_n", "value": 4.80, "tolerance_percent": 5 },
+      { "name": "contact_pressure_mpa", "value": 0.0565, "tolerance_percent": 5 },
+      { "name": "acute_recoil_fraction", "value": 0.007, "tolerance_percent": 10 },
+      { "name": "monotone_oversizing", "assert": "radial force increases with nominal diameter over a fixed lumen" }
+    ]
+  },
+  "notes": [
+    "Level-1 fidelity (see rfcs/0004): uniform ring, Winkler vessel, no taper.",
+    "Radial-stiffness vs ASTM F2394 published data lands with Level-3 3D contact FEM."
+  ]
+}

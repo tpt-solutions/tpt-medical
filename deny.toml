@@ -1,0 +1,42 @@
+# cargo-deny configuration for tpt-medical
+#
+# Enforces the strict permissive-only license chain required for MedTech
+# SaaS integration. Copyleft and unlicensed crates are hard errors.
+
+[licenses]
+version = 2
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "Unicode-3.0",
+    "CDLA-Permissive-2.0",
+]
+copyleft = "deny"
+allow-osi-fsf-free = "neither"
+default = "deny"
+unlicensed = "deny"
+
+[[licenses.clarify]]
+name = "unicode-ident"
+version = "*"
+expression = "(MIT OR Apache-2.0) AND Unicode-DFS-2016"
+license-files = [{ path = "LICENSE-UNICODE", hash = 0x76454e7e }]
+
+[bans]
+multiple-versions = "warn"
+wildcards = "warn"
+highlight = "all"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+
+[advisories]
+version = 2
+yanked = "warn"

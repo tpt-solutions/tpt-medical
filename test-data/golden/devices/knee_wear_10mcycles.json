@@ -1,0 +1,26 @@
+{
+  "$schema": "golden/v1",
+  "name": "knee_wear_10mcycles",
+  "description": "Archard / Cross-Land wear reference at 10 million gait cycles (ISO 14879 simulator scale).",
+  "provenance": "analytical",
+  "model": {
+    "bearing": { "contact_area_mm2": 800.0, "contact_pressure_mpa": 5.0, "sliding_distance_mm_per_cycle": 15.0 },
+    "laws": {
+      "archard_k_mm3_per_nm": 1.0e-6,
+      "cross_land": { "k_mm3_per_nm": 1.0e-6, "pressure_threshold_mpa": 4.0 }
+    },
+    "cycles": 10000000
+  },
+  "expected": {
+    "metrics": [
+      { "name": "archard_wear_mm3_per_megacycle", "value": 37.5, "tolerance_percent": 1, "note": "k * F * s = 1e-6 * 4000 N * 0.015 m * 1e6 cycles" },
+      { "name": "archard_10mc_total_mm3", "value": 375.0, "tolerance_percent": 1 },
+      { "name": "cross_land_below_threshold", "value": 0.0, "note": "p = 5 MPa > 4 MPa threshold: active here; zero wear asserted at 3 MPa" },
+      { "name": "iso14879_screen", "assert": "37.5 mm3/Mc exceeds the 30 mm3/Mc screening limit -> flagged" }
+    ]
+  },
+  "notes": [
+    "Values are analytically exact for the implemented laws; the 10-100 mm3/Mc plausibility band is asserted against published UHMWPE simulator data (literature-band provenance).",
+    "Cross-Land pressure-threshold behaviour: zero wear strictly below p0."
+  ]
+}
