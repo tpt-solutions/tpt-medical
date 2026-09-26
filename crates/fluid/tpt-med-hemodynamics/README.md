@@ -13,7 +13,7 @@ wall shear stress (WSS) and oscillatory shear index (OSI) post-processing.
 | **Class** | Screening-grade, laminar only |
 | **License** | MIT OR Apache-2.0 |
 | **MSRV** | 1.82 |
-| **Dependencies** | [`tpt-med-geometry`](../../core/tpt-med-geometry) |
+| **Dependencies** | [`tpt-med-geometry`](../../core/tpt-med-geometry), [`tpt-med-meshing`](../../imaging/tpt-med-meshing), [`tpt-med-units`](../../core/tpt-med-units) |
 | **Changelog** | [CHANGELOG.md](CHANGELOG.md) |
 
 ---
@@ -29,8 +29,8 @@ patient's CT. This crate does it on the voxel grid you already have.
 **Be clear about what this is.** It is a *screening-grade* solver:
 
 - Staggered-grid (MAC) projection method: explicit advection and viscous
-  sub-step, then a pressure-Poisson projection enforcing incompressibility
-  inside a voxel fluid mask.
+  sub-step, then an SOR (successive over-relaxation) pressure-Poisson
+  projection enforcing incompressibility inside a voxel fluid mask.
 - Stair-step walls — no body-fitted mesh, no boundary-layer refinement.
 - **Laminar only.** No turbulence model. This is the appropriate regime for
   most arterial screening (Re < 2000) and is *not* appropriate for aortic
@@ -45,7 +45,9 @@ browser, in seconds, without a licence.
 ## Features
 
 - **Projection-method Navier–Stokes** on a MAC grid: convection (optional),
-  viscous diffusion, and a Jacobi-swept pressure Poisson projection.
+  viscous diffusion, and an SOR (Gauss–Seidel with over-relaxation, ω = 1.9)
+  pressure Poisson projection — an order of magnitude faster to converge than
+  plain Jacobi on this grid.
 - **Blood rheology** — `Newtonian`, `CarreauYasuda` (shear-thinning) and
   `Casson` (yield-stress), with `viscosity(shear_rate)` and under-relaxation
   for stability.
@@ -135,6 +137,20 @@ fn main() {
 | `FluidDomain` | `dims`, `spacing`, `mask`, `flow_axis`, `inlet_low` |
 | `FluidDomain::from_mask(dims, spacing, mask, flow_axis, inlet_low)` | Real lumen geometry from a segmentation |
 | `FluidDomain::cylinder(n_axial, n_radius, radius_cells, spacing, flow_axis)` | Canonical verification geometry |
+| `FluidDomain::{index, is_fluid, fluid_stats}` | Mask accessors; `(fluid_count, volume)` |
+| `SolverConfig` | `dt`, `poisson_iterations`, `include_convection`, `viscosity_relaxation`, `density` |
+| `HemodynamicsSolver::new(domain, blood, inlet_velocity, config)` | Construct over a domain |
+| `HemodynamicsSolver::apply_boundary()` | Impose inlet velocity, outlet pressure, no-slip walls |
+| `HemodynamicsSolver::step() -> f64` | One time step; returns the max velocity change |
+| `HemodynamicsSolver::run_steady(max_steps, tolerance) -> SteadyStats` | March to steady state |
+| `HemodynamicsSolver::stats(steps) -> SteadyStats` | Current scalars without marching |
+| `HemodynamicsSolver::axial_velocity_profile(i) -> Vec<f64>` | Velocity along an axial station — for theory comparison |
+| `SteadyStats` | `steps`, `max_velocity`, `inlet_flow`, `outlet_flow`, `mean_pressure_inlet`, `mean_pressure_outlet`, `pressure_drop` |
+| `WssField` | `positions: Vec<Vec3>`, `tractions: Vec<Vec3>` (Pa) |
+| `WssField::{mean_magnitude, max_magnitude}` | WSS statistics |
+| `extract_wss(&HemodynamicsSolver) -> WssField` | Wall traction on wall-adjacent faces |
+| `OsiAccumulator` | `sample(traction, dt)` per step; `osi()` returns the index |
+| `tpt_med_geometry::Vec3` | Wall sample positions and traction vectors |
 
 ## Verification
 
@@ -194,18 +210,3 @@ Licensed under either of [MIT](../../../LICENSE-MIT) or
 Research and development use only. Not cleared or approved by the FDA or any
 other regulatory body for clinical diagnostic or treatment use. Not a
 diagnostic device; hemodynamics output is for research screening.
-
-| `FluidDomain::{index, is_fluid, fluid_stats}` | Mask accessors; `(fluid_count, volume)` |
-| `SolverConfig` | `dt`, `poisson_iterations`, `include_convection`, `viscosity_relaxation`, `density` |
-| `HemodynamicsSolver::new(domain, blood, inlet_velocity, config)` | Construct over a domain |
-| `HemodynamicsSolver::apply_boundary()` | Impose inlet velocity, outlet pressure, no-slip walls |
-| `HemodynamicsSolver::step() -> f64` | One time step; returns the max velocity change |
-| `HemodynamicsSolver::run_steady(max_steps, tolerance) -> SteadyStats` | March to steady state |
-| `HemodynamicsSolver::stats(steps) -> SteadyStats` | Current scalars without marching |
-| `HemodynamicsSolver::axial_velocity_profile(i) -> Vec<f64>` | Velocity along an axial station — for theory comparison |
-| `SteadyStats` | `steps`, `max_velocity`, `inlet_flow`, `outlet_flow`, `mean_pressure_inlet`, `mean_pressure_outlet`, `pressure_drop` |
-| `WssField` | `positions: Vec<Vec3>`, `tractions: Vec<Vec3>` (Pa) |
-| `WssField::{mean_magnitude, max_magnitude}` | WSS statistics |
-| `extract_wss(&HemodynamicsSolver) -> WssField` | Wall traction on wall-adjacent faces |
-| `OsiAccumulator` | `sample(traction, dt)` per step; `osi()` returns the index |
-| `tpt_med_geometry::Vec3` | Wall sample positions and traction vectors |

@@ -12,7 +12,7 @@ gait-cycle extrapolation, for ISO 14879 / ASTM F2028-style screening.
 | **Status** | Alpha, `0.1.0` |
 | **License** | MIT OR Apache-2.0 |
 | **MSRV** | 1.82 |
-| **Dependencies** | none (leaf within `devices`) |
+| **Dependencies** | [`tpt-med-units`](../../core/tpt-med-units) |
 | **Changelog** | [CHANGELOG.md](CHANGELOG.md) |
 
 ---
@@ -51,6 +51,14 @@ black box.
 - **`WearModel { law, gait_cycles }`** — law plus the number of cycles to
   simulate or extrapolate to.
 - **Multi-zone input** — `simulate_wear` takes parallel arrays of per-zone
+  contact pressures and per-cycle sliding distances, so a real bearing with a
+  non-uniform contact pattern is representable.
+- **`WearResult`** — `volumetric_wear` (mm³), `linear_wear` (mm, mean depth
+  over the bearing area), and `wear_per_megacycle` (mm³/Mc), which is the
+  unit ISO 14879 expresses limits in.
+- **`exceeds_iso14879_screen`** — a direct comparison against a caller-supplied
+  limit, so a screening verdict is one call rather than a hand calculation.
+- No allocation, trivially embeddable in a parameter sweep.
 
 ## Conventions
 
@@ -174,12 +182,3 @@ Licensed under either of [MIT](../../../LICENSE-MIT) or
 Research and development use only. Not cleared or approved by the FDA or any
 other regulatory body for clinical diagnostic or treatment use. Not a
 substitute for ASTM F2028 or ISO 14879 standard testing.
-
-  contact pressures and per-cycle sliding distances, so a real bearing with a
-  non-uniform contact pattern is representable.
-- **`WearResult`** — `volumetric_wear` (mm³), `linear_wear` (mm, mean depth
-  over the bearing area), and `wear_per_megacycle` (mm³/Mc), which is the
-  unit ISO 14879 expresses limits in.
-- **`exceeds_iso14879_screen`** — a direct comparison against a caller-supplied
-  limit, so a screening verdict is one call rather than a hand calculation.
-- No dependencies, no allocation, trivially embeddable in a parameter sweep.

@@ -55,6 +55,16 @@ is left to the domain crates that actually know the physics).
 | `Density` | g/cm³ | `from_gcm3` / `to_gcm3` | — |
 | `Time` | second (`s`) | `from_s` / `to_s` | `from_ms`/`to_ms`, `from_min` |
 | `Angle` | radian (`rad`) | `from_rad` / `to_rad` | — |
+| `Viscosity` | Pa·s | `from_pas` / `to_pas` | `from_cp`/`to_cp` |
+| `Velocity` | mm/s | `from_mms` / `to_mms` | — |
+| `Modulus` | megapascal (`MPa`) | `from_mpa` / `to_mpa` | — |
+| `FlowRate` | mm³/s | `from_mm3s` / `to_mm3s` | `from_ml_per_min`/`to_ml_per_min` |
+
+> **Note on `Modulus` vs `Pressure`.** Both are megapascals but they are
+> distinct types on purpose. A Young's modulus and a stress are physically
+> different quantities, and conflating them is exactly the bug this crate
+> exists to prevent. Convert explicitly with `Modulus::new(p.to_mpa())` if you
+> truly mean the same number.
 
 ## Usage
 
@@ -174,14 +184,3 @@ Licensed under either of [MIT](../../../LICENSE-MIT) or
 
 Research and development use only. Not cleared or approved by the FDA or any
 other regulatory body for clinical diagnostic or treatment use.
-
-| `Viscosity` | Pa·s | `from_pas` / `to_pas` | `from_cp`/`to_cp` |
-| `Velocity` | mm/s | `from_mms` / `to_mms` | — |
-| `Modulus` | megapascal (`MPa`) | `from_mpa` / `to_mpa` | — |
-| `FlowRate` | mm³/s | `from_mm3s` / `to_mm3s` | `from_ml_per_min`/`to_ml_per_min` |
-
-> **Note on `Modulus` vs `Pressure`.** Both are megapascals but they are
-> distinct types on purpose. A Young's modulus and a stress are physically
-> different quantities, and conflating them is exactly the bug this crate
-> exists to prevent. Convert explicitly with `Modulus::new(p.to_mpa())` if you
-> truly mean the same number.

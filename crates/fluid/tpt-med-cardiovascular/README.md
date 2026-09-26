@@ -45,7 +45,7 @@ without a performance argument.
 - **Analytic quantities** — `steady_state_pressure(flow)` and `time_constant()`,
   so a boundary condition can be sanity-checked without integrating anything.
 - **`FractionalFlowReserve`** — `calculate(p_distal, p_aortic)` and
-  `is_ischemic(ffr)` against the ≤ 0.80 threshold.
+  `is_ischemic(ffr)` against the < 0.80 threshold.
 - **`FlowWaveform`** — `flow(t)` for the carotid and coronary beds
   (`carotid_default`, `coronary_default`), which drive pulsatile CFD runs.
 
@@ -96,13 +96,13 @@ fn main() {
 use tpt_med_cardiovascular::FractionalFlowReserve;
 
 fn main() {
-    // 80% stenosis: 100 -> 20 mmHg across the lesion.
-    let ffr = FractionalFlowReserve::calculate(0.0266, 0.1333); // 20 / 75 mmHg
-    assert!((ffr - 0.8).abs() < 0.01);
+    // Mild stenosis: 100 -> 85 mmHg across the lesion (not flow-limiting).
+    let ffr = FractionalFlowReserve::calculate(0.1133, 0.1333); // 85 / 100 mmHg
+    assert!((ffr - 0.85).abs() < 0.01);
     assert!(!FractionalFlowReserve::is_ischemic(ffr));
 
     // Severe lesion.
-    let severe = FractionalFlowReserve::calculate(0.0400, 0.1333); // 30 / 100 mmHg
+    let severe = FractionalFlowReserve::calculate(0.0867, 0.1333); // 65 / 100 mmHg
     assert!(FractionalFlowReserve::is_ischemic(severe));
 }
 ```
@@ -119,7 +119,7 @@ fn main() {
 | `::step_rk4(p, flow, dt) -> f64` | Explicit RK4 step — the reference integrator |
 | `::simulate(p0, dt, steps, flow) -> Vec<f64>` | Semi-implicit integration; the `flow` closure supplies `Q(t)` |
 | `FractionalFlowReserve::calculate(p_distal, p_aortic) -> f64` | The pressure ratio |
-| `FractionalFlowReserve::is_ischemic(ffr) -> bool` | `ffr <= 0.80` |
+| `FractionalFlowReserve::is_ischemic(ffr) -> bool` | `ffr < 0.80` |
 | `FlowWaveform::flow(t) -> f64` | Instantaneous flow (mm³/s) at time `t` |
 | `FlowWaveform::carotid_default()` | Carotid-bed waveform |
 | `FlowWaveform::coronary_default()` | Coronary-bed waveform |
@@ -139,7 +139,7 @@ asserted:
   exactly, element by element, which is what keeps the two models from
   drifting.
 - **FFR boundary:** the ischaemia classifier is tested *at* 0.80 (asserted
-  ischaemic — the threshold is inclusive), just above, and just below.
+  non-ischaemic — the threshold is exclusive), just above, and just below.
   An off-by-one here is a clinical misclassification.
 - **FFR degeneracies:** zero aortic pressure does not produce `NaN` or a
   panic, and FFR > 1 (possible with measurement noise) is reported rather
@@ -193,7 +193,7 @@ must not be used for diagnosis or treatment decisions.
 - FFR is the **dimensionless pressure ratio** `p_distal / p_aortic`, with
   distal pressure taken *after* the stenosis and aortic pressure proximal to
   it.
-- Ischaemia threshold: **FFR ≤ 0.80** is the accepted clinical cut-off for
+- Ischaemia threshold: **FFR < 0.80** is the accepted clinical cut-off for
   physiologically significant stenosis.
 - Waveforms are per cardiac cycle; `flow(t)` expects `t` in the same units as
   the cycle length used to build the waveform.

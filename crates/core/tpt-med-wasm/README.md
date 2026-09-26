@@ -138,6 +138,22 @@ try {
   console.log(stress.max_von_mises, stress.mean_von_mises,
               stress.max_displacement, stress.iterations);
 
+  // 4. Stent deployment into a compliant vessel.
+  const stent = wasm_deploy_stent(
+    4.0,    // expanded diameter (mm)
+    1.2,    // crimped diameter (mm)
+    8,      // crowns
+    0.9,    // crown stiffness (N/mm)
+    3.6,    // lumen diameter (mm)
+    0.013,  // intraluminal pressure (MPa)
+    0.35,   // vessel compliance (mm/MPa)
+  );
+  console.log(stent.diameter, stent.radial_force,
+              stent.contact_pressure, stent.recoil, stent.dogboning);
+} catch (e) {
+  console.error("pipeline failed", e); // DICOM/solve errors arrive as JS values
+}
+```
 
 ## API Overview
 
@@ -220,20 +236,3 @@ Licensed under either of [MIT](../../../LICENSE-MIT) or
 
 Research and development use only. Not cleared or approved by the FDA or any
 other regulatory body for clinical diagnostic or treatment use.
-
-  // 4. Stent deployment into a compliant vessel.
-  const stent = wasm_deploy_stent(
-    4.0,    // expanded diameter (mm)
-    1.2,    // crimped diameter (mm)
-    8,      // crowns
-    0.9,    // crown stiffness (N/mm)
-    3.6,    // lumen diameter (mm)
-    0.013,  // intraluminal pressure (MPa)
-    0.35,   // vessel compliance (mm/MPa)
-  );
-  console.log(stent.diameter, stent.radial_force,
-              stent.contact_pressure, stent.recoil, stent.dogboning);
-} catch (e) {
-  console.error("pipeline failed", e); // DICOM/solve errors arrive as JS values
-}
-```

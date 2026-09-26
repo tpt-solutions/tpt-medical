@@ -9,7 +9,7 @@ authors.workspace = true
 repository.workspace = true
 readme = "README.md"
 documentation = "https://docs.rs/tpt-med-core"
-keywords = ["patient-model", "anatomy", "dicom", "hipaa", "medical"]
+keywords = ["patient-model", "anatomy", "hipaa", "medical"]
 categories = ["science", "data-structures"]
 
 [dependencies]

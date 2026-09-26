@@ -108,6 +108,9 @@ fn main() {
 
     // ... and an under-stressed (stress-shielded) region loses bone.
     let shielded = model.simulate_days(start, 0.001, 365);
+    assert!(shielded.to_gcm3() < start.to_gcm3());
+}
+```
 
 ## API Overview
 
@@ -156,6 +159,10 @@ fn main() {
   solved strain energy density field is a caller-side loop.
 - No explicit disuse or resorption-deadline model; the lazy zone is the only
   memory.
+- Default parameters are **Frost-style mechanostat screening values**:
+  reference SED stimulus ≈0.004 mJ/mm³ with a ±35 % lazy zone
+  `(0.0026, 0.0054)`, apposition 0.003 and resorption 0.002 g/cm³/day.
+  These are *starting points for screening, not patient-calibrated values*.
 
 ## Related Crates
 
@@ -180,12 +187,3 @@ Licensed under either of [MIT](../../../LICENSE-MIT) or
 
 Research and development use only. Not cleared or approved by the FDA or any
 other regulatory body for clinical diagnostic or treatment use.
-
-    assert!(shielded.to_gcm3() < start.to_gcm3());
-}
-```
-
-- Default parameters are **Frost-style mechanostat screening values**:
-  reference SED stimulus ≈0.004 mJ/mm³ with a ±35 % lazy zone
-  `(0.0026, 0.0054)`, apposition 0.003 and resorption 0.002 g/cm³/day.
-  These are *starting points for screening, not patient-calibrated values*.

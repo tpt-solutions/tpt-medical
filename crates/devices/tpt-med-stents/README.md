@@ -14,7 +14,7 @@ ASTM F2394 / F2079 metric family.
 | **Scope** | RFC 0004 — Nitinol superelasticity |
 | **License** | MIT OR Apache-2.0 |
 | **MSRV** | 1.82 |
-| **Dependencies** | [`tpt-med-units`](../../core/tpt-med-units) |
+| **Dependencies** | [`tpt-med-geometry`](../../core/tpt-med-geometry), [`tpt-med-units`](../../core/tpt-med-units) |
 | **Changelog** | [CHANGELOG.md](CHANGELOG.md) |
 
 ---
@@ -35,9 +35,11 @@ This crate implements the physics at two levels:
    austenite at low strain, stress-induced martensite between `σ_ms` and `σ_mf`
    with a cosine transformation-hardening interface, elastic unloading, and
    reverse transformation between `σ_as` and `σ_af`.
-2. **A stent ring deployment model** — `N` radial crown springs with that
-   material, crimping to store transformation strain, balloon expansion driving
-   the ring against an artery modelled as a pressure–diameter tube law.
+2. **A stent ring deployment model** — `N` radial crown springs, balloon
+   expansion driving the ring against an artery modelled as a
+   pressure–diameter tube law, with acute recoil approximated from the
+   austenite/martensite modulus ratio rather than by driving the ring through
+   the full hysteretic material model above.
 
 **Be clear about the fidelity level.** This is a Level-1 ring model. It
 computes the right *metrics* with the right *trends*; it is not a 3D
@@ -190,11 +192,18 @@ fn main() {
   multi-axial transformation, bending stiffness, or the Bauschinger effect.
   A 3D superelastic FEM formulation is the `tpt-fem-hyperelastic` upgrade
   path (RFC 0004).
-- **No fatigue or wire-t Fracture prediction** — cyclic degradation of
+- **No fatigue or wire-fracture prediction** — cyclic degradation of
   `ε_L` over 10⁶ cycles is not modelled, so this cannot be used for
   accelerated-dilation life claims.
 - **No vessel wall compliance beyond the supplied diameter law**, and no
   coupling back to a `tpt-med-hemodynamics` flow solution in the same solve.
+- **Superelastic hysteresis and deployment are not connected.**
+  `simulate_deployment` does not call `SuperelasticState`/`strain_to_stress`;
+  it hardcodes `free_diameter = expanded_diameter` and computes acute recoil
+  from a fixed empirical fraction of
+  `e_austenite / (e_austenite + e_martensite) * 0.08`, not from the full
+  hysteretic stress–strain path. The plateau-branch selection is folded into
+  the crown stiffness rather than actually modelled during deployment.
 
 ## Related Crates
 
@@ -221,19 +230,3 @@ Research and development use only. Not cleared or approved by the FDA or any
 other regulatory body for clinical diagnostic or treatment use. Deployment
 metrics computed here are research estimates and are not a substitute for
 ASTM F2394/F2079 bench testing.
-
-
-An oversized stent in a large vessel produces **no contact** and therefore zero
-radial force — asserted in the test suite, because silently returning a
-positive force for a stent that never touches the artery is the worst possible
-failure mode for this calculation.
-
-
-- **`strain_to_stress(strain, &NitinolParams)`** — path-dependent: the same
-  strain gives a different stress depending on the current branch.
-- **`StentModel`** — expanded diameter, crimped diameter, crown count, and
-  per-crown radial stiffness.
-- **`simulate_deployment`** — solves for radial equilibrium given a vessel
-  pressure–diameter law and an intraluminal `Pressure`.
-- **`DeploymentResult`** — equilibrium `diameter`, `radial_force`,
-  `contact_pressure`, acute `recoil` fraction, and `dogboning`.

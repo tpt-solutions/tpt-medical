@@ -14,7 +14,7 @@ conjugate gradient, and von Mises post-processing.
 | **Scope** | Linear (small-strain) isotropic elasticity |
 | **License** | MIT OR Apache-2.0 |
 | **MSRV** | 1.82 |
-| **Dependencies** | [`tpt-med-meshing`](../../imaging/tpt-med-meshing), [`tpt-med-geometry`](../../core/tpt-med-geometry) |
+| **Dependencies** | [`tpt-med-meshing`](../../imaging/tpt-med-meshing), [`tpt-med-geometry`](../../core/tpt-med-geometry), [`tpt-med-units`](../../core/tpt-med-units) |
 | **Changelog** | [CHANGELOG.md](CHANGELOG.md) |
 
 ---
@@ -53,9 +53,10 @@ the workspace manifest as the sanctioned integration points.
 - **Post-processing** — per-element strain/stress in Voigt notation, von Mises,
   principal stresses (analytic symmetric eigenvalues via `tpt-med-geometry`),
   hydrostatic stress, and the critical element index.
-- **Model diagnostics** — `rigid_mode_residual()` and `coupling()` catch the
-  two classic FEM bugs (unconstrained rigid-body motion, and a mesh that
-  loads in a way that decouples into a floppy mode).
+- **Model diagnostics** — `rigid_mode_residual()` catches unconstrained
+  rigid-body motion. `coupling()` is a placeholder for a second diagnostic
+  (detecting a mesh that loads in a way that decouples into a floppy mode)
+  and is not yet implemented — see Known Limitations.
 - **Input validation** — empty meshes, material-array length mismatches and
   degenerate (zero/inverted-Jacobian) elements are `SolverError::Invalid`,
   never a panic or a `NaN`.
@@ -67,35 +68,64 @@ the workspace manifest as the sanctioned integration points.
 - Stiffness is 24×24 (8 nodes × 3 DOFs) per element; stress/strain are Voigt
   `[xx, yy, zz, xy, yz, xz]` with engineering shear strains.
 - Element node ordering is the `tpt-med-meshing` hex convention:
+  `[000, 100, 110, 010, 001, 101, 111, 011]`.
 
 ## Usage
+
+This crate takes a mesh as plain nodes/elements (typically built by
+`tpt-med-meshing` from a DICOM-derived `VoxelHexMesh` via
+`BiomechanicsModel::from_voxel_mesh`); the example below builds one directly
+with `BiomechanicsModel::from_parts` so it depends on nothing beyond
+`tpt-med-geometry` and `tpt-med-units`:
 
 ```rust
 use tpt_med_biomechanics::{BiomechanicsModel, BoundaryConditions};
 use tpt_med_geometry::Vec3;
-use tpt_med_meshing::{MedicalMesher, SegmentationMask};
+use tpt_med_units::Force;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Mesh -> model, carrying per-element HU-derived E and nu.
-    let series = tpt_med_dicom::DicomSeries::load_from_dir(
-        std::path::Path::new("test-data/dicom/synthetic_ct"))?;
-    let mask = SegmentationMask::threshold_hu(&series, 200.0);
-    let mesh = MedicalMesher::default().voxels_to_hex_mesh(&mask)?;
+    // A structured 4x4x10 mm grid of 1 mm cubes, uniform E = 15,000 MPa,
+    // nu = 0.3 (representative cortical bone), in place of a DICOM-derived mesh.
+    let (nx, ny, nz) = (4usize, 4usize, 10usize);
+    let mut nodes = Vec::new();
+    for k in 0..=nz {
+        for j in 0..=ny {
+            for i in 0..=nx {
+                nodes.push(Vec3::new(i as f64, j as f64, k as f64));
+            }
+        }
+    }
+    let id = |i: usize, j: usize, k: usize| (k * (ny + 1) + j) * (nx + 1) + i;
+    let mut elements = Vec::new();
+    for k in 0..nz {
+        for j in 0..ny {
+            for i in 0..nx {
+                elements.push([
+                    id(i, j, k) as u32, id(i + 1, j, k) as u32,
+                    id(i + 1, j + 1, k) as u32, id(i, j + 1, k) as u32,
+                    id(i, j, k + 1) as u32, id(i + 1, j, k + 1) as u32,
+                    id(i + 1, j + 1, k + 1) as u32, id(i, j + 1, k + 1) as u32,
+                ]);
+            }
+        }
+    }
+    let model = BiomechanicsModel::from_parts(nodes.clone(), elements, 15_000.0, 0.3);
 
-    let model = BiomechanicsModel::from_voxel_mesh(&mesh);
-
-    // Distal face fixed, proximal head loaded (ISO 7206-style stance).
+    // Distal face fixed, proximal face loaded (ISO 7206-style stance).
     let mut bc = BoundaryConditions::default();
     let mut fixed = Vec::new();
     let mut loaded = Vec::new();
-    let min_z = model.nodes.iter().map(|n| n.z).fold(f64::INFINITY, f64::min);
-    let max_z = model.nodes.iter().map(|n| n.z).fold(f64::NEG_INFINITY, f64::max);
-    for (i, n) in model.nodes.iter().enumerate() {
+    let min_z = nodes.iter().map(|n| n.z).fold(f64::INFINITY, f64::min);
+    let max_z = nodes.iter().map(|n| n.z).fold(f64::NEG_INFINITY, f64::max);
+    for (i, n) in nodes.iter().enumerate() {
         if n.z <= min_z + 1e-6 { fixed.push(i as u32); }
-        if n.z >= min_z + 0.85 * (max_z - min_z) { loaded.push(i as u32); }
+        if n.z >= max_z - 1e-6 { loaded.push(i as u32); }
     }
     bc.fix_nodes(fixed);
-    let per_node = -3.0 * 80.0 * 9.81 / loaded.len().max(1) as f64; // 3x body weight
+
+    // 3x body weight (80 kg patient) distributed over the loaded face.
+    let stance = Force::body_weights(3.0, Force::from_n(80.0 * 9.81));
+    let per_node = -stance.to_n() / loaded.len().max(1) as f64;
     for i in loaded { bc.add_force(i, Vec3::new(0.0, 0.0, per_node)); }
 
     let result = model.solve(&bc, 1e-8, 5_000)?;
@@ -123,6 +153,30 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 | `BiomechanicsModel::from_parts(nodes, elements, modulus, poisson)` | Build from raw parts (synthetic beams, benchmark meshes) |
 | `BiomechanicsModel::solve(&BoundaryConditions, tolerance, max_iterations)` | Assemble, solve, post-process → `Result<StressResult, SolverError>` |
 | `BiomechanicsModel::element_centroid(id)` | Element centre position (mm) |
+| `BiomechanicsModel::rigid_mode_residual()` | Diagnostic: residual rigid-body motion; ~0 for a well-constrained model |
+| `BiomechanicsModel::coupling()` | Placeholder diagnostic; currently a stub returning `Mat3::IDENTITY` (see Known Limitations) |
+| `BoundaryConditions::fix_nodes(iter)` | Fully constrain nodes (all 3 DOFs) |
+| `BoundaryConditions::add_force(node, Vec3)` | Nodal force in N; duplicates are summed |
+| `BoundaryConditions::prescribed_displacements` | Prescribed nodal displacements (mm), applied after `fix_nodes` |
+| `StressResult` | `displacements: Vec<Vec3>`, `stats: SolveStats`, `stresses: Vec<ElementStress>` |
+| `StressResult::{max_von_mises, mean_von_mises, max_displacement, critical_element}` | Headline results |
+| `ElementStress` | `element`, `strain: [f64; 6]`, `stress: [f64; 6]` in Voigt notation (MPa) |
+| `ElementStress::{von_mises, principal_stresses, hydrostatic}` | Derived measures; principal stresses sorted descending |
+| `hex::trilinear_hex_stiffness(&[Vec3; 8], e, nu)` (re-exported at crate root) | 24×24 element stiffness matrix |
+| `hex::isotropic_d(e, nu)` | 6×6 isotropic constitutive matrix |
+| `hex::centre_strain_displacement(&[Vec3; 8])` | Centroidal strain/displacement pair, used for patch tests |
+| `hex::check_element(&[Vec3; 8], id, error_sink)` | Geometry validation hook used during solve |
+| `sparse::CsrMatrix::from_triplets(n, triplets)` | Build from `(row, col, value)` triplets, summing duplicates |
+| `sparse::CsrMatrix::{mul_vec, diagonal}` | Spmv and Jacobi preconditioner extraction |
+| `sparse::conjugate_gradient(...)` | Jacobi-preconditioned CG returning `SolveStats` |
+| `SolverError` | `Invalid(String)` — empty mesh, length mismatch, degenerate element, singular system |
+
+Only `trilinear_hex_stiffness`, `ElementStress`, `StressResult`,
+`BiomechanicsModel`, `BoundaryConditions` and `SolverError` are re-exported at
+the crate root (`tpt_med_biomechanics::`); `isotropic_d`,
+`centre_strain_displacement`, `check_element` and `CsrMatrix` /
+`conjugate_gradient` live under the `hex::` and `sparse::` module paths shown
+above.
 
 ## Verification
 
@@ -193,6 +247,9 @@ and it is worth more than the bytes.
 - **Verification is against linear analytical solutions**, which is the correct
   standard for a linear code but says nothing about a nonlinear one that will
   eventually be built on top of this.
+- **`coupling()` is a stub.** It currently returns `Mat3::IDENTITY`
+  unconditionally and does not perform the floppy-mode diagnostic described in
+  Features; only `rigid_mode_residual()` is a real diagnostic today.
 
 ## Related Crates
 
@@ -217,23 +274,3 @@ Licensed under either of [MIT](../../../LICENSE-MIT) or
 
 Research and development use only. Not cleared or approved by the FDA or any
 other regulatory body for clinical diagnostic or treatment use.
-
-| `BiomechanicsModel::rigid_mode_residual()` | Diagnostic: residual rigid-body motion; ~0 for a well-constrained model |
-| `BiomechanicsModel::coupling()` | Diagnostic: how strongly the load engages the structure |
-| `BoundaryConditions::fix_nodes(iter)` | Fully constrain nodes (all 3 DOFs) |
-| `BoundaryConditions::add_force(node, Vec3)` | Nodal force in N; duplicates are summed |
-| `BoundaryConditions::prescribed_displacements` | Prescribed nodal displacements (mm), applied after `fix_nodes` |
-| `StressResult` | `displacements: Vec<Vec3>`, `stats: SolveStats`, `stresses: Vec<ElementStress>` |
-| `StressResult::{max_von_mises, mean_von_mises, max_displacement, critical_element}` | Headline results |
-| `ElementStress` | `element`, `strain: [f64; 6]`, `stress: [f64; 6]` in Voigt notation (MPa) |
-| `ElementStress::{von_mises, principal_stresses, hydrostatic}` | Derived measures; principal stresses sorted descending |
-| `trilinear_hex_stiffness(&[Vec3; 8], e, nu)` | 24×24 element stiffness matrix |
-| `isotropic_d(e, nu)` | 6×6 isotropic constitutive matrix |
-| `centre_strain_displacement(&[Vec3; 8])` | Centroidal strain/displacement pair, used for patching tests |
-| `check_element(&[Vec3; 8], id, error_sink)` | Geometry validation hook used during solve |
-| `CsrMatrix::from_triplets(n, triplets)` | Build from `(row, col, value)` triplets, summing duplicates |
-| `CsrMatrix::{mul_vec, diagonal}` | Spmv and Jacobi preconditioner extraction |
-| `conjugate_gradient(...)` | Jacobi-preconditioned CG returning `SolveStats` |
-| `SolverError` | `Invalid(String)` — empty mesh, length mismatch, degenerate element, singular system |
-
-  `[000, 100, 110, 010, 001, 101, 111, 011]`.

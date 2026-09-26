@@ -13,7 +13,7 @@ patient-specific modelling. No `dicom-rs`, no C bindings, no network.
 | **Scope** | RFC 0001 — DICOM ingestion |
 | **License** | MIT OR Apache-2.0 |
 | **MSRV** | 1.82 |
-| **Dependencies** | [`tpt-med-geometry`](../../core/tpt-med-geometry), [`tpt-med-units`](../../core/tpt-med-units) |
+| **Dependencies** | [`tpt-med-core`](../../core/tpt-med-core), [`tpt-med-geometry`](../../core/tpt-med-geometry), [`tpt-med-units`](../../core/tpt-med-units) |
 | **Changelog** | [CHANGELOG.md](CHANGELOG.md) |
 
 ---
@@ -115,6 +115,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 use tpt_med_dicom::SyntheticCtBuilder;
 
 fn main() -> std::io::Result<()> {
+    SyntheticCtBuilder::femur_phantom(64, 64, 40)
+        .patient_id("SYNTHETIC-0001")
+        .build("1.2.826.0.1.3680043.9.7484.1.1")
+        .write_to_dir(std::path::Path::new("test-data/dicom/synthetic_ct"))
+}
+```
 
 ## API Overview
 
@@ -207,10 +213,3 @@ Licensed under either of [MIT](../../../LICENSE-MIT) or
 Research and development use only. Not cleared or approved by the FDA or any
 other regulatory body for clinical diagnostic or treatment use. Not a
 diagnostic medical device; Hounsfield Unit output is for research modelling.
-
-    SyntheticCtBuilder::femur_phantom(64, 64, 40)
-        .patient_id("SYNTHETIC-0001")
-        .build("1.2.826.0.1.3680043.9.7484.1.1")
-        .write_to_dir(std::path::Path::new("test-data/dicom/synthetic_ct"))
-}
-```

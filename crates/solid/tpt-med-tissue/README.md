@@ -1,8 +1,11 @@
 # tpt-med-tissue
 
 Hyperelastic soft-tissue constitutive models — Neo-Hookean, Mooney–Rivlin,
-Yeoh, Ogden, and Holzapfel–Gasser–Ogden, each with **analytic** first
-Piola–Kirchhoff stress.
+Yeoh, Ogden, and Holzapfel–Gasser–Ogden. Four of the five (Neo-Hookean,
+Mooney–Rivlin, Yeoh, HGO) have **analytic** first Piola–Kirchhoff stress;
+Ogden's principal-stretch form is evaluated **numerically** (finite
+difference) instead, since its analytic derivative needs eigenvectors that
+are not implemented here.
 
 [![Crates.io](https://img.shields.io/badge/crates.io-tpt--med--tissue-orange)](https://crates.io/crates/tpt-med-tissue)
 [![Docs.rs](https://img.shields.io/badge/docs.rs-tpt--med--tissue-blue)](https://docs.rs/tpt-med-tissue)
@@ -14,7 +17,7 @@ Piola–Kirchhoff stress.
 | **Scope** | RFC 0002 — hyperelastic tissue |
 | **License** | MIT OR Apache-2.0 |
 | **MSRV** | 1.82 |
-| **Dependencies** | [`tpt-med-geometry`](../../core/tpt-med-geometry) |
+| **Dependencies** | [`tpt-med-geometry`](../../core/tpt-med-geometry), [`tpt-med-units`](../../core/tpt-med-units) (declared, currently unused) |
 | **Changelog** | [CHANGELOG.md](CHANGELOG.md) |
 
 ---
@@ -42,6 +45,10 @@ the build fails.
 - **Yeoh** — third-order, numerically well-behaved at large strain.
 - **Ogden** — compressible-form, arbitrary `n` terms; at `α = 2` it reduces to
   the Neo-Hookean case, which is asserted as a verification test.
+  `TissueModel::first_piola` for `Ogden` is evaluated via
+  `first_piola_numerical` (central difference) rather than a closed form,
+  because the principal-stretch derivative needs eigenvectors of `C` that are
+  not implemented analytically.
 - **Holzapfel–Gasser–Ogden (HGO)** — fibrous tissue with **fiber dispersion**,
   the standard model for arterial wall and tendon/meniscus (RFC 0002).
 - **Invariant helpers** — `invariant_i1`, `invariant_i2`, `principal_stretches`.
@@ -55,6 +62,9 @@ the build fails.
 
 - `F` is the deformation gradient as a `Mat3` (right-handed, column-vector
   convention per `tpt-med-geometry`).
+- Strain energy is in **MPa** (energy density = stress), moduli in **MPa**.
+- `principal_stretches` returns the singular values of `F` (non-negative, so
+  Ogden's `α = 2` form is real-valued without a signed convention).
 
 ## Usage
 
@@ -125,7 +135,7 @@ fn main() {
 |---|---|
 | `TissueModel` | Enum dispatch: `NeoHookean`, `MooneyRivlin`, `Yeoh`, `Ogden`, `HolzapfelGasserOgden` |
 | `TissueModel::strain_energy(&Mat3) -> f64` | `W(F)`, MPa |
-| `TissueModel::first_piola(&Mat3) -> Mat3` | **Analytic** `P = ∂W/∂F`, MPa |
+| `TissueModel::first_piola(&Mat3) -> Mat3` | `P = ∂W/∂F`, MPa — **analytic** for Neo-Hookean, Mooney–Rivlin and Yeoh; **numerical** (finite difference) for Ogden and HolzapfelGasserOgden |
 | `TissueModel::first_piola_numerical(&Mat3) -> Mat3` | Central-difference reference; the CI oracle |
 | `NeoHookeanParams { c10, d1 }` | Compressible Neo-Hookean; `d1 = 0` for incompressible |
 | `MooneyRivlinParams { c10, c01, d1 }` | Two-term invariant polynomial |
@@ -156,6 +166,10 @@ published result, not a stored snapshot:
   analytic value for uniaxial stretch along and transverse to the fiber.
 - **Energy objectivity and stress-free reference state** are asserted for all
   models.
+- **Verification compares deviatoric Cauchy stress**, `s = σ − (tr σ/3)I`, not
+  the full stress. Penalty formulations carry model-internal hydrostatic
+  pressure at `J = 1`, so pressure-dependent components are not unique — this
+  is stated explicitly in RFC 0002 and encoded in the tests.
 
 Golden reference dataset: `test-data/golden/solid/arterial_wall_inflation.json`.
 
@@ -168,6 +182,11 @@ Golden reference dataset: `test-data/golden/solid/arterial_wall_inflation.json`.
   finite-difference test enforces).
 - The HGO implementation covers dispersion but not the full two-family
   collagen/elastin parameterisation used in some literature.
+- **Ogden has no analytic stress.** `TissueModel::first_piola` falls back to
+  `first_piola_numerical` for `Ogden` (and, via the same enum match arm,
+  currently also for `HolzapfelGasserOgden`) — even though `HgoParams`
+  itself has an analytic `first_piola` when called directly rather than
+  through the `TissueModel` enum.
 
 ## Related Crates
 
@@ -192,11 +211,3 @@ Licensed under either of [MIT](../../../LICENSE-MIT) or
 
 Research and development use only. Not cleared or approved by the FDA or any
 other regulatory body for clinical diagnostic or treatment use.
-
-- Strain energy is in **MPa** (energy density = stress), moduli in **MPa**.
-- `principal_stretches` returns the singular values of `F` (non-negative, so
-  Ogden's `α = 2` form is real-valued without a signed convention).
-- **Verification compares deviatoric Cauchy stress**, `s = σ − (tr σ/3)I`, not
-  the full stress. Penalty formulations carry model-internal hydrostatic
-  pressure at `J = 1`, so pressure-dependent components are not unique — this
-  is stated explicitly in RFC 0002 and encoded in the tests.

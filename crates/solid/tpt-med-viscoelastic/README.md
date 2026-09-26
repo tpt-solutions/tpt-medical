@@ -12,7 +12,7 @@ frequency-domain storage and loss moduli, and loss tangent.
 | **Status** | Alpha, `0.1.0` |
 | **License** | MIT OR Apache-2.0 |
 | **MSRV** | 1.82 |
-| **Dependencies** | [`tpt-med-tissue`](../tpt-med-tissue) |
+| **Dependencies** | [`tpt-med-tissue`](../tpt-med-tissue), [`tpt-med-geometry`](../../core/tpt-med-geometry) (declared, currently unused) |
 | **Changelog** | [CHANGELOG.md](CHANGELOG.md) |
 
 ---
@@ -95,9 +95,10 @@ fn main() {
     assert!((m.loss_tangent(10.0) - g_double_prime / g_prime).abs() < 1e-12);
 
     // The glass response comes from tpt-med-tissue, not duplicated here.
-    let reference: TissueModel =
-        m.elastic_reference().NeoHookean(NeoHookeanParams { c10: 0.5, d1: 0.0 });
-    assert_eq!(reference, TissueModel::NeoHookean(NeoHookeanParams { c10: 0.5, d1: 0.0 }));
+    // elastic_reference() already returns a fully-formed TissueModel, with
+    // c10 derived from g0 (not caller-supplied parameters).
+    let reference: TissueModel = m.elastic_reference();
+    assert_eq!(reference, TissueModel::NeoHookean(NeoHookeanParams { c10: m.g0 / 3.0, d1: 100.0 }));
 
     // Invalid series are rejected with a descriptive message.
     let bad = ViscoelasticMaterial { g0: 0.5, prony: vec![PronyTerm { g_i: 1.5, tau_i: 1.0 }] };
@@ -153,6 +154,8 @@ it is asserted:
   shifted automatically with a WLF or Arrhenius relation.
 - No time-integration helper for a finite-element inner loop; this crate
   provides the material response, and time integration is the solver's job.
+- Equilibrium modulus `G∞ = G0(1 − Σgᵢ)`, so a fully relaxed state has
+  `G∞ = 0` when `Σgᵢ = 1` and a solid response when `Σgᵢ = 0`.
 
 ## Related Crates
 
@@ -176,8 +179,3 @@ Licensed under either of [MIT](../../../LICENSE-MIT) or
 
 Research and development use only. Not cleared or approved by the FDA or any
 other regulatory body for clinical diagnostic or treatment use.
-
-- Equilibrium modulus `G∞ = G0(1 − Σgᵢ)`, so a fully relaxed state has
-  `G∞ = 0` when `Σgᵢ = 1` and a solid response when `Σgᵢ = 0`.
-- **Shear only.** The series is defined in shear; the elastic reference model
-  supplies the volumetric response.

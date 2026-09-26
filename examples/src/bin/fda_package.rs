@@ -23,11 +23,12 @@ use tpt_med_vv40::{
 /// Crates whose code took part in this run, recorded in the reproducibility
 /// manifest.
 ///
-/// The version is the workspace version, which is exact today because the
-/// workspace shares a single `[workspace.package] version = "0.1.0"`. The day
-/// crates are allowed to version independently, this needs to read each
-/// crate's own version rather than the workspace one — see the note in
-/// `tpt-med-fda`'s README "Known limitations".
+/// Each crate's *resolved* version comes from `Cargo.lock` via
+/// [`tpt_med_examples::crate_versions::version_of`], not from this binary's
+/// own `CARGO_PKG_VERSION`. Every crate here pins to the workspace version
+/// today (`version.workspace = true`), so the two happen to agree — but the
+/// lookup is already correct for the day a crate is released independently
+/// and its version diverges from the rest.
 const PARTICIPATING_CRATES: &[&str] = &[
     "tpt-med-audit",
     "tpt-med-biomechanics",
@@ -85,7 +86,7 @@ fn main() {
         .with_crates(
             PARTICIPATING_CRATES
                 .iter()
-                .map(|c| (*c, env!("CARGO_PKG_VERSION"))),
+                .map(|c| (*c, tpt_med_examples::crate_versions::version_of(c))),
         )
         .with_git_commit(std::env::var("TPT_GIT_COMMIT").ok())
         .with_build_profile(std::env::var("PROFILE").unwrap_or_else(|_| "unknown".into()))

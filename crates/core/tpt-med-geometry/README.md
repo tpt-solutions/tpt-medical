@@ -33,7 +33,8 @@ dependencies, and unit tests on every predicate.
 ## Features
 
 - `Vec3` — `const fn` constructors (`new`, `splat`, `X`/`Y`/`Z`/`ZERO`), dot and
-  cross products, `normalize`, `length`, componentwise `min`/`max`/`abs`.
+  cross products, `normalize`, `norm`, `min_component`/`max_component`
+  (each reducing to a single `f64`), plus `component_mul`/`component_div`.
 - `Mat3` — `IDENTITY`, `ZERO`, `from_rows`, `from_cols`, `from_array`,
   `diagonal`, indexing, `mul_vec`, `mul_mat`, `transpose`, `det`, `inverse`,
   `rotation_axis_angle`, `scaling`, `trace`, and

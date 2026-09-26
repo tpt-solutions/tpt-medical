@@ -11,7 +11,7 @@ Implant–bone micromotion and stress-shielding analysis for orthopedic devices.
 | **Status** | Alpha, `0.1.0` |
 | **License** | MIT OR Apache-2.0 |
 | **MSRV** | 1.82 |
-| **Dependencies** | [`tpt-med-units`](../../core/tpt-med-units) |
+| **Dependencies** | [`tpt-med-biomechanics`](../../solid/tpt-med-biomechanics), [`tpt-med-geometry`](../../core/tpt-med-geometry), [`tpt-med-units`](../../core/tpt-med-units) (only `tpt-med-units` is currently used by the code) |
 | **Changelog** | [CHANGELOG.md](CHANGELOG.md) |
 
 ---
@@ -63,6 +63,18 @@ as a first-class input rather than assuming perfect bonding.
 - `foundation_stiffness` in **N/mm³**; `contact_area` in **mm²**;
   `friction` dimensionless; joint reaction as a typed `Force` in **N**.
 - **Micromotion is returned in millimetres** (`max_micromotion`), and
+  thresholds are therefore `0.050 mm` and `0.150 mm`. Use `micromotion_um`
+  for the published micrometre form.
+- `tangential_fraction` is clamped to `[0, 1]` — it is the fraction of the
+  joint reaction acting tangentially to the interface.
+- Strain energy density is in **MPa** (= mJ/mm³), so the shielding index is a
+  dimensionless ratio.
+- Zones with **zero contact area are reported as `NaN` and skipped** when
+  taking the maximum. `NaN` here is deliberate: it distinguishes "this zone
+  does not exist for this implant" from "this zone has zero micromotion",
+  which a `0.0` would conflate.
+- `stress_shielding_analysis` asserts equal zone counts rather than
+  silently truncating.
 
 ## Usage
 
@@ -119,19 +131,6 @@ fn main() {
 | `StressShieldingResult::mean_index() -> f64` | Mean index over zones |
 | `StressShieldingResult::has_resorption_risk() -> bool` | True if any zone exceeds 0.7 |
 | `Force` from `tpt-med-units` | Joint reaction force in newtons |
-
-  thresholds are therefore `0.050 mm` and `0.150 mm`. Use `micromotion_um`
-  for the published micrometre form.
-- `tangential_fraction` is clamped to `[0, 1]` — it is the fraction of the
-  joint reaction acting tangentially to the interface.
-- Strain energy density is in **MPa** (= mJ/mm³), so the shielding index is a
-  dimensionless ratio.
-- Zones with **zero contact area are reported as `NaN` and skipped** when
-  taking the maximum. `NaN` here is deliberate: it distinguishes "this zone
-  does not exist for this implant" from "this zone has zero micromotion",
-  which a `0.0` would conflate.
-- `stress_shielding_analysis` asserts equal zone counts rather than
-  silently truncating.
 
 ## Verification
 

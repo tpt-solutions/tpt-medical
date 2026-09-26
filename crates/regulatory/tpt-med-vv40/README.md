@@ -48,7 +48,7 @@ rather than about whether anyone remembered the matrix.
 - **`VerificationType`** — `CodeVerification`, `CalculationVerification`,
   `SensitivityAnalysis`, `UncertaintyQuantification`, each with a stable
   `key()` for reports (V&V 40 §5.2).
-- **`ValidationType`** — `InVitro`, `In Vivo`, `ClinicalData`,
+- **`ValidationType`** — `InVitro`, `InVivo`, `ClinicalData`,
   `BenchmarkModel`, each with a stable `key()` (§5.3).
 - **`AgreementLevel`** — `Quantitative`, `Qualitative`, `NotDemonstrated`.
 - **`VerificationActivity` / `ValidationActivity`** — the evidence, with a
@@ -87,7 +87,6 @@ rather than about whether anyone remembered the matrix.
 - `question_of_interest` is stored verbatim and is expected to be the actual
   question, not a project name. An assessment whose question of interest
   cannot be stated precisely cannot be evaluated at all.
-
 
 ## Usage
 
@@ -176,6 +175,20 @@ fn main() {
 
     // Low risk, contributing influence: one verification type, no validation.
     let g = a.goals();
+    assert_eq!(g.min_verification_types, 1);
+    assert_eq!(g.min_validation_types, 0);
+    assert!(!a.evaluate().is_empty()); // no evidence collected at all
+
+    // Same question, high risk and direct influence: far more evidence.
+    a.risk = ModelRisk::High;
+    a.influence = ModelInfluence::Direct;
+    let g = a.goals();
+    assert_eq!(g.min_verification_types, 4);
+    assert_eq!(g.min_validation_types, 3);
+    assert!(g.quantitative_validation_required);
+    assert!(g.independent_code_review_required);
+}
+```
 
 ## API Overview
 
@@ -193,31 +206,6 @@ fn main() {
 | `::evaluate() -> Vec<String>` | Descriptions of the unmet goals; empty when credible |
 | `::is_credible() -> bool` | Boolean summary of `evaluate()` |
 | `CredibilityGoals` | `min_verification_types`, `min_validation_types`, `quantitative_validation_required`, `independent_code_review_required` |
-
-- The matrix is **monotone along both axes**: raising risk or influence never
-  lowers a requirement. This is asserted as an invariant, and it is the
-  property that makes the matrix trustworthy.
-- Goal bands for the full matrix:
-
-| Risk \ Influence | Contributing | Significant | Direct |
-|---|---|---|---|
-| **Low** | 1 / 0 | 1 / 1 | 2 / 1 |
-| **Medium** | 1 / 1 | 3 / 2 | 3 / 2 |
-| **High** | 2 / 1 | 3 / 2 | 4 / 3 |
-
-  (*verification types / validation types*; `(Low, Direct)` and
-  `(High, Contributing)` share the `2 / 1` band.)
-
-- **Quantitative validation** is required for the three highest cells:
-  `(Medium, Direct)`, `(High, Significant)` and `(High, Direct)`.
-- **Independent code review** is required for the `2 / 1` band and above:
-  `(Low, Direct)`, `(Medium, Significant)`, `(High, Contributing)` and
-  everything above them.
-- `evaluate` returns **descriptions of unmet goals**, not just a count, so a
-  gap is actionable.
-- `question_of_interest` is stored verbatim and is expected to be the actual
-  question, not a project name. An assessment whose question of interest
-  cannot be stated precisely cannot be evaluated at all.
 
 ## Verification
 
@@ -298,18 +286,3 @@ Licensed under either of [MIT](../../../LICENSE-MIT) or
 Research and development use only. Not cleared or approved by the FDA. This
 crate is a structured way to *reason about* credibility; it is not a
 compliance determination, and ASME V&V 40's licensed text governs.
-
-    assert_eq!(g.min_verification_types, 1);
-    assert_eq!(g.min_validation_types, 0);
-    assert!(!a.evaluate().is_empty()); // no evidence collected at all
-
-    // Same question, high risk and direct influence: far more evidence.
-    a.risk = ModelRisk::High;
-    a.influence = ModelInfluence::Direct;
-    let g = a.goals();
-    assert_eq!(g.min_verification_types, 4);
-    assert_eq!(g.min_validation_types, 3);
-    assert!(g.quantitative_validation_required);
-    assert!(g.independent_code_review_required);
-}
-```

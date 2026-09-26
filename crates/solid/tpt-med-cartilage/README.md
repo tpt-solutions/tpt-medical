@@ -12,7 +12,7 @@ Lai 1980) in the confined-compression configuration.
 | **Status** | Alpha, `0.1.0` |
 | **License** | MIT OR Apache-2.0 |
 | **MSRV** | 1.82 |
-| **Dependencies** | none (leaf within `solid`) |
+| **Dependencies** | [`tpt-med-geometry`](../../core/tpt-med-geometry), [`tpt-med-units`](../../core/tpt-med-units) (declared, currently unused) |
 | **Changelog** | [CHANGELOG.md](CHANGELOG.md) |
 
 ---
@@ -53,6 +53,14 @@ than a finite-element code.
 
 - Aggregate modulus `H_A` in **MPa**; permeability `k` in **mm⁴/(N·s)**;
   thickness `h` in **mm**; `σ₀` in **MPa**; time in **seconds**.
+- `poissons_ratio ≈ 0` for cartilage (the solid matrix is nearly
+  incompressible and confined).
+- `Default` values are adult articular cartilage screening values:
+  `H_A = 0.7 MPa`, `k = 0.002 mm⁴/(N·s)`, `ν = 0`, `h = 2.0 mm`.
+- The values returned by `creep_displacement_fraction` and related methods
+  are **dimensionless strains** `u(t)/h`, not a 0–1 progress fraction toward
+  equilibrium — `equilibrium_strain` itself is `σ₀ / H_A`, not `1.0`.
+  Multiply by `h` alone for a displacement in mm.
 
 ## Usage
 
@@ -85,8 +93,9 @@ fn main() {
     let at_gel = m.creep_displacement_fraction(sigma0, t_gel, 200);
     assert!((at_gel - 0.5).abs() < 0.05);
 
-    // Absolute displacement in mm, if that is what you need.
-    let u_mm = late * m.thickness * eq;
+    // Absolute displacement in mm: creep_displacement_fraction already
+    // returns the strain u(t)/h, so multiply only by thickness.
+    let u_mm = late * m.thickness;
     assert!(u_mm > 0.0);
 }
 ```
@@ -96,7 +105,7 @@ fn main() {
 | Item | Purpose |
 |---|---|
 | `BiphasicMaterial { aggregate_modulus, permeability, poissons_ratio, thickness }` | The material and specimen geometry; `Default` = adult articular cartilage |
-| `BiphasicMaterial::creep_displacement_fraction(sigma0, time, terms)` | `u(t)/u_∞` from the confined-compression series solution; `terms` controls convergence |
+| `BiphasicMaterial::creep_displacement_fraction(sigma0, time, terms)` | `u(t)/h` (dimensionless strain, not a 0–1 fraction) from the confined-compression series solution; `terms` controls convergence |
 | `BiphasicMaterial::equilibrium_strain(sigma0)` | `σ₀ / H_A`, the long-time limit |
 | `BiphasicMaterial::initial_displacement_fraction(sigma0)` | The `t = 0` value (zero for a step load) |
 | `BiphasicMaterial::fluid_pressure_fraction(time, terms)` | Fraction of the load still carried by interstitial fluid |
@@ -155,11 +164,3 @@ Licensed under either of [MIT](../../../LICENSE-MIT) or
 
 Research and development use only. Not cleared or approved by the FDA or any
 other regulatory body for clinical diagnostic or treatment use.
-
-- `poissons_ratio ≈ 0` for cartilage (the solid matrix is nearly
-  incompressible and confined).
-- `Default` values are adult articular cartilage screening values:
-  `H_A = 0.7 MPa`, `k = 0.002 mm⁴/(N·s)`, `ν = 0`, `h = 2.0 mm`.
-- The returned **fractions are dimensionless** — the fraction of the
-  equilibrium displacement, not an absolute length. Multiply by
-  `h · σ₀ / H_A` for a displacement in mm.

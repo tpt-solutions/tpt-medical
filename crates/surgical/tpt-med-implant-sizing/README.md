@@ -13,7 +13,7 @@ arthroplasty.
 | **Status** | Alpha, `0.1.0` |
 | **License** | MIT OR Apache-2.0 |
 | **MSRV** | 1.82 |
-| **Dependencies** | [`tpt-med-geometry`](../../core/tpt-med-geometry) |
+| **Dependencies** | [`tpt-med-core`](../../core/tpt-med-core), [`tpt-med-geometry`](../../core/tpt-med-geometry), [`tpt-med-units`](../../core/tpt-med-units) |
 | **Changelog** | [CHANGELOG.md](CHANGELOG.md) |
 
 ---
@@ -47,7 +47,8 @@ throws away the information the surgeon uses to decide whether to upsize.
 - **`SizeEntry { label, nominal }`** — one chart row: a manufacturer-specific
   size label and the measurement value it represents (mm).
 - **`SizeChart { family, entries }`** — an implant family, ascending by
-  `nominal`. `select` picks the **smallest size whose nominal ≥ measurement**.
+  `nominal`. `select` finds the two consecutive entries bracketing the
+  measurement and returns the **closer** one, rounding up at the midpoint.
 - **`SizeChoice`** — `label`, the fractional `interpolation` between the
   bracketing sizes, and explicit `below_chart` / `above_chart` out-of-range
   flags.
@@ -59,6 +60,8 @@ throws away the information the surgeon uses to decide whether to upsize.
   measurement plane), and `plateau_width`.
 - **Alignment proxies** — `femorotibial_angle_deg` (neutral ≈ 0–10°; larger
   indicates varus/valgus) and `tibial_slope_deg` (clamped to `[0, 30]`).
+- **`size_tka`** — the bundle: both component labels, all three measurements
+  and both alignment proxies in one `TkaSizing` value.
 
 ## Conventions
 
@@ -68,9 +71,12 @@ throws away the information the surgeon uses to decide whether to upsize.
   protractor and printed on a chart).
 - `SizeChart.entries` **must be ascending by `nominal`**; `select` relies on
   the ordering.
-- **Ties round up.** At exactly `t = 0.5` between two sizes, the larger size
-  is selected. A chart step is a manufacturing increment and undersizing
-  causes more harm than oversizing in this specific decision.
+- **Ties round up.** At exactly `t = 0.5` between two bracketing sizes, the
+  larger size is selected. A chart step is a manufacturing increment and
+  undersizing causes more harm than oversizing in this specific decision.
+- A measurement at or below the first entry, or at or above the last, is
+  clamped to that entry and flagged `below_chart` / `above_chart` rather than
+  extrapolated.
 - Femoral selection uses the blend `0.6 · TEA + 0.4 · AP depth`; tibial
   selection uses plateau width directly. These weights are the workspace
   convention and are stated explicitly rather than buried.
@@ -120,8 +126,8 @@ fn main() {
 
     // The full bundle.
     let s = size_tka(&lm, &femoral, &tibial).unwrap();
-    assert_eq!(s.femoral_size, 6);   // 0.6*70 + 0.4*60 = 66 mm -> chart 66..70
-    assert_eq!(s.tibial_size, 2);    // 48 mm
+    assert_eq!(s.femoral_size, 4);   // 0.6*70 + 0.4*60 = 66 mm -> exactly chart entry 4
+    assert_eq!(s.tibial_size, 2);    // 48 mm -> closer to entry 2 (47.0) than entry 3 (50.5)
     assert!(s.femorotibial_angle_deg >= 0.0);
     assert!((0.0..=30.0).contains(&s.tibial_slope_deg));
 
@@ -142,6 +148,19 @@ fn main() {
 
 | Item | Purpose |
 |---|---|
+| `SizeEntry { label, nominal }` | One chart row: a size label and the measurement (mm) it represents |
+| `SizeChart { family, entries }` | An implant family; `entries` **must** be ascending by `nominal` |
+| `SizeChart::select(measurement) -> Option<SizeChoice>` | Closer of the two bracketing entries (ties round up); `None` if the chart is empty |
+| `SizeChoice { label, below_chart, above_chart, interpolation }` | Selected label, out-of-range flags, and the fractional position between bracketing sizes |
+| `KneeLandmarks` | Eight `Vec3` points: medial/lateral epicondyle, trochlea point, posterior condyle, medial/lateral tibial plateau, tibial centre, tibial tubercle |
+| `KneeLandmarks::tea_width() -> f64` | Transepicondylar axis length (mm) |
+| `KneeLandmarks::ap_depth() -> f64` | AP depth projected perpendicular to the TEA (mm) |
+| `KneeLandmarks::plateau_width() -> f64` | Tibial plateau width (mm) |
+| `KneeLandmarks::femorotibial_angle_deg() -> f64` | Alignment proxy; neutral ≈ 0–10° |
+| `KneeLandmarks::tibial_slope_deg() -> f64` | Posterior tibial slope, clamped to `[0, 30]` |
+| `size_tka(&KneeLandmarks, &SizeChart, &SizeChart) -> Option<TkaSizing>` | Femoral (0.6·TEA + 0.4·AP) and tibial (plateau) sizing plus all measurements and alignment proxies |
+| `TkaSizing` | `femoral_size`, `tibial_size`, `tea_width_mm`, `ap_depth_mm`, `plateau_width_mm`, `femorotibial_angle_deg`, `tibial_slope_deg` |
+| `Vec3` from `tpt-med-geometry` | Landmark positions in patient space (mm) |
 
 ## Verification
 
@@ -215,21 +234,3 @@ Research and development use only. Not cleared or approved by the FDA or any
 other regulatory body for clinical diagnostic or treatment use. **Not for
 clinical decision-making.** Component selection must follow the manufacturer's
 instructions for use and the surgeon's judgement.
-
-| `SizeEntry { label, nominal }` | One chart row: a size label and the measurement (mm) it represents |
-| `SizeChart { family, entries }` | An implant family; `entries` **must** be ascending by `nominal` |
-| `SizeChart::select(measurement) -> Option<SizeChoice>` | Smallest size whose `nominal ≥ measurement`; `None` if the chart is empty |
-| `SizeChoice { label, below_chart, above_chart, interpolation }` | Selected label, out-of-range flags, and the fractional position between bracketing sizes |
-| `KneeLandmarks` | Eight `Vec3` points: medial/lateral epicondyle, trochlea point, posterior condyle, medial/lateral tibial plateau, tibial centre, tibial tubercle |
-| `KneeLandmarks::tea_width() -> f64` | Transepicondylar axis length (mm) |
-| `KneeLandmarks::ap_depth() -> f64` | AP depth projected perpendicular to the TEA (mm) |
-| `KneeLandmarks::plateau_width() -> f64` | Tibial plateau width (mm) |
-| `KneeLandmarks::femorotibial_angle_deg() -> f64` | Alignment proxy; neutral ≈ 0–10° |
-| `KneeLandmarks::tibial_slope_deg() -> f64` | Posterior tibial slope, clamped to `[0, 30]` |
-| `size_tka(&KneeLandmarks, &SizeChart, &SizeChart) -> Option<TkaSizing>` | Femoral (0.6·TEA + 0.4·AP) and tibial (plateau) sizing plus all measurements and alignment proxies |
-| `TkaSizing` | `femoral_size`, `tibial_size`, `tea_width_mm`, `ap_depth_mm`, `plateau_width_mm`, `femorotibial_angle_deg`, `tibial_slope_deg` |
-| `Vec3` from `tpt-med-geometry` | Landmark positions in patient space (mm) |
-
-- **`size_tka`** — the bundle: both component labels, all three measurements
-  and both alignment proxies in one `TkaSizing` value.
-- No dependencies beyond `tpt-med-geometry`.

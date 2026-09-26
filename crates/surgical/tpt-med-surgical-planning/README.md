@@ -12,7 +12,7 @@ rigid fragment reposition, and an auditable operation log.
 | **Status** | Alpha, `0.1.0` |
 | **License** | MIT OR Apache-2.0 |
 | **MSRV** | 1.82 |
-| **Dependencies** | [`tpt-med-geometry`](../../core/tpt-med-geometry) |
+| **Dependencies** | [`tpt-med-core`](../../core/tpt-med-core), [`tpt-med-geometry`](../../core/tpt-med-geometry), [`tpt-med-meshing`](../../imaging/tpt-med-meshing), [`tpt-med-units`](../../core/tpt-med-units) |
 | **Changelog** | [CHANGELOG.md](CHANGELOG.md) |
 
 ---
@@ -44,9 +44,9 @@ voxel grid.
   side. Discarded voxels are set to `NaN` and the kept region is compacted to
   its bounding box, so fragment volumes stay correct rather than carrying a
   full-size field of dead cells.
-- **`FragmentTransform`** — rigid rotation about an axis plus translation, with
-  `apply_to_point` and `apply_to_model`. A tibial tubercle distalisation or a
-  Le Fort advancement is one call.
+- **`FragmentTransform`** — rigid rotation about an axis and pivot point, plus
+  translation, with `apply_to_point` and `apply_to_model`. A tibial tubercle
+  distalisation or a Le Fort advancement is one call.
 - **`VirtualSurgery`** — `cut` and `move_fragment` in plan order, `execute`
   returning `(operated_model, audit_log)`, plus `base_model` for side-by-side
   pre/post views and `fragments` for the recorded labels.
@@ -59,6 +59,15 @@ voxel grid.
 - `spacing` in **mm** per axis; `origin` is the patient-space position of
   voxel `(0,0,0)`.
 - A cut keeps the region where `plane.signed_distance(voxel_centre) ≥ 0` when
+  `keep_positive` is true, and `≤ 0` otherwise.
+- `NaN` is the sentinel for a discarded voxel, and every operation skips `NaN`
+  voxels rather than treating them as zero. This keeps `count_above` honest:
+  a resected model reports the resected volume, not a volume full of
+  `NaN`-compared-as-false noise.
+- Transforms are **rigid** (rotation about `pivot` + translation). No scaling,
+  no shear — a plan that could scale bone would not be a surgical plan.
+- `execute` is pure with respect to the plan: it can be called repeatedly and
+  always returns the same result from the same base model.
 
 ## Usage
 
@@ -68,7 +77,7 @@ use tpt_med_surgical_planning::{FragmentTransform, OsteotomyCut, VirtualSurgery,
 
 fn main() {
     // A small 8^3 synthetic bone block, 1 mm voxels, 300 HU.
-    let nx = ny = nz = 8;
+    let (nx, ny, nz) = (8, 8, 8);
     let model = VoxelModel {
         dims: (nx, ny, nz),
         spacing: (1.0, 1.0, 1.0),
@@ -87,10 +96,11 @@ fn main() {
     });
 
     // Then reposition the fragment: 3 degrees about the transepicondylar
-    // axis, plus 4 mm distally.
+    // axis (through the origin), plus 4 mm distally.
     plan.move_fragment(FragmentTransform {
         rotation_axis: Vec3::new(0.0, 1.0, 0.0),
         rotation_angle: 3.0_f64.to_radians(),
+        pivot: Vec3::ZERO,
         translation: Vec3::new(0.0, 0.0, -4.0),
     });
 
@@ -112,6 +122,21 @@ fn main() {
 | Item | Purpose |
 |---|---|
 | `VoxelModel { dims, spacing, origin, values }` | The surgical substrate; index `(z·ny+y)·nx+x` |
+| `VoxelModel::index(x, y, z) -> Option<usize>` | Bounds-checked flat index |
+| `VoxelModel::center(x, y, z) -> Vec3` | Patient-space voxel centre (mm) |
+| `VoxelModel::count_above(threshold) -> usize` | Voxel count above a threshold; `NaN` voxels never count |
+| `OsteotomyCut { plane, fragment_name, keep_positive }` | Plane resection; discarded voxels become `NaN`, kept region is compacted |
+| `OsteotomyCut::apply(&VoxelModel) -> VoxelModel` | The resection |
+| `FragmentTransform { rotation_axis, rotation_angle, pivot, translation }` | Rigid only: rotation about `pivot`, then translation |
+| `FragmentTransform::apply_to_point(Vec3) -> Vec3` | Transform a point |
+| `FragmentTransform::apply_to_model(&VoxelModel) -> VoxelModel` | Transform a whole model |
+| `PlanStep` | `Cut(OsteotomyCut)` or `Move(FragmentTransform)` |
+| `VirtualSurgery::new(base)` | Start a plan on the pre-operative model |
+| `VirtualSurgery::cut(..)`, `::move_fragment(..)` | Append steps in plan order (builder style, returns `&mut Self`) |
+| `VirtualSurgery::execute() -> (VoxelModel, Vec<String>)` | Operated model plus the audit log in execution order |
+| `VirtualSurgery::base_model() -> &VoxelModel` | Pre-operative model, for side-by-side views |
+| `VirtualSurgery::fragments() -> BTreeMap<usize, String>` | Recorded fragment labels, ordered and deduplicated |
+| `Plane`, `Vec3` from `tpt-med-geometry` | The cutting plane and geometry types |
 
 ## Verification
 
@@ -179,29 +204,3 @@ Research and development use only. Not cleared or approved by the FDA or any
 other regulatory body for clinical diagnostic or treatment use. **Not for
 clinical decision-making.** This is an engineering and research tool, not a
 surgical planning system.
-
-| `VoxelModel::index(x, y, z) -> Option<usize>` | Bounds-checked flat index |
-| `VoxelModel::center(x, y, z) -> Vec3` | Patient-space voxel centre (mm) |
-| `VoxelModel::count_above(threshold) -> usize` | Voxel count above a threshold; `NaN` voxels never count |
-| `OsteotomyCut { plane, fragment_name, keep_positive }` | Plane resection; discarded voxels become `NaN`, kept region is compacted |
-| `OsteotomyCut::apply(&VoxelModel) -> VoxelModel` | The resection |
-| `FragmentTransform` | `rotation_axis`, `rotation_angle`, `translation` — rigid only |
-| `FragmentTransform::apply_to_point(Vec3) -> Vec3` | Transform a point |
-| `FragmentTransform::apply_to_model(&VoxelModel) -> VoxelModel` | Transform a whole model |
-| `PlanStep` | `Cut(OsteotomyCut)` or `Move(FragmentTransform)` |
-| `VirtualSurgery::new(base)` | Start a plan on the pre-operative model |
-| `VirtualSurgery::cut(..)`, `::move_fragment(..)` | Append steps in plan order (builder style, returns `&mut Self`) |
-| `VirtualSurgery::execute() -> (VoxelModel, Vec<String>)` | Operated model plus the audit log in execution order |
-| `VirtualSurgery::base_model() -> &VoxelModel` | Pre-operative model, for side-by-side views |
-| `VirtualSurgery::fragments() -> BTreeMap<usize, String>` | Recorded fragment labels, ordered and deduplicated |
-| `Plane`, `Vec3` from `tpt-med-geometry` | The cutting plane and geometry types |
-
-  `keep_positive` is true, and `≤ 0` otherwise.
-- `NaN` is the sentinel for a discarded voxel, and every operation skips `NaN`
-  voxels rather than treating them as zero. This keeps `count_above` honest:
-  a resected model reports the resected volume, not a volume full of
-  `NaN`-compared-as-false noise.
-- Transforms are **rigid** (rotation + translation). No scaling, no shear —
-  a plan that could scale bone would not be a surgical plan.
-- `execute` is pure with respect to the plan: it can be called repeatedly and
-  always returns the same result from the same base model.

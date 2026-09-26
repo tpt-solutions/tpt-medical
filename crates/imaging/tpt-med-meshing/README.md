@@ -12,7 +12,7 @@ CT Hounsfield volume and a finite-element mesh.
 | **Status** | Alpha, `0.1.0` |
 | **License** | MIT OR Apache-2.0 |
 | **MSRV** | 1.82 |
-| **Dependencies** | [`tpt-med-dicom`](../tpt-med-dicom), [`tpt-med-geometry`](../../core/tpt-med-geometry), [`tpt-med-units`](../../core/tpt-med-units) |
+| **Dependencies** | [`tpt-med-core`](../../core/tpt-med-core), [`tpt-med-dicom`](../tpt-med-dicom), [`tpt-med-geometry`](../../core/tpt-med-geometry), [`tpt-med-units`](../../core/tpt-med-units) |
 | **Changelog** | [CHANGELOG.md](CHANGELOG.md) |
 
 ---
@@ -27,7 +27,7 @@ a browser.
 The **voxel-to-hex** strategy sidesteps meshing entirely: a thresholded
 segmentation becomes a structured hexahedral mesh with **one element per solid
 voxel**. This is the standard approach for CT-based biomechanical models, it
-produates a mesh that is *automatically conforming* (no boolean operations, no
+produces a mesh that is *automatically conforming* (no boolean operations, no
 sliver elements, no remeshing), and it is a few hundred lines of Rust.
 
 The honest cost: a stair-step surface. `smooth_mesh` relaxes it for
@@ -63,6 +63,9 @@ for aesthetics.
 - **Hex node ordering:** the 8 corners in `(±x, ±y, ±z)` bit order
   `[000, 100, 110, 010, 001, 101, 111, 011]` relative to the voxel's minimum
   corner. This is fixed and shared with the CSV format and the FEM solver.
+- **CSV header:** `tpt-medical voxel hex mesh v1`, units mm and MPa. Node
+  order and element rows are documented in
+  [`docs/book/src/mesh-csv.md`](../../../docs/book/src/mesh-csv.md).
 
 ## Usage
 
@@ -186,7 +189,3 @@ Licensed under either of [MIT](../../../LICENSE-MIT) or
 
 Research and development use only. Not cleared or approved by the FDA or any
 other regulatory body for clinical diagnostic or treatment use.
-
-- **CSV header:** `tpt-medical voxel hex mesh v1`, units mm and MPa. Node
-  order and element rows are documented in
-  [`docs/book/src/mesh-csv.md`](../../../docs/book/src/mesh-csv.md).
