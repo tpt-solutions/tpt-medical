@@ -46,3 +46,6 @@ pub use models::{
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(all(test, feature = "substrate-cross-check"))]
+mod substrate_cross_check;

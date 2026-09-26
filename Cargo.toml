@@ -81,6 +81,11 @@ tpt-sci-hemodynamics = { version = "=0.1.0", package = "tpt-sci-hemodynamics" }
 tpt-fem = { version = "=0.1.0", package = "tpt-fem", default-features = false }
 tpt-fem-hyperelastic = { version = "=0.1.0", package = "tpt-fem-hyperelastic" }
 tpt-fem-contact = { version = "=0.1.0", package = "tpt-fem-contact" }
+# `tpt-fem-mesh` alone (not full `tpt-fem`'s `mesh` feature) since the only
+# consumer so far (`tpt-med-tissue`'s `substrate-cross-check` feature, see
+# rfcs/0009-nonlinear-fem-substrate-adapter.md) needs `MeshBuilder` and
+# nothing else from the umbrella crate.
+tpt-fem-mesh = { version = "=0.1.0", package = "tpt-fem-mesh" }
 
 # Internal workspace crates (path + version pinned for consumers)
 tpt-med-core = { path = "crates/core/tpt-med-core", version = "0.1.0" }

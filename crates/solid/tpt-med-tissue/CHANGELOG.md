@@ -17,6 +17,14 @@ changes for consumers of this crate.
   full stress, because penalty formulations carry model-internal hydrostatic
   pressure at `J = 1` and the pressure-dependent components are therefore not
   unique.
+- **`substrate-cross-check` cargo feature** (off by default), per
+  `rfcs/0009-nonlinear-fem-substrate-adapter.md`: cross-checks the in-house
+  closed-form uniaxial Neo-Hookean stress against
+  `tpt-fem-hyperelastic::solve_hyperelastic_bar`'s independent 1-D bar
+  Newton solve. Adds two optional dependencies
+  (`tpt-fem-hyperelastic`, `tpt-fem-mesh`, both pinned `=0.1.0` in the root
+  workspace manifest) and one test module; no production API, no change to
+  the default build.
 
 ### Planned
 - Second-order tangent moduli per model, which the nonlinear `tpt-fem` upgrade

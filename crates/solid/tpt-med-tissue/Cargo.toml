@@ -12,9 +12,20 @@ documentation = "https://docs.rs/tpt-med-tissue"
 keywords = ["hyperelastic", "neo-hookean", "mooney-rivlin", "soft-tissue", "constitutive"]
 categories = ["science", "mathematics", "simulation"]
 
+[features]
+# Cross-checks the in-house closed-form uniaxial Neo-Hookean stress against
+# tpt-fem-hyperelastic's independently-implemented 1-D bar Newton solve.
+# Off by default: this is a verification-only addition (see
+# rfcs/0009-nonlinear-fem-substrate-adapter.md), not a production
+# dependency of anything this crate ships, so the default build stays
+# exactly as dependency-light as before this feature existed.
+substrate-cross-check = ["dep:tpt-fem-hyperelastic", "dep:tpt-fem-mesh"]
+
 [dependencies]
 tpt-med-geometry = { path = "../../core/tpt-med-geometry", version = "0.1.0" }
 tpt-med-units = { path = "../../core/tpt-med-units", version = "0.1.0" }
+tpt-fem-hyperelastic = { version = "=0.1.0", optional = true }
+tpt-fem-mesh = { version = "=0.1.0", optional = true }
 
 [lints]
 workspace = true

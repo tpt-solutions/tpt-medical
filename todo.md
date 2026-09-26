@@ -333,8 +333,25 @@ than an orphan.
   citation string. `HounsfieldMapper::bmd_to_youngs_modulus` is the
   composing convenience. 8 new tests, `cargo test`/`clippy`/`fmt` clean,
   README/CHANGELOG updated.
-- **Nonlinear FEM integration** — `tpt-fem` / `tpt-fem-hyperelastic` /
-  `tpt-fem-contact` behind a cargo feature, per `rfcs/0002`.
+- [x] **Nonlinear FEM integration — scoped and given a first safe slice
+  (2026-09-27)**. Read the pinned substrate crates' actual 0.1.0 APIs
+  (`tpt-fem-hyperelastic`, `tpt-fem-mesh`, `tpt-fem-element`,
+  `tpt-fem-contact`, `tpt-fem-solve`) and found the real gap RFC 0002/0004
+  didn't detail: no 3D `Hex8` nonlinear hyperelastic assembly exists in the
+  substrate yet (only stress functions + a 1-D bar Newton solve); `Hex8`
+  element/mesh support exists, contact is DOF-level-constraint-only with no
+  friction. Wrote `rfcs/0009-nonlinear-fem-substrate-adapter.md` (Draft) to
+  scope the real adapter-crate architecture for that gap — not implemented,
+  by design (see the RFC's Drawbacks). Implemented the narrow, safe first
+  slice instead: `tpt-med-tissue`'s new `substrate-cross-check` cargo
+  feature (off by default) cross-checks the in-house closed-form
+  incompressible-Neo-Hookean uniaxial stress against
+  `tpt-fem-hyperelastic::solve_hyperelastic_bar`'s independent 1-D bar
+  Newton solve, agreeing to `1e-9`. Adds `tpt-fem-hyperelastic`/`tpt-fem-mesh`
+  as optional deps (pinned `=0.1.0` in root `[workspace.dependencies]`,
+  `cargo deny check licenses` clean); zero effect on the default build.
+  `cargo test`/`clippy`/`fmt` clean workspace-wide with the feature on and
+  off, `check-crate-docs.sh` passes for all 25 members.
 - [x] **Cardiac electrophysiology RFC fleshed out (2026-09-27)** — Stage 1
   (monodomain on voxel geometry, `tpt-med-electrophysiology`) now has a
   concrete API sketch, Mitchell–Schaeffer kinetics with a cited default
@@ -353,4 +370,58 @@ than an orphan.
   New golden dataset `test-data/golden/electrophysiology/monodomain_restitution.json`.
   15 unit tests + 1 doctest, `cargo test`/`clippy`/`fmt` clean workspace-wide,
   README/CHANGELOG written, `check-crate-docs.sh` passes for all 25 members.
+
+## In progress / newly tracked (2026-09-27)
+
+- [ ] **Finish verifying the JPEG 2000 Part 2 multi-component change.**
+  Implementation is in: `tpt-med-dicom` gained `TransferSyntax::Jpeg2000Part2MultiComponentLossless`/
+  `Jpeg2000Part2MultiComponent` (`1.2.840.10008.1.2.4.92`/`.93`), routed
+  through the existing `jpeg2000::decode_frame` path (Part 2 extends Part
+  1's codestream syntax rather than replacing it; verified by reading
+  `pdfluent-jpeg2000`'s marker-parsing loop, which rejects any marker code
+  it does not recognise rather than skipping it, so a genuine Part 2
+  extended multi-component transform is refused, not mis-decoded). Adds
+  tests in `tags.rs` and updates `jpeg2000.rs`/README/CHANGELOG docs. **Not
+  yet re-confirmed after the last doc edits**: rerun
+  `cargo test -p tpt-med-dicom --features jpeg2000`,
+  `cargo clippy -p tpt-med-dicom --all-targets --features jpeg2000 -- -D warnings`,
+  `cargo fmt -p tpt-med-dicom -- --check`, and `bash scripts/check-crate-docs.sh`
+  end-to-end before considering this closed. Known asymmetry to weigh:
+  unlike `jpeg-ls`'s `jpeg_ls_lossless_end_to_end` in `series.rs`, there is
+  still no series-level (Part-10-byte-stream-to-`DicomSlice`) integration
+  test for any JPEG 2000 transfer syntax (`.90`/`.91` included, not just the
+  new `.92`/`.93`) — only `jpeg2000.rs`'s unit-level `decode_frame` tests
+  exist. Consider whether to add one for parity.
+- [ ] **Implement RFC 0009's full nonlinear FEM adapter, including contact
+  coupling** (user-selected scope, 2026-09-27 — see the FEM-adapter-scope
+  decision this pass; supersedes the narrower "first slice" already shipped
+  as `tpt-med-tissue`'s `substrate-cross-check` feature). Per
+  `rfcs/0009-nonlinear-fem-substrate-adapter.md`'s gap analysis, this means
+  building, from the substrate's actual 0.1.0 primitives (no ready-made 3D
+  solver exists):
+  1. A 3D `Hex8` nonlinear hyperelastic assembly — `tpt-fem-element::Hex8`
+     shape functions/gradients + `tpt-fem-quadrature` (2×2×2, matching the
+     in-house core's own scheme), `tpt-med-tissue::TissueModel::first_piola`
+     for the per-quadrature-point stress (penalty formulation recommended
+     for this first increment — see the RFC's "actual gap" item 2 for why
+     a mixed `u`-`p` formulation is deferred).
+  2. A tangent stiffness (analytic-per-model vs. numerical-differentiation
+     — the RFC leaves this an open benchmark-first decision, not resolved).
+  3. `tpt-fem-solve::newton` + `tpt-fem-sparse::Coo`/`solve` wiring the
+     assembly into an actual nonlinear equilibrium iteration.
+  4. Contact coupling: `tpt-fem-contact`'s `ContactConstraint`/`contact_pairs`
+     (DOF-level unilateral, penalty or augmented-Lagrangian; **no built-in
+     friction** as read from the pinned 0.1.0 source) layered onto the
+     nonlinear tangent from steps 1-3, with constraints re-evaluated each
+     Newton iteration as geometry moves — this specific coupling design is
+     an explicit Unresolved Question in RFC 0009, not yet designed, let
+     alone implemented.
+  New crate (name pending — `tpt-med-fem-adapter` is RFC 0009's placeholder).
+  **Needs a real verification strategy before merge** (RFC 0009 explicitly
+  defers this as a placeholder obligation): code verification against the
+  in-house core's own uniaxial/patch tests at matching parameters, plus mesh
+  refinement once a real 3D assembly exists. This is the "multi-month
+  validation project" scale of work RFC 0004 Level 3 already named — budget
+  accordingly rather than treating it as a quick follow-on to the narrow
+  slice already shipped.
 

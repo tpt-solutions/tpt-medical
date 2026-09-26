@@ -2,7 +2,8 @@
 //! `pdfluent-jpeg2000` crate (`hayro-jpeg2000`). Enabled by the `jpeg2000`
 //! cargo feature.
 //!
-//! Covers two DICOM transfer syntaxes with one codec:
+//! Covers four DICOM transfer syntaxes with one codec, since Part 2 extends
+//! Part 1's codestream syntax rather than replacing it:
 //!
 //! - **JPEG 2000 Lossless Only** (`1.2.840.10008.1.2.4.90`): exact
 //!   reconstruction (reversible 5/3 wavelet).
@@ -11,6 +12,26 @@
 //!   quantization for the lossy case). The transfer syntax UID alone does
 //!   not say which, and this module does not attempt to tell — callers must
 //!   not assume `.91` is exact.
+//! - **JPEG 2000 Part 2 Multi-component, Lossless Only**
+//!   (`1.2.840.10008.1.2.4.92`) and **JPEG 2000 Part 2 Multi-component**
+//!   (`1.2.840.10008.1.2.4.93`): decoded through the exact same path as
+//!   `.90`/`.91` below. "Multi-component" names the *transfer syntax*, not
+//!   a guarantee about what this module decodes: [`decode_frame`]'s
+//!   single-component restriction (below) is unchanged, so a `.92`/`.93`
+//!   file with `SamplesPerPixel = 1` (the common CT/MR case — a Part 2 file
+//!   can use Part 2's extensions for reasons other than component count,
+//!   e.g. an alternative wavelet kernel) decodes normally, while a
+//!   genuinely multi-sample-per-pixel (color) `.92`/`.93` file hits the same
+//!   `"only single-component grayscale is supported"` rejection `.90`/`.91`
+//!   already give a color file — this crate has no `SamplesPerPixel`/
+//!   `PlanarConfiguration` handling anywhere, matching its CT/MR HU scope
+//!   (RFC 0001). Separately, `pdfluent-jpeg2000`'s marker-segment parser
+//!   rejects any marker code it does not recognise
+//!   (`MarkerError::Unsupported`, checked directly in its source) rather
+//!   than skipping it — so a codestream that actually uses a genuine Part 2
+//!   extended multiple-component transform (an array- or wavelet-based
+//!   transform signalled by marker segments Part 1 does not define) is
+//!   rejected with a clear decode error, not silently mis-decoded.
 //!
 //! # Working around a real limitation: the crate always applies an unsigned
 //! # DC level shift
@@ -55,7 +76,7 @@ const CODESTREAM_MAGIC: [u8; 4] = [0xFF, 0x4F, 0xFF, 0x51];
 /// `SOC`(2) + SIZ marker(2) + `Lsiz`(2) + `Rsiz`(2) + `Xsiz`(4) + `Ysiz`(4) +
 /// `XOsiz`(4) + `YOsiz`(4) + `XTsiz`(4) + `YTsiz`(4) + `XTOsiz`(4) +
 /// `YTOsiz`(4) + `Csiz`(2) = 42.
-const SSIZ0_OFFSET: usize = 42;
+pub(crate) const SSIZ0_OFFSET: usize = 42;
 
 /// Reads whether the first SIZ component is declared signed
 /// (ISO/IEC 15444-1 Table A.11, `Ssiz` bit 7), directly from the codestream
@@ -67,6 +88,69 @@ fn component0_signed(fragment: &[u8]) -> Option<bool> {
     }
     fragment.get(SSIZ0_OFFSET).map(|&b| (b & 0x80) != 0)
 }
+
+/// Minimal valid JPEG 2000 raw codestream (J2C) for a 2x2 greyscale image,
+/// all coefficients zero (a single empty packet), so every decoded sample
+/// is exactly the unsigned DC level-shift midpoint: 2^(8-1) = 128.
+///
+/// Layout: SOC, SIZ (8-bit unsigned single component), COD (no MCT,
+/// reversible 5/3, 1 layer), QCD (no quantization), then one tile with a
+/// zero-length packet and EOC. This mirrors the fixture
+/// `pdfluent-jpeg2000` ships in its own `lib.rs` tests, since a
+/// hand-built J2C header is otherwise easy to get subtly wrong.
+///
+/// `cfg(test)` and `pub(crate)` so `series.rs`'s encapsulated-pixel-data
+/// tests can drive the same bytes through a real Part 10 stream, rather
+/// than each hand-rolling a near-identical (and easy to get wrong) copy.
+#[cfg(test)]
+#[rustfmt::skip]
+pub(crate) const MINIMAL_J2C_2X2: &[u8] = &[
+    // SOC
+    0xFF, 0x4F,
+    // SIZ (FF 51), Lsiz=41
+    0xFF, 0x51,
+    0x00, 0x29,
+    0x00, 0x00,             // Rsiz
+    0x00, 0x00, 0x00, 0x02, // Xsiz
+    0x00, 0x00, 0x00, 0x02, // Ysiz
+    0x00, 0x00, 0x00, 0x00, // XOsiz
+    0x00, 0x00, 0x00, 0x00, // YOsiz
+    0x00, 0x00, 0x00, 0x02, // XTsiz
+    0x00, 0x00, 0x00, 0x02, // YTsiz
+    0x00, 0x00, 0x00, 0x00, // XTOsiz
+    0x00, 0x00, 0x00, 0x00, // YTOsiz
+    0x00, 0x01,             // Csiz = 1
+    0x07, 0x01, 0x01,       // Ssiz=7 (8-bit unsigned), XRsiz=1, YRsiz=1
+    // COD (FF 52), Lcod=12
+    0xFF, 0x52,
+    0x00, 0x0C,
+    0x00,                   // Scod
+    0x00,                   // progression order (LRCP)
+    0x00, 0x01,             // num layers
+    0x00,                   // MCT = 0
+    0x00,                   // decomposition levels = 0
+    0x00,                   // code block width
+    0x00,                   // code block height
+    0x00,                   // code block style
+    0x01,                   // transform = 1 (reversible 5/3)
+    // QCD (FF 5C), Lqcd=4
+    0xFF, 0x5C,
+    0x00, 0x04,
+    0x00,                   // Sqcd = NoQuantization
+    0x80,                   // step-size[0]
+    // SOT (FF 90), Lsot=10
+    0xFF, 0x90,
+    0x00, 0x0A,
+    0x00, 0x00,             // Isot
+    0x00, 0x00, 0x00, 0x0F, // Psot
+    0x00,                   // TPsot
+    0x01,                   // TNsot
+    // SOD
+    0xFF, 0x93,
+    0x00,                   // one empty packet
+    // EOC
+    0xFF, 0xD9,
+];
 
 /// Decodes one JPEG 2000 frame into raw stored values.
 ///
@@ -186,64 +270,6 @@ mod tests {
     use super::*;
 
     const TAG: Tag = (0x7FE0, 0x0010);
-
-    // Minimal valid JPEG 2000 raw codestream (J2C) for a 2x2 greyscale image,
-    // all coefficients zero (a single empty packet), so every decoded sample
-    // is exactly the unsigned DC level-shift midpoint: 2^(8-1) = 128.
-    //
-    // Layout: SOC, SIZ (8-bit unsigned single component), COD (no MCT,
-    // reversible 5/3, 1 layer), QCD (no quantization), then one tile with a
-    // zero-length packet and EOC. This mirrors the fixture
-    // `pdfluent-jpeg2000` ships in its own `lib.rs` tests, since a
-    // hand-built J2C header is otherwise easy to get subtly wrong.
-    #[rustfmt::skip]
-    const MINIMAL_J2C_2X2: &[u8] = &[
-        // SOC
-        0xFF, 0x4F,
-        // SIZ (FF 51), Lsiz=41
-        0xFF, 0x51,
-        0x00, 0x29,
-        0x00, 0x00,             // Rsiz
-        0x00, 0x00, 0x00, 0x02, // Xsiz
-        0x00, 0x00, 0x00, 0x02, // Ysiz
-        0x00, 0x00, 0x00, 0x00, // XOsiz
-        0x00, 0x00, 0x00, 0x00, // YOsiz
-        0x00, 0x00, 0x00, 0x02, // XTsiz
-        0x00, 0x00, 0x00, 0x02, // YTsiz
-        0x00, 0x00, 0x00, 0x00, // XTOsiz
-        0x00, 0x00, 0x00, 0x00, // YTOsiz
-        0x00, 0x01,             // Csiz = 1
-        0x07, 0x01, 0x01,       // Ssiz=7 (8-bit unsigned), XRsiz=1, YRsiz=1
-        // COD (FF 52), Lcod=12
-        0xFF, 0x52,
-        0x00, 0x0C,
-        0x00,                   // Scod
-        0x00,                   // progression order (LRCP)
-        0x00, 0x01,             // num layers
-        0x00,                   // MCT = 0
-        0x00,                   // decomposition levels = 0
-        0x00,                   // code block width
-        0x00,                   // code block height
-        0x00,                   // code block style
-        0x01,                   // transform = 1 (reversible 5/3)
-        // QCD (FF 5C), Lqcd=4
-        0xFF, 0x5C,
-        0x00, 0x04,
-        0x00,                   // Sqcd = NoQuantization
-        0x80,                   // step-size[0]
-        // SOT (FF 90), Lsot=10
-        0xFF, 0x90,
-        0x00, 0x0A,
-        0x00, 0x00,             // Isot
-        0x00, 0x00, 0x00, 0x0F, // Psot
-        0x00,                   // TPsot
-        0x01,                   // TNsot
-        // SOD
-        0xFF, 0x93,
-        0x00,                   // one empty packet
-        // EOC
-        0xFF, 0xD9,
-    ];
 
     /// Same fixture as [`MINIMAL_J2C_2X2`], with `Ssiz` bit 7 set so
     /// component 0 declares itself signed (byte 42: `0x07` -> `0x87`).

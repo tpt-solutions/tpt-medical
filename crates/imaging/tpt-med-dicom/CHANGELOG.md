@@ -12,6 +12,20 @@ changes for consumers of this crate.
 ## [Unreleased]
 
 ### Added
+- **`jpeg2000` feature now covers JPEG 2000 Part 2 Multi-component**
+  (`1.2.840.10008.1.2.4.92` Lossless Only, `.93` lossless-or-lossy) — two new
+  `TransferSyntax` variants routed through the exact same `jpeg2000::decode_frame`
+  path as `.90`/`.91`, since Part 2 extends Part 1's codestream syntax rather
+  than replacing it. "Multi-component" names the transfer syntax, not a new
+  decode capability: `decode_frame`'s existing single-component restriction
+  is unchanged, so a `.92`/`.93` file with `SamplesPerPixel = 1` (the common
+  CT/MR case) decodes normally, and a genuinely multi-sample-per-pixel
+  (color) one is rejected exactly as a color `.90`/`.91` file already would
+  be — this crate has no `SamplesPerPixel`/`PlanarConfiguration` handling
+  anywhere. A codestream using a real Part 2 extended multi-component
+  transform is rejected by the underlying crate's own unrecognised-marker
+  check (verified by reading `pdfluent-jpeg2000`'s marker-parsing loop),
+  never silently mis-decoded.
 - **`rle` cargo feature: RLE Lossless (`1.2.840.10008.1.2.5`) pixel data.**
   Off by default — without it an RLE object still yields
   `DicomError::CompressedPixelData`, unchanged from before. With it,

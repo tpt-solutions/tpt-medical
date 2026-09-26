@@ -253,6 +253,23 @@ pub enum TransferSyntax {
     /// how the codestream was encoded; this crate cannot tell which from the
     /// transfer syntax alone. Decoding is behind the `jpeg2000` feature.
     Jpeg2000,
+    /// JPEG 2000 Part 2 Multi-component, Lossless Only
+    /// (`1.2.840.10008.1.2.4.92`). Decoded by the same `jpeg2000` codec path
+    /// as `Jpeg2000Lossless` — Part 2 extends Part 1's codestream syntax
+    /// rather than replacing it, and `jpeg2000::decode_frame`'s single-
+    /// component restriction (see that module) means only grayscale
+    /// (`SamplesPerPixel = 1`) content actually decodes; a genuinely
+    /// multi-sample-per-pixel Part 2 file is rejected by that check, not
+    /// silently mis-decoded. Any Part-2-specific extended marker segment
+    /// (e.g. an array- or wavelet-based multiple-component transform) the
+    /// underlying decoder does not recognise is also rejected, not ignored
+    /// — see `rfcs/0001-dicom-ingestion.md`.
+    Jpeg2000Part2MultiComponentLossless,
+    /// JPEG 2000 Part 2 Multi-component (`1.2.840.10008.1.2.4.93`) —
+    /// lossless or lossy, same caveat as `Jpeg2000`. See
+    /// `Jpeg2000Part2MultiComponentLossless` for what "multi-component" in
+    /// this transfer syntax's name does and does not mean for this crate.
+    Jpeg2000Part2MultiComponent,
 }
 
 impl TransferSyntax {
@@ -263,9 +280,8 @@ impl TransferSyntax {
     /// is enabled — the dataset itself still parses either way, since all of
     /// them carry an explicit-VR-LE dataset; only the pixel data element
     /// decode is feature-gated (`series::SliceBuilder::decode_pixel_data`).
-    /// The remaining compressed syntaxes (retired Processes, JPEG 2000 Part
-    /// 2 multi-component, JPIP) are rejected with an actionable message
-    /// rather than being mis-parsed.
+    /// The remaining compressed syntaxes (retired Processes, JPIP) are
+    /// rejected with an actionable message rather than being mis-parsed.
     pub fn from_uid(uid: &str) -> Result<Self, String> {
         match uid.trim_end_matches('\0') {
             "1.2.840.10008.1.2" => Ok(Self::ImplicitVrLittleEndian),
@@ -279,6 +295,8 @@ impl TransferSyntax {
             "1.2.840.10008.1.2.4.81" => Ok(Self::JpegLsNearLossless),
             "1.2.840.10008.1.2.4.90" => Ok(Self::Jpeg2000Lossless),
             "1.2.840.10008.1.2.4.91" => Ok(Self::Jpeg2000),
+            "1.2.840.10008.1.2.4.92" => Ok(Self::Jpeg2000Part2MultiComponentLossless),
+            "1.2.840.10008.1.2.4.93" => Ok(Self::Jpeg2000Part2MultiComponent),
             other
                 if other.starts_with("1.2.840.10008.1.2.4.")
                     || other.starts_with("1.2.840.10008.1.2.5.") =>
@@ -330,5 +348,43 @@ pub fn implicit_vr(tag: Tag) -> Vr {
         ROWS | COLUMNS | BITS_ALLOCATED | PIXEL_REPRESENTATION => Vr::Us,
         PIXEL_DATA => Vr::Ow,
         _ => Vr::Un,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn jpeg2000_part2_uids_are_recognised() {
+        assert_eq!(
+            TransferSyntax::from_uid("1.2.840.10008.1.2.4.92"),
+            Ok(TransferSyntax::Jpeg2000Part2MultiComponentLossless)
+        );
+        assert_eq!(
+            TransferSyntax::from_uid("1.2.840.10008.1.2.4.93"),
+            Ok(TransferSyntax::Jpeg2000Part2MultiComponent)
+        );
+    }
+
+    #[test]
+    fn jpeg2000_part2_uids_are_encapsulated_explicit_vr() {
+        for uid in ["1.2.840.10008.1.2.4.92", "1.2.840.10008.1.2.4.93"] {
+            let ts = TransferSyntax::from_uid(uid).expect("recognised");
+            assert!(ts.is_encapsulated());
+            assert_eq!(
+                ts.dataset_encoding(),
+                TransferSyntax::ExplicitVrLittleEndian
+            );
+        }
+    }
+
+    #[test]
+    fn jpip_and_retired_syntaxes_are_still_rejected_not_guessed_at() {
+        // JPIP referenced pixel data and any other unrecognised
+        // 1.2.840.10008.1.2.4.* / .5.* UID must still be a named rejection,
+        // not silently coerced into a raw/uncompressed read.
+        let err = TransferSyntax::from_uid("1.2.840.10008.1.2.4.94").unwrap_err();
+        assert!(err.contains("not supported"));
     }
 }

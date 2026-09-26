@@ -86,11 +86,24 @@ route for three reasons:
   Off by default. Covers JPEG-LS Lossless (`.80`, exact) and Near-Lossless
   (`.81`, bounded per-sample error, not exact). Single-component only.
 - **`jpeg2000` feature: JPEG 2000, via [`pdfluent-jpeg2000`](https://crates.io/crates/pdfluent-jpeg2000)
-  (`hayro-jpeg2000`).** Off by default. Covers JPEG 2000 Lossless Only (`.90`)
-  and JPEG 2000 (`.91`, lossless *or* lossy — the UID alone does not say
-  which). Built with its `image`/`simd` extras disabled, so it pulls in no
-  further dependencies. **Works around a real bug in the underlying crate:**
-  it applies JPEG 2000's unsigned DC level shift to every component
+  (`hayro-jpeg2000`).** Off by default. Covers four transfer syntaxes with
+  one codec, since Part 2 extends Part 1's codestream syntax rather than
+  replacing it: JPEG 2000 Lossless Only (`.90`), JPEG 2000 (`.91`, lossless
+  *or* lossy — the UID alone does not say which), and **JPEG 2000 Part 2
+  Multi-component, Lossless Only / lossless-or-lossy** (`.92`/`.93`).
+  "Multi-component" names the transfer syntax, not a decode guarantee: this
+  crate has no `SamplesPerPixel`/`PlanarConfiguration` handling anywhere
+  (matching its CT/MR HU scope), so a `.92`/`.93` file with
+  `SamplesPerPixel = 1` decodes like any other JPEG 2000 file, while a
+  genuinely multi-sample-per-pixel (color) one hits the same
+  single-component rejection a color `.90`/`.91` file already would.
+  A codestream using a real Part 2 extended multiple-component transform
+  (array- or wavelet-based, signalled by marker segments Part 1 does not
+  define) is rejected with a decode error by the underlying crate's own
+  unrecognised-marker check, not silently mis-decoded — see `jpeg2000.rs`.
+  Built with its `image`/`simd` extras disabled, so it pulls in no further
+  dependencies. **Works around a real bug in the underlying crate:** it
+  applies JPEG 2000's unsigned DC level shift to every component
   unconditionally, regardless of whether the codestream declares it signed.
   `decode_frame` re-reads that bit directly from the SIZ marker bytes (the
   crate discards it) and undoes the shift itself when the component really
@@ -102,12 +115,15 @@ route for three reasons:
 
 The transfer syntaxes above are opt-in and behind their own cargo feature; the
 default build still decodes only the two uncompressed syntaxes, and every
-compressed syntax this crate does *not* implement (JPEG 2000 Part 2
-multi-component, JPIP, and any retired Process not listed above) still
-returns `DicomError::CompressedPixelData`, not garbage — decompress those at
-the archive boundary. That is a deliberate architectural line, not an
-oversight. Multi-frame objects, private tags with odd VRs, and DICOM
-networking (C-STORE, DICOMweb) are likewise out of scope for v0.
+compressed syntax this crate does *not* implement (JPIP-referenced pixel
+data — a network protocol for streaming pixel data from a remote server,
+not a local format to decode at all — and any retired Process not listed
+above) still returns `DicomError::CompressedPixelData`, not garbage —
+decompress those at the archive boundary. That is a deliberate architectural
+line, not an oversight. Multi-frame objects, private tags with odd VRs,
+DICOM networking (C-STORE, DICOMweb), and true multi-sample-per-pixel/color
+pixel data (of any transfer syntax, compressed or not) are likewise out of
+scope for v0.
 
 ## Conventions
 
@@ -273,10 +289,11 @@ fn main() -> std::io::Result<()> {
 - **Compressed pixel data decoders are all opt-in cargo features**, off by
   default: `rle`, `jpeg` (Baseline/Extended lossy, Lossless Process 14/SV1
   exact), `jpeg-ls` (Lossless exact, Near-Lossless bounded-error), `jpeg2000`
-  (Lossless Only exact, `.91` either). Without the matching feature, an object
-  using that transfer syntax still yields `DicomError::CompressedPixelData`.
-  JPEG 2000 Part 2 multi-component and JPIP-referenced pixel data have no
-  decoder at all yet.
+  (Lossless Only exact, `.91`/`.92`/`.93` either — see Features above for what
+  "multi-component" does and does not mean for `.92`/`.93`). Without the
+  matching feature, an object using that transfer syntax still yields
+  `DicomError::CompressedPixelData`. JPIP-referenced pixel data has no
+  decoder at all — it is a network protocol, not a local format.
 - **The `jpeg2000` feature only trusts a *conformant* signed
   `PixelRepresentation`.** `pdfluent-jpeg2000` applies the unsigned DC
   level-shift to every component regardless of whether the codestream

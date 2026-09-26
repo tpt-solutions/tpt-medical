@@ -254,6 +254,22 @@ impl SliceBuilder {
             Some(TransferSyntax::Jpeg2000) => {
                 feature_gated_decode!("jpeg2000", jpeg2000, "1.2.840.10008.1.2.4.91", "JPEG 2000")
             }
+            Some(TransferSyntax::Jpeg2000Part2MultiComponentLossless) => {
+                feature_gated_decode!(
+                    "jpeg2000",
+                    jpeg2000,
+                    "1.2.840.10008.1.2.4.92",
+                    "JPEG 2000 Part 2 Multi-component Lossless"
+                )
+            }
+            Some(TransferSyntax::Jpeg2000Part2MultiComponent) => {
+                feature_gated_decode!(
+                    "jpeg2000",
+                    jpeg2000,
+                    "1.2.840.10008.1.2.4.93",
+                    "JPEG 2000 Part 2 Multi-component"
+                )
+            }
             _ => decode_pixels(
                 &el.value,
                 self.bits_allocated,
@@ -511,6 +527,161 @@ mod encapsulated_pixel_data_tests {
         assert_eq!(
             slice.pixel_data,
             pixels.iter().map(|&v| v as i32).collect::<Vec<_>>()
+        );
+    }
+}
+
+#[cfg(all(test, feature = "jpeg2000"))]
+mod jpeg2000_encapsulated_pixel_data_tests {
+    use crate::error::DicomError;
+    use crate::jpeg2000::{MINIMAL_J2C_2X2, SSIZ0_OFFSET};
+    use crate::parser::{encode_element_explicit, DicomParser};
+    use crate::tags::{
+        Vr, BITS_ALLOCATED, COLUMNS, PIXEL_DATA, PIXEL_REPRESENTATION, ROWS, TRANSFER_SYNTAX_UID,
+    };
+    use crate::DicomSlice;
+
+    fn explicit_us(tag: crate::tags::Tag, v: u16) -> Vec<u8> {
+        encode_element_explicit(tag, Vr::Us, &v.to_le_bytes())
+    }
+
+    /// Encapsulated PixelData element, PS3.5 Annex A.4: `OB` undefined-length
+    /// header, empty Basic Offset Table (single frame), one fragment item, then
+    /// the sequence delimiter. Mirrors the same helper in the sibling
+    /// `jpeg-ls` test module, which documents the layout in full.
+    fn encapsulated_pixel_data(frame: &[u8]) -> Vec<u8> {
+        let mut out = Vec::new();
+        out.extend_from_slice(&PIXEL_DATA.0.to_le_bytes());
+        out.extend_from_slice(&PIXEL_DATA.1.to_le_bytes());
+        out.extend_from_slice(b"OB");
+        out.extend_from_slice(&[0, 0]); // reserved
+        out.extend_from_slice(&0xFFFF_FFFFu32.to_le_bytes()); // undefined length
+                                                              // Basic Offset Table: empty (single frame).
+        out.extend_from_slice(&0xFFFEu16.to_le_bytes());
+        out.extend_from_slice(&0xE000u16.to_le_bytes());
+        out.extend_from_slice(&0u32.to_le_bytes());
+        // Fragment.
+        out.extend_from_slice(&0xFFFEu16.to_le_bytes());
+        out.extend_from_slice(&0xE000u16.to_le_bytes());
+        out.extend_from_slice(&(frame.len() as u32).to_le_bytes());
+        out.extend_from_slice(frame);
+        // Sequence delimiter.
+        out.extend_from_slice(&0xFFFEu16.to_le_bytes());
+        out.extend_from_slice(&0xE0DDu16.to_le_bytes());
+        out.extend_from_slice(&0u32.to_le_bytes());
+        out
+    }
+
+    fn part10(transfer_syntax_uid: &[u8], dataset: &[u8]) -> Vec<u8> {
+        let mut buf = vec![0u8; 128];
+        buf.extend_from_slice(b"DICM");
+        buf.extend_from_slice(&encode_element_explicit(
+            TRANSFER_SYNTAX_UID,
+            Vr::Ui,
+            transfer_syntax_uid,
+        ));
+        buf.extend_from_slice(dataset);
+        buf
+    }
+
+    /// A Part 10 byte stream whose PixelData holds `frame`, declared under
+    /// `transfer_syntax_uid`. `bits_allocated`/`pixel_representation` are
+    /// written to match the codestream, so a mismatch is never what makes a
+    /// case below fail.
+    fn stream_with(
+        transfer_syntax_uid: &str,
+        frame: &[u8],
+        bits_allocated: u16,
+        pixel_representation: u16,
+    ) -> DicomSlice {
+        let mut dataset = Vec::new();
+        dataset.extend_from_slice(&explicit_us(ROWS, 2));
+        dataset.extend_from_slice(&explicit_us(COLUMNS, 2));
+        dataset.extend_from_slice(&explicit_us(BITS_ALLOCATED, bits_allocated));
+        dataset.extend_from_slice(&explicit_us(PIXEL_REPRESENTATION, pixel_representation));
+        dataset.extend_from_slice(&encapsulated_pixel_data(frame));
+
+        // UI values are space-padded to an even length by PS3.5.
+        let uid = format!("{transfer_syntax_uid} ");
+        let buf = part10(uid.as_bytes(), &dataset);
+        DicomParser::parse_bytes(&buf).expect("parses")
+    }
+
+    /// The JPEG 2000 counterpart of the `jpeg-ls` module's
+    /// `jpeg_ls_lossless_end_to_end`, run once per transfer syntax this crate
+    /// routes to `jpeg2000::decode_frame`. As with that test, the point is the
+    /// whole path: the transfer syntax is recognised from its UID, the parser
+    /// collects the encapsulated fragment stream itself (not handed a
+    /// pre-assembled frame), and the decoded samples reach
+    /// `DicomSlice::pixel_data`.
+    ///
+    /// The shared fixture is a 2x2 8-bit unsigned tile with all coefficients
+    /// zero, so every sample decodes to the unsigned DC level-shift midpoint,
+    /// `2^(8-1) = 128` — see `jpeg2000::MINIMAL_J2C_2X2`.
+    #[test]
+    fn every_jpeg2000_transfer_syntax_decodes_end_to_end() {
+        for uid in [
+            "1.2.840.10008.1.2.4.90", // JPEG 2000 Lossless Only
+            "1.2.840.10008.1.2.4.91", // JPEG 2000
+            "1.2.840.10008.1.2.4.92", // JPEG 2000 Part 2 Multi-component Lossless Only
+            "1.2.840.10008.1.2.4.93", // JPEG 2000 Part 2 Multi-component
+        ] {
+            let slice = stream_with(uid, MINIMAL_J2C_2X2, 8, 0);
+            assert_eq!(slice.rows, 2, "{uid}");
+            assert_eq!(slice.columns, 2, "{uid}");
+            assert_eq!(slice.pixel_data, vec![128, 128, 128, 128], "{uid}");
+        }
+    }
+
+    /// `.92`/`.93` carry "multi-component" in their *transfer syntax* name,
+    /// not a promise about this crate's decoding: `decode_frame` is still
+    /// single-component, and a `SamplesPerPixel = 1` Part 2 file (a Part 2
+    /// file using Part 2 extensions for some other reason, e.g. an
+    /// alternative wavelet kernel) decodes normally. This pins that, so the
+    /// routing cannot later start rejecting `.92`/`.93` outright.
+    #[test]
+    fn part2_single_component_files_decode() {
+        for uid in ["1.2.840.10008.1.2.4.92", "1.2.840.10008.1.2.4.93"] {
+            let slice = stream_with(uid, MINIMAL_J2C_2X2, 8, 0);
+            assert_eq!(slice.pixel_data, vec![128, 128, 128, 128], "{uid}");
+        }
+    }
+
+    /// The signed-bit workaround (`jpeg2000::component0_signed` re-reading
+    /// `Ssiz` and undoing the codec's unconditional unsigned level shift) has
+    /// to survive the full parse path too, not just `decode_frame`'s unit
+    /// tests: the codestream declares signed *and* the dataset says
+    /// `PixelRepresentation = 1`, so the level shift is undone and the
+    /// zero-coefficient tile reads as 0 rather than 128.
+    #[test]
+    fn signed_pixel_representation_survives_the_full_parse_path() {
+        let mut stream = MINIMAL_J2C_2X2.to_vec();
+        assert_eq!(stream[SSIZ0_OFFSET], 0x07, "fixture layout changed");
+        stream[SSIZ0_OFFSET] = 0x87; // Ssiz bit 7: component 0 is signed
+
+        let slice = stream_with("1.2.840.10008.1.2.4.90", &stream, 8, 1);
+        assert_eq!(slice.pixel_data, vec![0, 0, 0, 0]);
+    }
+
+    /// A non-conformant file whose codestream signedness disagrees with the
+    /// dataset's `PixelRepresentation` is rejected at parse time, not
+    /// silently decoded to a shifted image. Confirms the rejection is a
+    /// `DicomError` rather than a panic on the parse path.
+    #[test]
+    fn disagreeing_signedness_is_rejected_at_parse_time() {
+        let err = DicomParser::parse_bytes(&{
+            let mut dataset = Vec::new();
+            dataset.extend_from_slice(&explicit_us(ROWS, 2));
+            dataset.extend_from_slice(&explicit_us(COLUMNS, 2));
+            dataset.extend_from_slice(&explicit_us(BITS_ALLOCATED, 8));
+            dataset.extend_from_slice(&explicit_us(PIXEL_REPRESENTATION, 1));
+            dataset.extend_from_slice(&encapsulated_pixel_data(MINIMAL_J2C_2X2));
+            part10(b"1.2.840.10008.1.2.4.90 ", &dataset)
+        })
+        .expect_err("unsigned codestream with signed PixelRepresentation must be rejected");
+        assert!(
+            matches!(err, DicomError::BadValue { .. }),
+            "unexpected error: {err:?}"
         );
     }
 }

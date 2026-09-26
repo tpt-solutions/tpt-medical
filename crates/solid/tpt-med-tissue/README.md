@@ -17,7 +17,7 @@ are not implemented here.
 | **Scope** | RFC 0002 — hyperelastic tissue |
 | **License** | MIT OR Apache-2.0 |
 | **MSRV** | 1.82 |
-| **Dependencies** | [`tpt-med-geometry`](../../core/tpt-med-geometry), [`tpt-med-units`](../../core/tpt-med-units) (declared, currently unused) |
+| **Dependencies** | [`tpt-med-geometry`](../../core/tpt-med-geometry), [`tpt-med-units`](../../core/tpt-med-units) (declared, currently unused); optional `tpt-fem-hyperelastic`/`tpt-fem-mesh` behind `substrate-cross-check` |
 | **Changelog** | [CHANGELOG.md](CHANGELOG.md) |
 
 ---
@@ -57,6 +57,13 @@ the build fails.
   inner loop.
 - **A finite-difference reference implementation** (`first_piola_numerical`)
   that doubles as a test oracle.
+- **`substrate-cross-check` cargo feature** (off by default, test-only) —
+  cross-checks the in-house closed-form uniaxial Neo-Hookean stress against
+  `tpt-fem-hyperelastic`'s independently-implemented 1-D bar Newton solve.
+  Adds no production API and no default-build dependency; see
+  `rfcs/0009-nonlinear-fem-substrate-adapter.md` for why this is the
+  deliberately narrow first slice of substrate integration rather than a
+  full 3D adapter (which the substrate does not yet provide at 0.1.0).
 
 ## Conventions
 
@@ -170,6 +177,15 @@ published result, not a stored snapshot:
   the full stress. Penalty formulations carry model-internal hydrostatic
   pressure at `J = 1`, so pressure-dependent components are not unique — this
   is stated explicitly in RFC 0002 and encoded in the tests.
+
+- **Substrate cross-check** (`substrate-cross-check` feature, off by
+  default): the in-house Neo-Hookean uniaxial nominal stress (derived from
+  the deviatoric Cauchy stress difference `sigma11 - sigma22`, the
+  physically correct axial true stress under traction-free lateral
+  surfaces) agrees with `tpt-fem-hyperelastic::solve_hyperelastic_bar`'s
+  independent Newton solve on a 1-D bar mesh to `1e-9` — two separately
+  implemented codebases agreeing on the same incompressible-tension
+  physics. See `rfcs/0009-nonlinear-fem-substrate-adapter.md`.
 
 Golden reference dataset: `test-data/golden/solid/arterial_wall_inflation.json`.
 
