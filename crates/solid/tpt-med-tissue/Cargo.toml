@@ -7,8 +7,10 @@ rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
-keywords.workspace = true
-categories.workspace = true
+readme = "README.md"
+documentation = "https://docs.rs/tpt-med-tissue"
+keywords = ["hyperelastic", "neo-hookean", "mooney-rivlin", "soft-tissue", "constitutive"]
+categories = ["science", "mathematics", "simulation"]
 
 [dependencies]
 tpt-med-geometry = { path = "../../core/tpt-med-geometry", version = "0.1.0" }

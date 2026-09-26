@@ -7,8 +7,10 @@ rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
-keywords.workspace = true
-categories.workspace = true
+readme = "README.md"
+documentation = "https://docs.rs/tpt-med-implant-sizing"
+keywords = ["implant-sizing", "tka", "landmarks", "arthroplasty", "prosthesis"]
+categories = ["science", "mathematics"]
 
 [dependencies]
 tpt-med-core = { path = "../../core/tpt-med-core", version = "0.1.0" }

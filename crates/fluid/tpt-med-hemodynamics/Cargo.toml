@@ -7,8 +7,10 @@ rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
-keywords.workspace = true
-categories.workspace = true
+readme = "README.md"
+documentation = "https://docs.rs/tpt-med-hemodynamics"
+keywords = ["cfd", "navier-stokes", "blood-flow", "wss", "osi"]
+categories = ["science", "simulation", "mathematics"]
 
 [dependencies]
 tpt-med-meshing = { path = "../../imaging/tpt-med-meshing", version = "0.1.0" }

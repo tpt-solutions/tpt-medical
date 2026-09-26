@@ -7,8 +7,10 @@ rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
-keywords.workspace = true
-categories.workspace = true
+readme = "README.md"
+documentation = "https://docs.rs/tpt-med-surgical-planning"
+keywords = ["surgical-planning", "osteotomy", "virtual-surgery", "tka", "arthroplasty"]
+categories = ["science", "simulation", "graphics"]
 
 [dependencies]
 tpt-med-core = { path = "../../core/tpt-med-core", version = "0.1.0" }

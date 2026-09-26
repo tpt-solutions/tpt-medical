@@ -7,8 +7,10 @@ rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
-keywords.workspace = true
-categories.workspace = true
+readme = "README.md"
+documentation = "https://docs.rs/tpt-med-viscoelastic"
+keywords = ["viscoelastic", "prony-series", "relaxation", "soft-tissue", "rheology"]
+categories = ["science", "mathematics", "simulation"]
 
 [dependencies]
 tpt-med-tissue = { path = "../tpt-med-tissue", version = "0.1.0" }

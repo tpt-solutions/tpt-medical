@@ -7,8 +7,10 @@ rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
-keywords.workspace = true
-categories.workspace = true
+readme = "README.md"
+documentation = "https://docs.rs/tpt-med-cardiovascular"
+keywords = ["windkessel", "cardiology", "ffr", "hemodynamics", "waveform"]
+categories = ["science", "simulation", "mathematics"]
 
 [dependencies]
 tpt-med-units = { path = "../../core/tpt-med-units", version = "0.1.0" }

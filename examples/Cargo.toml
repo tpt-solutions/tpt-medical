@@ -7,8 +7,9 @@ rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
-keywords.workspace = true
-categories.workspace = true
+readme = "README.md"
+keywords = ["examples", "dicom", "biomechanics", "cli", "medical"]
+categories = ["science", "command-line-utilities"]
 publish = false
 
 [[bin]]

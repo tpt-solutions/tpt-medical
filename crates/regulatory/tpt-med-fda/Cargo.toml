@@ -7,8 +7,10 @@ rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
-keywords.workspace = true
-categories.workspace = true
+readme = "README.md"
+documentation = "https://docs.rs/tpt-med-fda"
+keywords = ["fda", "cfr-part-11", "audit-trail", "electronic-signature", "compliance"]
+categories = ["security", "cryptography", "encoding"]
 
 [dependencies]
 tpt-med-audit = { path = "../tpt-med-audit", version = "0.1.0" }

@@ -134,3 +134,48 @@
 ### Business Wedge (stretch, ties to Phase 5 + Phase 8 completion)
 - [x] White-label web component: web-based stent deployment simulator for MedTech companies — **`web/stent-simulator/` ships `<tpt-stent-simulator>` (attribute branding, `tpt-deploy` events, npm packaging metadata + README with support path); engine glue in shared `web/pkg/` via `scripts/build-web`**
 - [x] Real-time WASM FEM solver demo: CT scan upload → in-browser stent expansion in patient-specific artery — **`web/viewer/` wires the full glue: DICOM series (or synthetic CT demo) → `WasmMeshPipeline` → `wasm_solve_stance_load` + `wasm_deploy_stent`, WebGL2 render of WASM-built meshes; node smoke test verified end-to-end**
+
+---
+
+## Phase 9: Platform Review Follow-ups (2026-09-26)
+
+Findings from a full-workspace review (build/clippy/test run + doc/RFC read).
+Tracked here for follow-up; nothing in this section has been implemented yet.
+
+### Bugs
+- [ ] `README.md` Quick Start uses the wrong CLI flag (`--bone-threshold`
+      instead of `--threshold`) for `dicom-to-mesh` — breaks the first
+      command a new user runs
+- [ ] Finish per-crate `README.md` files for the 9 crates whose `Cargo.toml`
+      declares `readme = "README.md"` but no file exists yet, which currently
+      breaks `cargo package`: `tpt-med-orthopedics`, `tpt-med-wear`,
+      `tpt-med-audit`, `tpt-med-fda`, `tpt-med-vv40`,
+      `tpt-med-implant-sizing`, `tpt-med-surgical-planning`, `benches`,
+      `examples`
+- [ ] Remove `crates/imaging/tpt-med-dicom/src/dbg_test.rs` — an orphaned
+      debug test (not wired into the crate via any `mod`, ends in an
+      unconditional `panic!`)
+- [ ] `test-data/nifti/` is an empty placeholder directory with no
+      corresponding parser/code anywhere — either remove it or scope it as a
+      real roadmap item
+
+### Governance
+- [ ] Rewrite `CONTRIBUTING.md`: no external PRs — contributions come in as
+      GitHub issues only; update `.github/PULL_REQUEST_TEMPLATE.md` and the
+      RFC process description accordingly
+
+### Larger Initiatives
+- [ ] Host the WASM viewer (`web/viewer/`) as a live "try it now" demo (e.g.
+      GitHub Pages) against the committed synthetic CT data, linked from the
+      top of `README.md`
+- [ ] `templates/` directory (or `cargo generate` scaffolder) giving new
+      contributors a starting-point crate/example per workflow, based on the
+      existing `examples/src/bin/*.rs` milestones
+- [ ] Golden-dataset CI diffing tool: render a before/after numeric-drift
+      table for `test-data/golden/` against a PR, instead of the current
+      manual-review convention
+- [ ] Wire `benchmark.yml` to a stored baseline so criterion benchmark
+      regressions fail CI instead of just running unchecked
+- [ ] Reproducibility manifest per simulation run (crate versions, git SHA,
+      input hashes) leveraging `tpt-med-audit`, to strengthen the
+      "reproducible FDA submissions" pitch

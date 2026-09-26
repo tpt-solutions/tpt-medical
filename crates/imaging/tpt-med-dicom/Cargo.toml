@@ -7,8 +7,10 @@ rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
-keywords.workspace = true
-categories.workspace = true
+readme = "README.md"
+documentation = "https://docs.rs/tpt-med-dicom"
+keywords = ["dicom", "ct-scan", "hounsfield-units", "medical-imaging", "parser"]
+categories = ["science", "parser-implementations", "encoding"]
 
 [dependencies]
 tpt-med-core = { path = "../../core/tpt-med-core", version = "0.1.0" }

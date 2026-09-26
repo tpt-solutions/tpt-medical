@@ -7,8 +7,10 @@ rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
-keywords.workspace = true
-categories.workspace = true
+readme = "README.md"
+documentation = "https://docs.rs/tpt-med-wasm"
+keywords = ["wasm", "webassembly", "wasm-bindgen", "surgical-planning", "zero-cloud"]
+categories = ["wasm", "science", "simulation"]
 
 [lib]
 crate-type = ["cdylib", "rlib"]
