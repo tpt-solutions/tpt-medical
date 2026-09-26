@@ -61,6 +61,30 @@ detectable, and that is the scope here.
   explicit about the canonical form is what makes a signature portable
   between implementations.
 - **Local UTC implementation** — `UtcStamp` and a proleptic-Gregorian
+  civil-date conversion (Hinnant's algorithm), so there is no time-crate
+  dependency and no timezone database to get wrong.
+- **Reproducibility manifest** — `ReproducibilityManifest` answers the question
+  the audit trail does not: *what code and what inputs produced this number?*
+  It pins the workspace version, the version of every participating crate, the
+  git commit, the build profile, and a SHA-256 of every input artefact.
+  `AuditTrail::attach_manifest` attaches it **and records an audit event
+  carrying its digest**, so a manifest swapped after the fact is detectable
+  from the chain alone.
+- **Not a PHI store** — actor tokens are non-identifying by construction, and
+  the manifest hashes its inputs rather than embedding them, so a patient scan
+  never enters the record.
+
+## Conventions
+
+- `sequence` is a **0-based monotonic counter** assigned at `append`.
+- Timestamps are **UTC**, rendered ISO-8601 as `YYYY-MM-DDThh:mm:ssZ`.
+- `reason` is free text and **is the caller's policy surface**: a regulated
+  deployment must ensure it carries no PHI. This is documented rather than
+  enforced, because the correct policy is site-specific.
+- Signing is **not** mutually exclusive with appending; a trail may carry
+  several signatures with different meanings.
+- The export tag is computed **over the export payload**, so it binds the
+  entries, their digests *and* the signature manifestations together.
 
 ## Usage
 
@@ -110,6 +134,67 @@ fn main() {
 }
 ```
 
+### Pinning a run for reproducibility
+
+```rust
+use tpt_med_fda::{AuditTrail, ReproducibilityManifest, SignatureMeaning};
+use tpt_med_core::{AuditAction, AuditEvent};
+
+fn main() {
+    let mut trail = AuditTrail::new("run-2026-09-26-001");
+
+    // Which code, which inputs, which build.
+    let manifest = ReproducibilityManifest::new("0.1.0")
+        .with_crates([("tpt-med-dicom", "0.1.0"), ("tpt-med-fda", "0.1.0")])
+        .with_git_commit(Some("57422ff".into()))
+        .with_build_profile("release")
+        .with_input("ct_series", b"<serialised slice bytes>");
+
+    let digest = manifest.digest();
+    trail.attach_manifest(manifest);
+
+    // The manifest event is on the chain, so a swap is detectable without
+    // even re-checking the detached tag.
+    assert_eq!(trail.entries.len(), 1);
+
+    trail.append(AuditEvent::new(
+        "user:op-1", "mesh", "mesh:abc", AuditAction::Simulate, "stance",
+    ));
+    trail.sign("user:qa-1", SignatureMeaning::Approver, b"k");
+    assert!(trail.verify_integrity());
+
+    let (payload, tag) = trail.export_package(b"k");
+    assert!(payload.contains("\"manifest\""));
+    assert!(payload.contains("57422ff"));
+    println!("manifest {digest}, tag {tag}");
+}
+```
+
+## API Overview
+
+| Item | Purpose |
+|---|---|
+| `AuditTrail::new(run_id)` | Open a trail; `run_id` is the chain seed |
+| `::append(&mut AuditEvent)` | Append-only; assigns the sequence number and timestamps the entry |
+| `::sign(&mut signer, meaning, key)` | Electronic signature over the current state (§11.50) |
+| `::verify_integrity() -> bool` | Re-walk the chain; detects edits, truncation, seed splicing |
+| `::export_tag(&key) -> String` | Detached HMAC-SHA256 tag over the export payload (hex) |
+| `::export_package(&key) -> (String, String)` | Canonical JSON payload plus detached tag |
+| `::len()`, `::is_empty()` | Entry count |
+| `AuditTrail::run_id` | The chain seed |
+| `AuditEntry` | `sequence`, `timestamp`, `actor`, `object_class`, `object_token`, `action`, `reason` |
+| `AuditEntry::canonical() -> String` | The exact string the chain commits to |
+| `AuditTrail::attach_manifest(ReproducibilityManifest)` | Attach a manifest and append an audited event carrying its digest |
+| `AuditTrail::manifest() -> Option<&ReproducibilityManifest>` | The attached manifest, if any |
+| `ReproducibilityManifest::new(workspace_version)` | Manifest stamped now; builder-style `with_crate`/`with_crates`/`with_git_commit`/`with_build_profile`/`with_input`/`with_artifact` |
+| `ReproducibilityManifest::{canonical, digest, to_json, is_pinned}` | The string a digest covers, that digest, the export rendering, and whether a commit is pinned |
+| `InputArtifact::new(label, bytes)` | SHA-256 plus byte length of an input |
+| `MANIFEST_SCHEMA_VERSION`, `TOOL_ID` | `1`, and `"tpt-medical"` |
+| `ElectronicSignature` | `signer`, `timestamp`, `meaning` |
+| `SignatureMeaning` | `Author`, `Reviewer`, `Approver`, `ResponsibleParty` |
+| `UtcStamp` | `epoch_seconds`, `nanos`; `now()`, `to_iso8601()` |
+| `AuditAction`, `AuditEvent` from `tpt-med-core` | The domain-level events appended here |
+
 ## Verification
 
 - **Canonical form** — `AuditEntry::canonical()` is asserted stable and
@@ -154,6 +239,21 @@ fn main() {
   deployment concern.
 - **No retention or archival policy**, no legal hold, no record retention
   schedule.
+- **The manifest records the workspace version, not each crate's own version.**
+  That is exact today only because the workspace shares one
+  `[workspace.package] version`. The moment crates version independently — which
+  the six-week independent-release cadence implies — the manifest must read
+  each crate's own version, which needs a build script or a generated version
+  table. The `fda-package` example carries a `PARTICIPATING_CRATES` list that
+  is the seam for this.
+- **The git commit is caller-supplied.** There is no build-time embedding, so a
+  build not from a checkout records `None` — which is a legitimate, explicit
+  value rather than a gap, but it does mean a released binary cannot be tied
+  back to a commit without the operator supplying it.
+- **Input digests are only as good as what you feed them.** The manifest hashes
+  the bytes you pass; it does not know that a DICOM series is the same anatomy
+  re-exported, and it cannot detect a hash fed in by a caller that hashed
+  something else.
 - **Part 11 compliance is a system property.** This crate implements software
   controls only.
 
@@ -183,40 +283,3 @@ Research and development use only. Not cleared or approved by the FDA. This
 crate implements software controls that support a 21 CFR Part 11 process; a
 validated system additionally requires procedural controls — SOPs, operator
 training, access control, record retention — that no library can provide.
-
-
-## API Overview
-
-| Item | Purpose |
-|---|---|
-| `AuditTrail::new(run_id)` | Open a trail; `run_id` is the chain seed |
-| `::append(&mut AuditEvent)` | Append-only; assigns the sequence number and timestamps the entry |
-| `::sign(&mut signer, meaning, key)` | Electronic signature over the current state (§11.50) |
-| `::verify_integrity() -> bool` | Re-walk the chain; detects edits, truncation, seed splicing |
-| `::export_tag(&key) -> String` | Detached HMAC-SHA256 tag over the export payload (hex) |
-| `::export_package(&key) -> (String, String)` | Canonical JSON payload plus detached tag |
-| `::len()`, `::is_empty()` | Entry count |
-| `AuditTrail::run_id` | The chain seed |
-| `AuditEntry` | `sequence`, `timestamp`, `actor`, `object_class`, `object_token`, `action`, `reason` |
-| `AuditEntry::canonical() -> String` | The exact string the chain commits to |
-| `ElectronicSignature` | `signer`, `timestamp`, `meaning` |
-| `SignatureMeaning` | `Author`, `Reviewer`, `Approver`, `ResponsibleParty` |
-| `UtcStamp` | `epoch_seconds`, `nanos`; `now()`, `to_iso8601()` |
-| `AuditAction`, `AuditEvent` from `tpt-med-core` | The domain-level events appended here |
-
-  civil-date conversion (Hinnant's algorithm), so there is no time-crate
-  dependency and no timezone database to get wrong.
-- **Not a PHI store** — actor tokens are non-identifying by construction.
-
-## Conventions
-
-- `sequence` is a **0-based monotonic counter** assigned at `append`.
-- Timestamps are **UTC**, rendered ISO-8601 as `YYYY-MM-DDThh:mm:ssZ`.
-- `reason` is free text and **is the caller's policy surface**: a regulated
-  deployment must ensure it carries no PHI. This is documented rather than
-  enforced, because the correct policy is site-specific.
-- Signing is **not** mutually exclusive with appending; a trail may carry
-  several signatures with different meanings.
-- The export tag is computed **over the export payload**, so it binds the
-  entries, their digests *and* the signature manifestations together.
-

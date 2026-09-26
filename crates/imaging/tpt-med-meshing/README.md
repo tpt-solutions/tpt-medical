@@ -132,6 +132,38 @@ mask, which is what the fluid and surgical-planning crates do.
 - `MeshError::EmptyMask` is covered: meshing a void mask is an error, not a
   panic and not an empty mesh.
 
+## Known Limitations
+
+- **The stair-step surface is the topology.** A voxel mesh is exactly as
+  detailed as the CT, so a 0.5 mm scan of a femur gives a visibly faceted
+  surface. `smooth_mesh` relaxes the nodes for display, but it does not
+  recover curvature the scan never measured, and it moves surface nodes away
+  from the data the moduli were computed from.
+- **Thresholding is binary.** `threshold_hu` produces solid/void with no
+  partial-volume weighting, so a voxel that is half bone and half soft tissue
+  is fully one or the other. This is a known source of small systematic errors
+  in absolute stress, and is usually acceptable because the resulting modulus
+  error is small next to the biological variability.
+- **No morphological post-processing.** No hole filling, no island removal, no
+  connected-component labelling, no closing or opening. A noisy threshold can
+  leave specks and voids that then become elements or holes in the FEM mesh.
+- **No adaptive or multi-resolution meshing.** Uniform voxel pitch, one element
+  per voxel. A structure that needs refinement gets it by acquiring a finer
+  scan, not by refining locally.
+- **HU → modulus is inherited from `tpt-med-dicom`** and carries that crate's
+  limitations: the linear HU→density approximation, and no per-patient QCT
+  calibration. There is no override hook for a caller-supplied modulus field.
+- **CSV is lossy by design.** Mean HU and Poisson's ratio are not exported, so
+  a round-trip through the file is not lossless. That is deliberate — the
+  format is a human-readable interchange, not a model store — but it means the
+  CSV cannot be the system of record.
+- **No surface mesh export.** There is no STL/OBJ/VTK output, so a
+  visualisation or CAD workflow outside the web viewer needs the CSV plus
+  external tooling.
+- **`smooth_mesh` has no validity guard.** A large relaxation factor on a thin
+  structure can invert elements, producing a mesh that the FEM solver will
+  correctly reject. The failure surfaces in `tpt-med-biomechanics`, not here.
+
 ## Related Crates
 
 - [`tpt-med-dicom`](https://github.com/tpt-solutions/tpt-medical/tree/master/crates/imaging/tpt-med-dicom) — supplies the HU volume and the modulus correlations.
@@ -158,4 +190,3 @@ other regulatory body for clinical diagnostic or treatment use.
 - **CSV header:** `tpt-medical voxel hex mesh v1`, units mm and MPa. Node
   order and element rows are documented in
   [`docs/book/src/mesh-csv.md`](../../../docs/book/src/mesh-csv.md).
-

@@ -200,4 +200,3 @@ other regulatory body for clinical diagnostic or treatment use.
   the full stress. Penalty formulations carry model-internal hydrostatic
   pressure at `J = 1`, so pressure-dependent components are not unique — this
   is stated explicitly in RFC 0002 and encoded in the tests.
-

@@ -1,0 +1,9 @@
+# CI executes scripts/*.sh directly, and so do contributors on WSL and Git
+# Bash. A CRLF checkout turns `set -euo pipefail` into a syntax error, so pin
+# shell scripts to LF. This is deliberately scoped rather than applying
+# `* text=auto eol=lf` globally, which would rewrite the working tree of every
+# existing contributor on their next checkout for no benefit.
+*.sh text eol=lf
+
+# PowerShell is the documented Windows entry point; CRLF is correct for it.
+*.ps1 text eol=crlf

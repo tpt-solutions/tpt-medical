@@ -1,0 +1,103 @@
+name: Demo
+
+# Publishes the WebAssembly surgical planning viewer as a live "try it now"
+# demo, against the committed *synthetic* CT data. Nothing here touches real
+# patient data: the viewer loads test-data/dicom/synthetic_ct from the same
+# static site.
+#
+# This is a separate workflow from docs.yml on purpose. docs.yml publishes
+# rustdoc, which changes on almost every commit; this publishes a demo that is
+# expensive to build (WASM + wasm-bindgen) and only needs rebuilding when the
+# engine or the web assets change.
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - "crates/**"
+      - "web/**"
+      - "scripts/build-web.sh"
+      - ".github/workflows/pages.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages-demo
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build demo site
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - name: Install wasm-bindgen CLI
+        # Must match the exact pin in crates/core/tpt-med-wasm/Cargo.toml,
+        # or the generated glue will not load.
+        run: cargo install wasm-bindgen-cli --version 0.2.128 --locked
+      - name: Build the WASM engine
+        run: |
+          cargo build -p tpt-med-wasm --target wasm32-unknown-unknown --release
+          wasm-bindgen --out-dir web/pkg --target web \
+            target/wasm32-unknown-unknown/release/tpt_med_wasm.wasm
+      - name: Assemble the site
+        run: |
+          mkdir -p site
+          # The web apps, including the generated web/pkg engine glue.
+          cp -r web/viewer site/viewer
+          cp -r web/stent-simulator site/stent-simulator
+          cp -r web/pkg site/pkg
+          # All synthetic test data. The viewer probes "../test-data/..." from
+          # site/viewer/, which is where this lands, and falls back to the
+          # mesh CSV when the engine is not built. Everything here is
+          # synthetic by policy - never commit real patient data.
+          mkdir -p site/test-data
+          cp -r test-data/dicom site/test-data/dicom
+          cp -r test-data/meshes site/test-data/meshes
+          # A landing page, so the site root is not a bare directory listing.
+          cat > site/index.html <<'HTML'
+          <!doctype html>
+          <meta charset="utf-8">
+          <title>tpt-medical demo</title>
+          <style>
+            body { font: 16px/1.6 system-ui, sans-serif; max-width: 44rem;
+                   margin: 3rem auto; padding: 0 1rem; }
+            code { background: #f4f4f4; padding: .1rem .3rem; }
+          </style>
+          <h1>tpt-medical</h1>
+          <p>Zero-cloud computational biomechanics. Everything below runs
+             entirely in your browser &mdash; no upload, no server.</p>
+          <ul>
+            <li><a href="viewer/">Surgical planning viewer</a> &mdash;
+                DICOM &rarr; meshing &rarr; FEM under a stance load, rendered
+                with WebGL2.</li>
+            <li><a href="stent-simulator/">Stent deployment simulator</a> &mdash;
+                the white-label <code>&lt;tpt-stent-simulator&gt;</code>
+                component.</li>
+          </ul>
+          <p><small>Synthetic data only. Research and development use; not
+             cleared for clinical use.</small></p>
+          HTML
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  deploy:
+    name: Deploy demo
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

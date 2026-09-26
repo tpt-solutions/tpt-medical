@@ -5,7 +5,15 @@ on:
     paths:
       - "crates/**"
       - "benches/**"
+  # Regenerating the baseline is a deliberate act: run the workflow manually,
+  # read the diff in the job log, and commit the result if the change is
+  # expected. A baseline that drifts silently is worse than no baseline.
   workflow_dispatch:
+    inputs:
+      update_baseline:
+        description: "Regenerate benches/baseline.txt instead of comparing"
+        type: boolean
+        default: false
 
 jobs:
   bench:
@@ -15,10 +23,36 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - name: Run benchmark suite
-        run: cargo bench --workspace --no-fail-fast 2>&1 | tee bench_output.txt
+      - name: Run benchmark suite and compare against the baseline
+        # Fails the job when a stage regresses beyond the threshold (default
+        # 25 %, override with TPT_BENCH_THRESHOLD_PCT). The threshold is
+        # deliberately loose: GitHub-hosted runners are shared and noisy, and a
+        # tight budget produces false failures that teach people to ignore the
+        # job. This is here to catch an algorithmic regression (a lost fast
+        # path, an accidental O(n^2)) — which shows up as 2x or more — not a
+        # few percent of runner jitter.
+        run: bash scripts/bench-baseline.sh
       - name: Upload benchmark results
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: bench-results
-          path: bench_output.txt
+          path: |
+            benches/baseline.txt
+          retention-days: 30
+
+  update-baseline:
+    name: Update benchmark baseline
+    # Regenerate the baseline deliberately and read the diff. A baseline that
+    # drifts silently is worse than no baseline at all.
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.update_baseline == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Regenerate baseline
+        run: bash scripts/bench-baseline.sh --update
+      - name: Show the new baseline
+        run: cat benches/baseline.txt
+

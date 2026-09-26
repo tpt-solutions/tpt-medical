@@ -64,6 +64,19 @@ browser, in seconds, without a licence.
   exposes the centreline profile for direct comparison with theory.
 - `PLASMA` constant (0.0012 Pa·s) for reference.
 
+## Conventions
+
+- Lengths **mm**, velocity **mm/s**, time **s**.
+- Viscosity in **Pa·s**, stress in **Pa**, density in **g/mm³**
+  (1.06e-3 g/mm³ = 1060 kg/m³).
+- Cell mask index: `(i*ny + j)*nz + k` (note the ordering — it is *not* the
+  meshing crate's `(z·ny+y)·nx+x`).
+- `SolverConfig::default()`: `dt = 2.0e-4 s`, `poisson_iterations = 400`,
+  `include_convection = false`, `viscosity_relaxation = 0.2`,
+  `density = 1.06e-3`.
+  Convection is **off by default**: for creeping arterial flow the term is
+  small and disabling it converges faster and more robustly.
+
 ## Usage
 
 ```rust
@@ -196,18 +209,3 @@ diagnostic device; hemodynamics output is for research screening.
 | `extract_wss(&HemodynamicsSolver) -> WssField` | Wall traction on wall-adjacent faces |
 | `OsiAccumulator` | `sample(traction, dt)` per step; `osi()` returns the index |
 | `tpt_med_geometry::Vec3` | Wall sample positions and traction vectors |
-
-
-## Conventions
-
-- Lengths **mm**, velocity **mm/s**, time **s**.
-- Viscosity in **Pa·s**, stress in **Pa**, density in **g/mm³**
-  (1.06e-3 g/mm³ = 1060 kg/m³).
-- Cell mask index: `(i*ny + j)*nz + k` (note the ordering — it is *not* the
-  meshing crate's `(z·ny+y)·nx+x`).
-- `SolverConfig::default()`: `dt = 2.0e-4 s`, `poisson_iterations = 400`,
-  `include_convection = false`, `viscosity_relaxation = 0.2`,
-  `density = 1.06e-3`.
-  Convection is **off by default**: for creeping arterial flow the term is
-  small and disabling it converges faster and more robustly.
-

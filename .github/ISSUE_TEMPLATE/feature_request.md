@@ -6,6 +6,10 @@ labels: ["enhancement", "triage"]
 assignees: []
 ---
 
+> This project does not accept external pull requests. Open this issue first;
+> a maintainer will pick it up. Attach a patch here if you already have one —
+> see [CONTRIBUTING.md](../CONTRIBUTING.md).
+
 ## Problem
 
 What clinical, engineering, or regulatory workflow is blocked today?

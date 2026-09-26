@@ -60,6 +60,25 @@ throws away the information the surgeon uses to decide whether to upsize.
 - **Alignment proxies** — `femorotibial_angle_deg` (neutral ≈ 0–10°; larger
   indicates varus/valgus) and `tibial_slope_deg` (clamped to `[0, 30]`).
 
+## Conventions
+
+- All measurements in **millimetres**; angles in **degrees** (as returned by
+  the accessors — note this differs from the workspace-wide radian convention
+  in `tpt-med-geometry`, because these values are read off a surgeon's
+  protractor and printed on a chart).
+- `SizeChart.entries` **must be ascending by `nominal`**; `select` relies on
+  the ordering.
+- **Ties round up.** At exactly `t = 0.5` between two sizes, the larger size
+  is selected. A chart step is a manufacturing increment and undersizing
+  causes more harm than oversizing in this specific decision.
+- Femoral selection uses the blend `0.6 · TEA + 0.4 · AP depth`; tibial
+  selection uses plateau width directly. These weights are the workspace
+  convention and are stated explicitly rather than buried.
+- `ap_depth` is measured **perpendicular to the TEA**, not along a fixed
+  anatomical axis, so it is unaffected by how the scan was positioned.
+- `size_tka` returns `None` if either chart yields no selection — a caller
+  must handle a missing or empty chart explicitly.
+
 ## Usage
 
 ```rust
@@ -214,23 +233,3 @@ instructions for use and the surgeon's judgement.
 - **`size_tka`** — the bundle: both component labels, all three measurements
   and both alignment proxies in one `TkaSizing` value.
 - No dependencies beyond `tpt-med-geometry`.
-
-## Conventions
-
-- All measurements in **millimetres**; angles in **degrees** (as returned by
-  the accessors — note this differs from the workspace-wide radian convention
-  in `tpt-med-geometry`, because these values are read off a surgeon's
-  protractor and printed on a chart).
-- `SizeChart.entries` **must be ascending by `nominal`**; `select` relies on
-  the ordering.
-- **Ties round up.** At exactly `t = 0.5` between two sizes, the larger size
-  is selected. A chart step is a manufacturing increment and undersizing
-  causes more harm than oversizing in this specific decision.
-- Femoral selection uses the blend `0.6 · TEA + 0.4 · AP depth`; tibial
-  selection uses plateau width directly. These weights are the workspace
-  convention and are stated explicitly rather than buried.
-- `ap_depth` is measured **perpendicular to the TEA**, not along a fixed
-  anatomical axis, so it is unaffected by how the scan was positioned.
-- `size_tka` returns `None` if either chart yields no selection — a caller
-  must handle a missing or empty chart explicitly.
-

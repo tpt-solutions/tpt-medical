@@ -72,6 +72,37 @@ jobs:
         if: ${{ matrix.wasm }}
         run: cargo check -p tpt-med-wasm --target wasm32-unknown-unknown
 
+  crate-docs:
+    name: Crate docs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Per-crate README/CHANGELOG + crates.io metadata
+        run: bash scripts/check-crate-docs.sh
+
+  golden-drift:
+    name: Golden dataset drift
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The drift table compares the working tree against the base branch,
+          # so the base history must be present.
+          fetch-depth: 0
+      - name: Render numeric drift for test-data/golden
+        # Fails when a golden value moved beyond the tolerance the golden file
+        # itself declares, or when a field was added or removed. Numerical
+        # behaviour is API in this project, so a silent change to a reference
+        # value is a breaking change and must be justified in the PR.
+        run: bash scripts/diff-golden.sh "origin/${{ github.base_ref || 'master' }}"
+      - name: Upload drift table
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: golden-drift
+          path: test-data/golden
+          retention-days: 30
+
   msrv:
     name: MSRV
     runs-on: ubuntu-latest

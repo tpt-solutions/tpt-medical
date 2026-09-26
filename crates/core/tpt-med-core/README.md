@@ -141,6 +141,28 @@ The privacy properties here are structural rather than tested after the fact:
 there is no field on `PatientModel` that can hold a raw identifier, and no
 `Debug` or `Display` impl that renders one.
 
+## Known Limitations
+
+- **De-identification is not a security boundary.** `PatientId::from_hash` uses
+  `DefaultHasher`, which prevents *accidental* PHI leakage through logs and
+  error paths but does not resist an adversary. Any mapping table between real
+  identities and tokens is itself PHI under your institution's controls.
+- **No persistence.** `PatientModel` and `AnatomicalModel` are in-memory
+  structures; serialisation, storage and access control are the caller's.
+- **No landmark detection.** `Landmark` and `AnatomicalRegion` are containers;
+  finding the epicondyles or the transepicondylar axis in a CT is not
+  implemented here.
+- **No validation of anatomical consistency.** A model can be built with
+  overlapping or anatomically impossible regions; nothing cross-checks that a
+  `Femur` region does not sit inside a `Liver` region.
+- **Demographics are coarse by design.** `Demographics` carries only age, sex,
+  mass and stature, which is enough for body-weight scaling and not enough for
+  anything requiring a body composition model.
+- **Closed taxonomies are a maintenance cost.** Adding a region is an RFC,
+  which is the right friction, but it means a user modelling a structure the
+  taxonomy does not know must fall back to `Custom(String)` and accept the loss
+  of exhaustive enumeration.
+
 ## Related Crates
 
 - [`tpt-med-fda`](https://github.com/tpt-solutions/tpt-medical/tree/master/crates/regulatory/tpt-med-fda) — timestamps, chains and HMAC-signs the `AuditEvent`s defined here (RFC 0003).

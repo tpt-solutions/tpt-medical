@@ -189,4 +189,3 @@ other regulatory body for clinical diagnostic or treatment use.
   reference SED stimulus ≈0.004 mJ/mm³ with a ±35 % lazy zone
   `(0.0026, 0.0054)`, apposition 0.003 and resorption 0.002 g/cm³/day.
   These are *starting points for screening, not patient-calibrated values*.
-

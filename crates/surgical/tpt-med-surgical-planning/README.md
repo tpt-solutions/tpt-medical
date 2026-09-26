@@ -205,4 +205,3 @@ surgical planning system.
   a plan that could scale bone would not be a surgical plan.
 - `execute` is pure with respect to the plan: it can be called repeatedly and
   always returns the same result from the same base model.
-

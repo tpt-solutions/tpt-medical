@@ -156,6 +156,44 @@ realistic CT-sized meshes. Single-precision node data would halve the memory
 footprint but is not used: stress accuracy in MPa is the product requirement,
 and it is worth more than the bytes.
 
+## Known Limitations
+
+- **Linear small-strain only.** This is the central limitation and the reason
+  the crate is small. No hyperelasticity, no large deformation, no geometric
+  stiffness, no plasticity, no creep. A femoral head under physiological load
+  deforms roughly elastically, which is why this is defensible for bone
+  screening — but it is not a general FEM package and will be wrong for
+  anything soft.
+- **Q1 hexes are stiff.** Trilinear hexahedra lock volumetrically and
+  over-predict bending stiffness relative to a quadratic element. For a
+  bending-dominated structure this biases stress downward near the neutral
+  axis. A Q8 or Q20 element would fix it, at real cost in DOFs and assembly
+  time.
+- **No contact.** Two bodies in a TKA planning workflow cannot touch through
+  this solver; contact is a `tpt-fem-contact` responsibility.
+- **Isotropic materials per element.** `element_modulus` and `element_poisson`
+  are scalars, so the transversely isotropic and orthotropic descriptions in
+  `tpt-med-bone` cannot be expressed to the solver. A directional modulus
+  would need a full tensor per element and a correspondingly richer element
+  formulation.
+- **Single-threaded, and the CG is the bottleneck.** Jacobi-preconditioned CG
+  is fine for a few hundred thousand DOFs but will not scale to a whole-body
+  mesh without a multigrid or a direct solver. No sparse direct factorisation
+  is available.
+- **No dynamic or transient analysis.** `solve` is static. There is no
+  transient, frequency-domain or modal capability.
+- **No multi-constraint boundary conditions.** `fix_nodes` removes all 3 DOFs;
+  symmetry planes and roller constraints must be emulated by the caller
+  applying reaction forces, which is more work and more error-prone than it
+  should be.
+- **Conjugate gradient can fail to converge within `max_iterations`** and the
+  `SolveStats` residual must be inspected. There is no adaptive restart and no
+  fallback to a direct solve, so a badly conditioned model returns a
+  non-converged result that looks otherwise valid.
+- **Verification is against linear analytical solutions**, which is the correct
+  standard for a linear code but says nothing about a nonlinear one that will
+  eventually be built on top of this.
+
 ## Related Crates
 
 - [`tpt-med-meshing`](https://github.com/tpt-solutions/tpt-medical/tree/master/crates/imaging/tpt-med-meshing) — produces the `VoxelHexMesh`; the hex corner order is the contract between the two crates.
@@ -199,4 +237,3 @@ other regulatory body for clinical diagnostic or treatment use.
 | `SolverError` | `Invalid(String)` — empty mesh, length mismatch, degenerate element, singular system |
 
   `[000, 100, 110, 010, 001, 101, 111, 011]`.
-

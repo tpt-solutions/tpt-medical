@@ -163,4 +163,3 @@ other regulatory body for clinical diagnostic or treatment use.
 - The returned **fractions are dimensionless** — the fraction of the
   equilibrium displacement, not an absolute length. Multiply by
   `h · σ₀ / H_A` for a displacement in mm.
-

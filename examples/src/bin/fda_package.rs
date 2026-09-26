@@ -9,16 +9,56 @@
 //! cargo run -p tpt-med-examples --bin fda-package
 //! ```
 
-use tpt_med_audit::hmac_sha256;
+use tpt_med_audit::{hmac_sha256, sha256_hex};
 use tpt_med_biomechanics::{BiomechanicsModel, BoundaryConditions};
 use tpt_med_core::{AuditAction, AuditEvent};
 use tpt_med_dicom::DicomSeries;
-use tpt_med_fda::{AuditTrail, SignatureMeaning};
+use tpt_med_fda::{AuditTrail, ReproducibilityManifest, SignatureMeaning};
 use tpt_med_meshing::{MedicalMesher, SegmentationMask};
 use tpt_med_vv40::{
     AgreementLevel, CredibilityAssessment, ModelInfluence, ModelRisk, ValidationActivity,
     ValidationType, VerificationActivity, VerificationType,
 };
+
+/// Crates whose code took part in this run, recorded in the reproducibility
+/// manifest.
+///
+/// The version is the workspace version, which is exact today because the
+/// workspace shares a single `[workspace.package] version = "0.1.0"`. The day
+/// crates are allowed to version independently, this needs to read each
+/// crate's own version rather than the workspace one — see the note in
+/// `tpt-med-fda`'s README "Known limitations".
+const PARTICIPATING_CRATES: &[&str] = &[
+    "tpt-med-audit",
+    "tpt-med-biomechanics",
+    "tpt-med-core",
+    "tpt-med-dicom",
+    "tpt-med-fda",
+    "tpt-med-meshing",
+    "tpt-med-units",
+    "tpt-med-vv40",
+];
+
+/// SHA-256 over the whole input series, in filename order.
+///
+/// Hashing the concatenation rather than each file separately means the
+/// manifest records "this exact series" without a per-file list, and any
+/// change to any slice changes the digest.
+fn hash_series(dir: &std::path::Path) -> (String, u64) {
+    let mut files: Vec<_> = std::fs::read_dir(dir)
+        .expect("test data present")
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|x| x == "dcm"))
+        .collect();
+    files.sort();
+
+    let mut buf = Vec::new();
+    for f in &files {
+        buf.extend_from_slice(&std::fs::read(f).expect("slice readable"));
+    }
+    (sha256_hex(&buf), buf.len() as u64)
+}
 
 fn main() {
     println!("=== tpt-medical FDA package export (Phase 7 milestone) ===");
@@ -35,6 +75,30 @@ fn main() {
         AuditAction::Create,
         "loaded synthetic CT series (no PHI)",
     ));
+
+    // Reproducibility manifest: which code, which inputs, which build.
+    // Attached before any computation so the manifest is on the record even if
+    // the run later fails.
+    let series_dir = std::path::Path::new("test-data/dicom/synthetic_ct");
+    let (series_sha, series_bytes) = hash_series(series_dir);
+    let manifest = ReproducibilityManifest::new(env!("CARGO_PKG_VERSION"))
+        .with_crates(
+            PARTICIPATING_CRATES
+                .iter()
+                .map(|c| (*c, env!("CARGO_PKG_VERSION"))),
+        )
+        .with_git_commit(std::env::var("TPT_GIT_COMMIT").ok())
+        .with_build_profile(std::env::var("PROFILE").unwrap_or_else(|_| "unknown".into()))
+        .with_artifact(tpt_med_fda::InputArtifact {
+            label: "ct_series".into(),
+            sha256: series_sha.clone(),
+            bytes: series_bytes,
+        });
+    let manifest_digest = manifest.digest();
+    trail.attach_manifest(manifest);
+    println!("[0/4] reproducibility manifest {manifest_digest}");
+    println!("  input ct_series: {series_sha} ({series_bytes} bytes)");
+
     trail.append(AuditEvent::new(
         "operator:engineer-1",
         "mesh",

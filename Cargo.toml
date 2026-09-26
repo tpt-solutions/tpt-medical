@@ -43,6 +43,12 @@ license = "MIT OR Apache-2.0"
 authors = ["TPT Solutions"]
 repository = "https://github.com/tpt-solutions/tpt-medical"
 homepage = "https://github.com/tpt-solutions/tpt-medical"
+# Fallback metadata for a newly added crate. Every existing member overrides
+# both with crate-specific values, because generic keywords and categories are
+# useless for discovery: `tpt-med-audit` is `cryptography`/`security` and
+# `tpt-med-stents` is `science`/`simulation`/`mathematics`, and neither
+# describes the other. The `crate-docs` CI job enforces the crates.io rules
+# (1-5 keywords of <= 20 chars, <= 5 valid categories) on every manifest.
 keywords = ["biomechanics", "medical", "fem", "dicom", "simulation"]
 categories = ["science", "simulation"]
 

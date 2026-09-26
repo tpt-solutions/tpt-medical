@@ -26,6 +26,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tpt_med_audit::{hash_chain, hex, hmac_sha256, verify_chain};
 use tpt_med_core::{AuditAction, AuditEvent};
 
+pub mod manifest;
+
+pub use manifest::{InputArtifact, ReproducibilityManifest, MANIFEST_SCHEMA_VERSION, TOOL_ID};
+
 /// UTC timestamp: seconds + nanoseconds since the epoch, rendered as
 /// ISO-8601 `YYYY-MM-DDThh:mm:ssZ` (proleptic Gregorian; civil-date
 /// conversion implemented locally, no external time crate).
@@ -172,6 +176,8 @@ pub struct AuditTrail {
     entries: Vec<AuditEntry>,
     signatures: Vec<ElectronicSignature>,
     digest_index: Vec<String>,
+    /// Reproducibility manifest, when the run recorded one.
+    manifest: Option<ReproducibilityManifest>,
 }
 
 impl AuditTrail {
@@ -182,6 +188,7 @@ impl AuditTrail {
             entries: Vec::new(),
             signatures: Vec::new(),
             digest_index: Vec::new(),
+            manifest: None,
         }
     }
 
@@ -272,7 +279,18 @@ impl AuditTrail {
                 sig.meaning.as_str(),
             ));
         }
-        s.push_str("]}");
+        // Close the arrays, then the object. The manifest is appended *inside*
+        // the object, so the closing brace must come after it, not before.
+        s.push(']');
+
+        // The reproducibility manifest, when the run recorded one. Omitting
+        // the key entirely when there is none keeps the export byte-identical
+        // for runs that do not use it, so existing packages still verify.
+        if let Some(m) = &self.manifest {
+            s.push_str(",\"manifest\":");
+            s.push_str(&m.to_json());
+        }
+        s.push('}');
         s
     }
 
@@ -290,6 +308,31 @@ impl AuditTrail {
     /// True when no entries are recorded.
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
+    }
+
+    /// Attaches a reproducibility manifest and appends an audit event
+    /// recording its digest.
+    ///
+    /// The event is what makes a later manifest swap detectable: the manifest
+    /// body is covered by the export tag, and its digest is covered by the
+    /// chain, so replacing the manifest invalidates both. Attaching twice
+    /// records a second event rather than overwriting, because the first
+    /// attachment already happened in the record.
+    pub fn attach_manifest(&mut self, manifest: ReproducibilityManifest) {
+        let digest = manifest.digest();
+        self.manifest = Some(manifest);
+        self.append(AuditEvent::new(
+            "system:manifest",
+            "reproducibility_manifest",
+            digest,
+            AuditAction::Create,
+            "reproducibility manifest attached to run",
+        ));
+    }
+
+    /// The attached reproducibility manifest, if any.
+    pub fn manifest(&self) -> Option<&ReproducibilityManifest> {
+        self.manifest.as_ref()
     }
 }
 
@@ -361,6 +404,58 @@ mod tests {
         assert!(trail.verify_integrity());
     }
 
+    /// Cheap structural JSON check: balanced braces/brackets, exactly one
+    /// top-level value, and the export is an object.
+    ///
+    /// This is not a JSON parser, and deliberately so — the crate is
+    /// dependency-free. It is enough to catch the failure mode that actually
+    /// happened: closing the outer object before appending the manifest, which
+    /// yields a string that still *looks* right and is still signed, but is not
+    /// parseable by any consumer.
+    fn assert_single_json_object(s: &str) {
+        assert!(
+            s.starts_with('{'),
+            "must start with an object: {}",
+            &s[..40.min(s.len())]
+        );
+        assert!(s.ends_with('}'), "must end with an object");
+
+        let (mut depth, mut closes_at_top) = (0i32, false);
+        let mut in_str = false;
+        let mut escaped = false;
+        for c in s.chars() {
+            if in_str {
+                if escaped {
+                    escaped = false;
+                } else if c == '\\' {
+                    escaped = true;
+                } else if c == '"' {
+                    in_str = false;
+                }
+                continue;
+            }
+            match c {
+                '"' => in_str = true,
+                '{' | '[' => {
+                    depth += 1;
+                    if depth == 1 {
+                        assert!(!closes_at_top, "more than one top-level value");
+                    }
+                }
+                '}' | ']' => {
+                    depth -= 1;
+                    assert!(depth >= 0, "unbalanced closing delimiter");
+                    if depth == 0 {
+                        closes_at_top = true;
+                    }
+                }
+                _ => {}
+            }
+        }
+        assert_eq!(depth, 0, "unbalanced delimiters");
+        assert!(closes_at_top, "no top-level value closed");
+    }
+
     #[test]
     fn empty_trail_verifies() {
         let trail = AuditTrail::new("run-empty");
@@ -381,5 +476,98 @@ mod tests {
         let (json, _) = trail.export_package(b"k");
         assert!(json.contains("\\\"m\\\""));
         assert!(json.contains("\\\\ path"));
+    }
+
+    #[test]
+    fn export_without_a_manifest_is_unchanged() {
+        // Runs that do not use a manifest must produce byte-identical exports,
+        // so packages signed before the feature existed still verify.
+        let mut trail = AuditTrail::new("run-legacy");
+        trail.append(event(AuditAction::Create, "sim-1"));
+        let (json, _) = trail.export_package(b"k");
+        assert!(!json.contains("manifest"), "no manifest key: {json}");
+        assert!(trail.manifest().is_none());
+        assert_single_json_object(&json);
+    }
+
+    #[test]
+    fn export_is_a_single_valid_json_object_with_or_without_a_manifest() {
+        let mut plain = AuditTrail::new("run-shape");
+        plain.append(event(AuditAction::Create, "sim-1"));
+        plain.sign("reviewer:r1", SignatureMeaning::Reviewer, b"k");
+        let (plain_json, _) = plain.export_package(b"k");
+        assert_single_json_object(&plain_json);
+
+        let mut with_manifest = AuditTrail::new("run-shape");
+        with_manifest.append(event(AuditAction::Create, "sim-1"));
+        with_manifest.attach_manifest(
+            ReproducibilityManifest::new("0.1.0")
+                .with_crate("tpt-med-dicom", "0.1.0")
+                .with_input("ct", b"x"),
+        );
+        with_manifest.sign("reviewer:r1", SignatureMeaning::Reviewer, b"k");
+        let (manifest_json, _) = with_manifest.export_package(b"k");
+        assert_single_json_object(&manifest_json);
+        assert!(manifest_json.contains("\"manifest\""));
+    }
+
+    #[test]
+    fn attaching_a_manifest_records_an_event_and_exports_it() {
+        let mut trail = AuditTrail::new("run-manifest");
+        trail.append(event(AuditAction::Create, "sim-1"));
+        let before = trail.len();
+
+        let m = ReproducibilityManifest {
+            created: UtcStamp {
+                epoch_seconds: 1_789_862_400,
+                nanos: 0,
+            },
+            ..ReproducibilityManifest::new("0.1.0")
+        }
+        .with_crate("tpt-med-dicom", "0.1.0")
+        .with_git_commit(Some("abc1234".into()))
+        .with_input("ct_series", b"pixels");
+        let digest = m.digest();
+
+        trail.attach_manifest(m);
+        assert_eq!(trail.len(), before + 1, "attachment is an audited event");
+        assert!(trail.verify_integrity());
+
+        // The event carries the manifest digest, so a swapped manifest is
+        // detectable even if the export tag is not re-checked.
+        let last = trail.entries.last().unwrap();
+        assert_eq!(last.object_class, "reproducibility_manifest");
+        assert_eq!(last.object_token, digest);
+
+        let (json, tag) = trail.export_package(b"k");
+        assert!(json.contains("\"manifest\""));
+        assert!(json.contains("abc1234"));
+        assert_eq!(tag.len(), 64);
+    }
+
+    #[test]
+    fn a_changed_manifest_changes_the_export_tag() {
+        let key = b"k";
+        let build = |input: &[u8]| {
+            let mut t = AuditTrail::new("run-swap");
+            t.append(event(AuditAction::Create, "sim-1"));
+            t.attach_manifest(ReproducibilityManifest::new("0.1.0").with_input("ct_series", input));
+            t
+        };
+        assert_ne!(
+            build(b"original").export_tag(key),
+            build(b"tampered").export_tag(key),
+            "the manifest body must be covered by the detached tag"
+        );
+    }
+
+    #[test]
+    fn re_attaching_a_manifest_appends_rather_than_erases() {
+        let mut trail = AuditTrail::new("run-twice");
+        trail.attach_manifest(ReproducibilityManifest::new("0.1.0"));
+        let after_first = trail.len();
+        trail.attach_manifest(ReproducibilityManifest::new("0.1.0"));
+        assert_eq!(trail.len(), after_first + 1);
+        assert!(trail.verify_integrity());
     }
 }

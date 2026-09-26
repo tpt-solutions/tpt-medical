@@ -1,0 +1,30 @@
+# Replace with a crate-specific description. It becomes the crates.io
+# summary, so "stuff for tpt-medical" is not a description.
+[package]
+name = "tpt-med-example"
+description = "TODO: one line, lowercase, describing what this crate does"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+readme = "README.md"
+documentation = "https://docs.rs/tpt-med-example"
+# Must be crate-specific. The workspace defaults are a fallback for a brand
+# new crate and are deliberately generic; see the note in the root manifest.
+# Rules: 1-5 keywords, each <= 20 chars, [A-Za-z0-9_-] only.
+keywords = ["TODO", "replace", "me", "with", "keywords"]
+# Rules: at most 5, each a slug from the published crates.io registry
+# (`medical-science` is NOT one of them). scripts/check-crate-docs.sh checks.
+categories = ["science", "simulation"]
+
+[dependencies]
+# Depend on other tpt-med crates by path + version, via the root
+# [workspace.dependencies] table, not by a bare path:
+#   tpt-med-units = { path = "../../core/tpt-med-units", version = "0.1.0" }
+# Keep the dependency list honest. A crate with no dependencies should say so
+# in its README rather than looking accidental.
+
+[lints]
+workspace = true

@@ -237,4 +237,3 @@ failure mode for this calculation.
   pressure–diameter law and an intraluminal `Pressure`.
 - **`DeploymentResult`** — equilibrium `diameter`, `radial_force`,
   `contact_pressure`, acute `recoil` fraction, and `dogboning`.
-

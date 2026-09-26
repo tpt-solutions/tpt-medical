@@ -61,7 +61,26 @@ audit trail should not drag in a crypto crate with a heavy dependency tree.
 
 ## Conventions and Limits — read this
 
-
+- **This crate is not an audit trail.** It provides the cryptographic
+  primitives. The trail itself, the record schema, signatures with *meaning*,
+  timestamps and export live in
+  [`tpt-med-fda`](https://github.com/tpt-solutions/tpt-medical/tree/master/crates/regulatory/tpt-med-fda).
+- **A symmetric key gives integrity and attribution, not non-repudiation**
+  (RFC 0003). Anyone holding the key can produce a valid tag. When
+  non-repudiation is required, anchor the tag externally — an HSM, a
+  transparency log, or RFC 3161 timestamping.
+- **A hash chain is what detects tampering, not a signature.** Edits,
+  reordering, truncation and seed splicing all break the chain; the HMAC binds
+  the chain to one key.
+- `verify_chain` recomputes and compares; it does not tell you *which* entry
+  broke. For a forensic tool you would walk the chain and report the first
+  mismatch index.
+- `sha256` is **not** suitable for password hashing; there is no key
+  stretching here.
+- The chain construction is not hardened against a timing side channel (only
+  the final comparison is constant-time). Acceptable for this threat model —
+  an attacker who can time your log verification can usually read the log —
+  but stated rather than glossed over.
 ## Usage
 
 ```rust
@@ -173,18 +192,4 @@ Research and development use only. Not cleared or approved by the FDA or any
 other regulatory body. The software controls here support a 21 CFR Part 11
 process; a validated system additionally requires procedural controls — SOPs,
 operator training, record retention — that no library can provide.
-
-- **This crate is not an audit trail.** It provides the cryptographic
-  primitives. The trail itself, the record schema, signatures with *meaning*,
-  timestamps and export live in
-  [`tpt-med-fda`](https://github.com/tpt-solutions/tpt-medical/tree/master/crates/regulatory/tpt-med-fda).
-- **A symmetric key gives integrity and attribution, not non-repudiation**
-  (RFC 0003). Anyone holding the key can produce a valid tag. When
-  non-repudiation is required, anchor the tag externally — an HSM, a
-  transparency log, or RFC 3161 timestamping.
-- `verify_chain` recomputes and compares; it does not tell you *which* entry
-  broke. For a forensic tool you would walk the chain and report the first
-  mismatch index.
-- `sha256` is **not** suitable for password hashing; there is no key
-  stretching here.
 

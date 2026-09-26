@@ -52,6 +52,18 @@ black box.
   simulate or extrapolate to.
 - **Multi-zone input** — `simulate_wear` takes parallel arrays of per-zone
 
+## Conventions
+
+- Contact pressure in **MPa**; sliding distance in **mm per cycle**; bearing
+  area in **mm²**.
+- Volumetric wear in **mm³**; linear wear depth in **mm**;
+  `wear_per_megacycle` in **mm³/Mc** (per million cycles).
+- Wear coefficients: `k` in **mm³/(N·m)** for Archard, and the same units for
+  Cross–Land `K`, with `p₀` in **MPa**.
+- Wear coefficients span several orders of magnitude between implant materials,
+  bearing designs and test protocols. They are **inputs, never defaults here** —
+  a library-level default would be a fabricated number wearing a citation.
+
 ## Usage
 
 ```rust
@@ -171,16 +183,3 @@ substitute for ASTM F2028 or ISO 14879 standard testing.
 - **`exceeds_iso14879_screen`** — a direct comparison against a caller-supplied
   limit, so a screening verdict is one call rather than a hand calculation.
 - No dependencies, no allocation, trivially embeddable in a parameter sweep.
-
-## Conventions
-
-- Contact pressure in **MPa**; sliding distance in **mm per cycle**; bearing
-  area in **mm²**.
-- Volumetric wear in **mm³**; linear wear depth in **mm**;
-  `wear_per_megacycle` in **mm³/Mc** (per million cycles).
-- Wear coefficients: `k` in **mm³/(N·m)** for Archard, and the same units for
-  Cross–Land `K`, with `p₀` in **MPa**.
-- Wear coefficients span several orders of magnitude between implant materials,
-  bearing designs and test protocols. They are **inputs, never defaults here** —
-  a library-level default would be a fabricated number wearing a citation.
-

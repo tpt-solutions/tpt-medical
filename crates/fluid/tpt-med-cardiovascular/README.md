@@ -117,7 +117,7 @@ fn main() {
 | `::steady_state_pressure(flow) -> f64` | `p_out + Q(Rc + Rp)` — the analytic fixed point |
 | `::time_constant() -> f64` | Characteristic time constant (s) |
 | `::step_rk4(p, flow, dt) -> f64` | Explicit RK4 step — the reference integrator |
-| `::simulate(p0, dt, steps, flow_fn) -> Vec<f64>` | Semi-implicit integration; `flow_fn` supplies `Q(t)` |
+| `::simulate(p0, dt, steps, flow) -> Vec<f64>` | Semi-implicit integration; the `flow` closure supplies `Q(t)` |
 | `FractionalFlowReserve::calculate(p_distal, p_aortic) -> f64` | The pressure ratio |
 | `FractionalFlowReserve::is_ischemic(ffr) -> bool` | `ffr <= 0.80` |
 | `FlowWaveform::flow(t) -> f64` | Instantaneous flow (mm³/s) at time `t` |
@@ -197,4 +197,3 @@ must not be used for diagnosis or treatment decisions.
   physiologically significant stenosis.
 - Waveforms are per cardiac cycle; `flow(t)` expects `t` in the same units as
   the cycle length used to build the waveform.
-

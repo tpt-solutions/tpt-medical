@@ -48,6 +48,15 @@ dependencies, and unit tests on every predicate.
 ## Conventions
 
 - **Angles are radians.**
+- **Lengths are caller-defined.** The workspace convention is millimetres (see
+  [`tpt-med-units`](https://github.com/tpt-solutions/tpt-medical/tree/master/crates/core/tpt-med-units));
+  these types are deliberately unitless so they compose with any unit type.
+- **Right-handed, column-vector convention:** `y = M · x`, rotations are
+  right-handed about `axis`.
+- **DICOM patient coordinates are LPS** (+x Left, +y Posterior, +z Superior).
+  **Research coordinates (NIfTI, 3D Slicer) are RAS** (+x Right, +y Anterior,
+  +z Superior). Anatomical directions follow the ISB recommendations
+  (Wu & Cavanagh 1995; Wu et al. 2002).
 
 ## Usage
 
@@ -144,6 +153,26 @@ fn main() {
   behaviour explicitly, because an off-by-one in a viewport fit is invisible
   until a mesh clips.
 
+## Known Limitations
+
+- **3×3 only.** No 4×4 matrices, no tensors, no quaternions. Higher-order
+  kinematics would need a different crate.
+- **`symmetric_eigenvalues` is for symmetric matrices.** Passing a
+  non-symmetric `Mat3` returns the eigenvalues of its symmetric part rather
+  than an error, so a caller that symmetrises by accident gets plausible
+  numbers. This is documented rather than enforced because the performance
+  cost of a runtime check in the stress post-processing loop is not worth it.
+- **No quaternions or axis-angle rotation type.** `rotation_axis_angle` is the
+  only rotation constructor, which means repeated small rotations accumulate
+  the floating-point error that a quaternion representation avoids. Relevant
+  for a surgical plan applying many transforms in sequence.
+- **No decomposition helpers** (LU, Cholesky, QR) and no condition-number
+  estimate, so `inverse` cannot report that a matrix is *nearly* singular.
+- **Singular-value decomposition is only available indirectly**, via
+  `principal_stretches` in `tpt-med-tissue`; there is no general SVD here.
+- **No `f64` overflow or NaN checking in constructors.** `Mat3::new`-style
+  construction of a garbage matrix produces a garbage matrix, not an error.
+
 ## Related Crates
 
 - [`tpt-med-units`](https://github.com/tpt-solutions/tpt-medical/tree/master/crates/core/tpt-med-units) — typed quantities; feed millimetres into these unitless types.
@@ -167,12 +196,3 @@ Licensed under either of [MIT](../../../LICENSE-MIT) or
 Research and development use only. Not cleared or approved by the FDA or any
 other regulatory body for clinical diagnostic or treatment use.
 
-- **Lengths are caller-defined.** The workspace convention is millimetres (see
-  [`tpt-med-units`](https://github.com/tpt-solutions/tpt-medical/tree/master/crates/core/tpt-med-units));
-  these types are deliberately unitless so they compose with any unit type.
-- **Right-handed, column-vector convention:** `y = M · x`, rotations are
-  right-handed about `axis`.
-- **DICOM patient coordinates are LPS** (+x Left, +y Posterior, +z Superior).
-  **Research coordinates (NIfTI, 3D Slicer) are RAS** (+x Right, +y Anterior,
-  +z Superior). Anatomical directions follow the ISB recommendations
-  (Wu & Cavanagh 1995; Wu et al. 2002).

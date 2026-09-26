@@ -166,6 +166,37 @@ try {
   `element_nodes()` connectivity export are both covered by regression tests —
   both were historical bugs, which is why they are pinned explicitly.
 
+## Known Limitations
+
+- **Bindings only.** This crate adds no algorithms of its own. Everything it
+  exposes lives in `tpt-med-dicom`, `tpt-med-meshing`,
+  `tpt-med-biomechanics` and `tpt-med-stents`, so its API is only as good as
+  those crates' and it inherits their limitations.
+- **Three bindings, not a general API surface.** There is no binding for
+  `tpt-med-tissue`, `tpt-med-hemodynamics`, `tpt-med-cardiovascular`,
+  `tpt-med-orthopedics`, `tpt-med-wear`, `tpt-med-surgical-planning`,
+  `tpt-med-implant-sizing`, `tpt-med-audit` or `tpt-med-fda`. A browser
+  application that wants a CFD or regulatory result cannot get it from here
+  today, and adding one is a deliberate scope decision, not an oversight.
+- **WASM is the only real target.** A `cdylib` for a native host is built for
+  tests, not as a supported FFI surface; do not depend on the symbol layout.
+- **Synchronous and single-threaded.** Every binding blocks. A large solve
+  will freeze the browser main thread, and the caller must move it to a Web
+  Worker — which means the objects are not `Send` and must be constructed
+  inside the worker.
+- **Flat arrays only.** Nodes, elements and moduli are returned as
+  `Float32Array`/`Uint32Array`, which loses `f64` precision on positions and
+  moduli. Fine for rendering; not sufficient to reconstruct an exact model
+  from the browser.
+- **No incremental or partial results.** `wasm_solve_stance_load` returns only
+  after the full solve, so a viewer cannot stream progress or show a
+  convergence trace.
+- **`~190 KB` `.wasm` is a hard budget.** Adding a binding that pulls in a
+  heavier dependency will need a fresh size review, and the medical crates are
+  deliberately dependency-light to keep this number small.
+- **`wasm-bindgen` version lockstep.** The CLI must match the exact pin; this
+  is documented but is still a foot-gun for new contributors.
+
 ## Related Crates
 
 - [`tpt-med-dicom`](https://github.com/tpt-solutions/tpt-medical/tree/master/crates/imaging/tpt-med-dicom) — parses the incoming payload.

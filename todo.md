@@ -138,44 +138,88 @@
 ---
 
 ## Phase 9: Platform Review Follow-ups (2026-09-26)
-
 Findings from a full-workspace review (build/clippy/test run + doc/RFC read).
-Tracked here for follow-up; nothing in this section has been implemented yet.
 
 ### Bugs
-- [ ] `README.md` Quick Start uses the wrong CLI flag (`--bone-threshold`
-      instead of `--threshold`) for `dicom-to-mesh` — breaks the first
-      command a new user runs
-- [ ] Finish per-crate `README.md` files for the 9 crates whose `Cargo.toml`
-      declares `readme = "README.md"` but no file exists yet, which currently
-      breaks `cargo package`: `tpt-med-orthopedics`, `tpt-med-wear`,
-      `tpt-med-audit`, `tpt-med-fda`, `tpt-med-vv40`,
-      `tpt-med-implant-sizing`, `tpt-med-surgical-planning`, `benches`,
-      `examples`
-- [ ] Remove `crates/imaging/tpt-med-dicom/src/dbg_test.rs` — an orphaned
-      debug test (not wired into the crate via any `mod`, ends in an
-      unconditional `panic!`)
-- [ ] `test-data/nifti/` is an empty placeholder directory with no
-      corresponding parser/code anywhere — either remove it or scope it as a
-      real roadmap item
+- [x] `README.md` Quick Start used the wrong CLI flag (`--bone-threshold`
+      instead of `--threshold`) for `dicom-to-mesh`. **Fixed** — and the same
+      review pass found the adjacent Rust snippet also did not compile
+      (missing `Path::new`, and `voxels_to_hex_mesh` is a `&self` method
+      returning `Result`); both corrected.
+- [x] Per-crate `README.md` files for all 23 members, which had
+      `readme = "README.md"` in their manifests but no file, breaking
+      `cargo package`. **Done** — every member now has a comprehensive
+      README and a CHANGELOG, enforced by `scripts/check-crate-docs.sh`
+      (section set, order, and crates.io keyword/category rules).
+- [x] Removed `crates/imaging/tpt-med-dicom/src/dbg_test.rs` — an orphaned
+      debug test, not wired into the crate by any `mod`, ending in an
+      unconditional `panic!`.
+- [x] `test-data/nifti/` is scoped rather than removed: it is now a tracked
+      roadmap item below (see "Post-Phase 9 roadmap") instead of an orphan
+      directory that no code or RFC refers to.
 
 ### Governance
-- [ ] Rewrite `CONTRIBUTING.md`: no external PRs — contributions come in as
-      GitHub issues only; update `.github/PULL_REQUEST_TEMPLATE.md` and the
-      RFC process description accordingly
+- [x] `CONTRIBUTING.md` rewritten for an issues-only model: no external pull
+      requests, work arrives as issues, and the RFC process runs through the
+      issue tracker with a maintainer committing the accepted RFC.
+- [x] `.github/PULL_REQUEST_TEMPLATE.md` reframed for maintainer-authored
+      PRs that must reference an issue or accepted RFC; RFC and feature
+      issue templates updated to match.
 
 ### Larger Initiatives
-- [ ] Host the WASM viewer (`web/viewer/`) as a live "try it now" demo (e.g.
-      GitHub Pages) against the committed synthetic CT data, linked from the
-      top of `README.md`
-- [ ] `templates/` directory (or `cargo generate` scaffolder) giving new
-      contributors a starting-point crate/example per workflow, based on the
-      existing `examples/src/bin/*.rs` milestones
-- [ ] Golden-dataset CI diffing tool: render a before/after numeric-drift
-      table for `test-data/golden/` against a PR, instead of the current
-      manual-review convention
-- [ ] Wire `benchmark.yml` to a stored baseline so criterion benchmark
-      regressions fail CI instead of just running unchecked
-- [ ] Reproducibility manifest per simulation run (crate versions, git SHA,
-      input hashes) leveraging `tpt-med-audit`, to strengthen the
-      "reproducible FDA submissions" pitch
+- [x] Live "try it now" demo of `web/viewer/` on GitHub Pages
+      (`.github/workflows/pages.yml`), built from the WASM engine and the
+      committed **synthetic** CT data, linked from the README. Separate from
+      `docs.yml` because a WASM + wasm-bindgen build is far more expensive
+      than rustdoc and only needs re-running when the engine changes.
+- [x] `templates/` — a crate template, an example-binary template, and an RFC
+      template, based on the `examples/src/bin/*.rs` milestones. Deliberately
+      copy-based rather than `cargo generate`: the thing worth templating is
+      the house style, and the contract the templates promise is the same one
+      CI enforces on real crates.
+- [x] Golden-dataset CI diffing tool (`scripts/diff-golden.sh`): renders a
+      before/after numeric-drift table for `test-data/golden/` against a PR,
+      with each row judged against the `tolerance_percent` the golden file
+      itself declares. Wired into CI as the `golden-drift` job.
+- [x] `benchmark.yml` wired to a stored baseline (`benches/baseline.txt`) via
+      `scripts/bench-baseline.sh`, so a regression fails CI instead of just
+      being printed. Threshold is deliberately loose (25 % by default,
+      `TPT_BENCH_THRESHOLD_PCT`) to catch algorithmic regressions without
+      failing on shared-runner jitter. Regeneration is a manual
+      `workflow_dispatch` act.
+- [x] Reproducibility manifest per simulation run in `tpt-med-fda`:
+      `ReproducibilityManifest` pins the workspace version, per-crate
+      versions, git commit, build profile, and a SHA-256 of every input
+      artefact. `AuditTrail::attach_manifest` records its digest as an audit
+      event, so a swapped manifest is detectable from the chain alone, and it
+      is covered by the export's detached HMAC. Wired into the `fda-package`
+      milestone. **Known gap:** it records the *workspace* version, which is
+      only exact while the workspace versions as a unit — see the crate's
+      README.
+
+---
+
+## Post-Phase 9 roadmap
+Scoped but not started. Nothing here is implemented; each is a real
+follow-up rather than an orphan.
+
+- **NIfTI ingestion** (`tpt-med-nifti`) — research-space volumes alongside
+  DICOM, so a NIfTI export from 3D Slicer or a public dataset can enter the
+  pipeline without an external conversion step. `test-data/nifti/` is
+  reserved for its synthetic fixtures. Needs an RFC; the RAS coordinate
+  handling already exists in `tpt-med-geometry`.
+- **Compressed DICOM transfer syntaxes** — JPEG, JPEG-LS, JPEG 2000 and RLE
+  pixel data, currently rejected with `DicomError::CompressedPixelData`. The
+  single biggest practical gap: many clinical archives store CT as JPEG 2000.
+  Must land behind a named feature with `cargo deny`-approved dependencies.
+- **Per-crate versions in the reproducibility manifest** — needs a build
+  script or a generated version table, before the independent-release cadence
+  makes the workspace version wrong.
+- **Quantitative CT calibration** — replace the linear HU→density
+  approximation with a phantom-calibrated relation, so absolute density and
+  modulus stop being screening estimates.
+- **Nonlinear FEM integration** — `tpt-fem` / `tpt-fem-hyperelastic` /
+  `tpt-fem-contact` behind a cargo feature, per `rfcs/0002`.
+- **Cardiac electrophysiology** — `rfcs/0005-cardiac-electrophysiology.md`
+  is still Draft.
+

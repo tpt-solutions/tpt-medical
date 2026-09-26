@@ -104,6 +104,35 @@ fn main() {
 ```
 
 
+## API Overview
+
+| Item | Purpose |
+|---|---|
+| `InterfaceModel { foundation_stiffness, contact_area, friction }` | Winkler foundation parameters; cortical ~2–20 N/mm³, trabecular ~0.2–2, friction ~0.4–0.6 |
+| `micromotion_analysis(&InterfaceModel, Force, tangential_fraction, zone_areas) -> MicromotionResult` | Per-zone and maximum interface motion |
+| `MicromotionResult` | `max_micromotion` (mm), `zone_micromotion` (mm, `NaN` for zero-area zones), `risk` |
+| `MicromotionResult::classify(max_micromotion) -> RiskLevel` | `< 0.05` Low, `< 0.15` Moderate, else High (mm) |
+| `RiskLevel` | `Low`, `Moderate`, `High`; derives `Ord` for sorting |
+| `micromotion_um(&MicromotionResult) -> Length` | Micromotion as a typed `Length` in micrometres |
+| `stress_shielding_analysis(&intact_sed, &implanted_sed) -> StressShieldingResult` | Per-zone `1 − SED_implant/SED_intact`, clamped to `[0,1]` |
+| `StressShieldingResult` | `with_implant`, `intact`, `shielding_index` |
+| `StressShieldingResult::mean_index() -> f64` | Mean index over zones |
+| `StressShieldingResult::has_resorption_risk() -> bool` | True if any zone exceeds 0.7 |
+| `Force` from `tpt-med-units` | Joint reaction force in newtons |
+
+  thresholds are therefore `0.050 mm` and `0.150 mm`. Use `micromotion_um`
+  for the published micrometre form.
+- `tangential_fraction` is clamped to `[0, 1]` — it is the fraction of the
+  joint reaction acting tangentially to the interface.
+- Strain energy density is in **MPa** (= mJ/mm³), so the shielding index is a
+  dimensionless ratio.
+- Zones with **zero contact area are reported as `NaN` and skipped** when
+  taking the maximum. `NaN` here is deliberate: it distinguishes "this zone
+  does not exist for this implant" from "this zone has zero micromotion",
+  which a `0.0` would conflate.
+- `stress_shielding_analysis` asserts equal zone counts rather than
+  silently truncating.
+
 ## Verification
 
 - **Threshold boundaries are tested at the boundaries.** `classify` is
@@ -164,33 +193,3 @@ Research and development use only. Not cleared or approved by the FDA or any
 other regulatory body for clinical diagnostic or treatment use. Not a
 diagnostic device and not a substitute for in-vitro or clinical validation of
 any implant.
-
-## API Overview
-
-| Item | Purpose |
-|---|---|
-| `InterfaceModel { foundation_stiffness, contact_area, friction }` | Winkler foundation parameters; cortical ~2–20 N/mm³, trabecular ~0.2–2, friction ~0.4–0.6 |
-| `micromotion_analysis(&InterfaceModel, Force, tangential_fraction, zone_areas) -> MicromotionResult` | Per-zone and maximum interface motion |
-| `MicromotionResult` | `max_micromotion` (mm), `zone_micromotion` (mm, `NaN` for zero-area zones), `risk` |
-| `MicromotionResult::classify(max_micromotion) -> RiskLevel` | `< 0.05` Low, `< 0.15` Moderate, else High (mm) |
-| `RiskLevel` | `Low`, `Moderate`, `High`; derives `Ord` for sorting |
-| `micromotion_um(&MicromotionResult) -> Length` | Micromotion as a typed `Length` in micrometres |
-| `stress_shielding_analysis(&intact_sed, &implanted_sed) -> StressShieldingResult` | Per-zone `1 − SED_implant/SED_intact`, clamped to `[0,1]` |
-| `StressShieldingResult` | `with_implant`, `intact`, `shielding_index` |
-| `StressShieldingResult::mean_index() -> f64` | Mean index over zones |
-| `StressShieldingResult::has_resorption_risk() -> bool` | True if any zone exceeds 0.7 |
-| `Force` from `tpt-med-units` | Joint reaction force in newtons |
-
-  thresholds are therefore `0.050 mm` and `0.150 mm`. Use `micromotion_um`
-  for the published micrometre form.
-- `tangential_fraction` is clamped to `[0, 1]` — it is the fraction of the
-  joint reaction acting tangentially to the interface.
-- Strain energy density is in **MPa** (= mJ/mm³), so the shielding index is a
-  dimensionless ratio.
-- Zones with **zero contact area are reported as `NaN` and skipped** when
-  taking the maximum. `NaN` here is deliberate: it distinguishes "this zone
-  does not exist for this implant" from "this zone has zero micromotion",
-  which a `0.0` would conflate.
-- `stress_shielding_analysis` asserts equal zone counts rather than
-  silently truncating.
-

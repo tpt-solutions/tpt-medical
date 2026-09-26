@@ -5,7 +5,104 @@ All notable changes to `tpt-medical` are documented here. Format follows
 [SemVer](https://semver.org). Crates version and release independently on a
 6-week cadence.
 
+**This file records workspace-level and cross-cutting changes only.** Each
+crate has its own `CHANGELOG.md` recording what changes for its consumers;
+those are the source of truth for per-crate behaviour. When a change is
+user-visible in one crate, record it in that crate's changelog, and record it
+here only if it affects the workspace as a whole.
+
 ## [Unreleased]
+
+### Added
+- **Per-crate documentation set.** Every one of the 23 workspace members now
+  ships a comprehensive `README.md` and a `CHANGELOG.md`:
+  - `README.md` — overview, why the crate exists, features, conventions and
+    units, runnable usage examples, an API overview table, the verification
+    evidence and what it actually proves, known limitations, related crates,
+    license, and the regulatory disclaimer.
+  - `CHANGELOG.md` — Keep a Changelog format, with `[Unreleased]` (planned work
+    and the semver classification of behaviour-changing areas) and
+    `[0.1.0] - 2026-09-22`.
+- **Per-crate crates.io metadata.** Each crate now declares its own
+  `keywords` and `categories` instead of inheriting workspace-wide generics,
+  plus an explicit `readme` and (for publishable crates) a
+  `documentation` link to docs.rs. All category slugs are validated against
+  the live crates.io category registry.
+- **CI guard** (`crate-docs` job) enforcing the per-crate documentation
+  convention: every workspace member must have a `README.md` and a
+  `CHANGELOG.md`, and its `keywords`/`categories` must satisfy the crates.io
+  rules (1–5 keywords of ≤ 20 characters each; ≤ 5 categories; categories drawn
+  from the published registry). The list of valid categories is vendored into
+  the job so the check does not depend on network access.
+- Root `README.md` crate table now links each crate's README and CHANGELOG
+  directly.
+- [`docs/book/src/crates.md`](docs/book/src/crates.md) links the per-crate
+  documentation and states the required README section set.
+
+### Changed
+- Root `README.md` crate table gained a **Docs** column and an introductory
+  paragraph describing the per-crate documentation contract.
+- `[workspace.package] keywords` and `categories` in the root manifest are now
+  documented as a fallback for any new crate; all 23 existing members override
+  them.
+
+### Phase 9: platform review follow-ups
+Tracked in `todo.md`. Summary of the user-visible change here:
+
+#### Fixed
+- `README.md` Quick Start used `--bone-threshold`, a flag `dicom-to-mesh` does
+  not accept. The adjacent Rust snippet also did not compile (missing
+  `Path::new`, and `voxels_to_hex_mesh` is a `&self` method returning
+  `Result`). Both corrected — the first command and the first snippet a new
+  user runs now work.
+- `tpt-med-fda`: attaching a reproducibility manifest produced **invalid
+  JSON**. The export closed the outer object before appending the manifest, so
+  the package was signed but unparseable by any consumer. Found by
+  `scripts/diff-golden.sh`, and now covered by a structural single-JSON-object
+  test in the crate.
+- Removed `crates/imaging/tpt-med-dicom/src/dbg_test.rs`, an orphaned debug
+  test not wired into the crate and ending in an unconditional `panic!`.
+- Seven per-crate READMEs had their sections out of order, and one had lost a
+  chunk of its Features list. `scripts/check-crate-docs.sh` now asserts
+  section *order*, not just presence, and all 23 are repaired.
+
+#### Added
+- **`tpt-med-fda`: reproducibility manifest** — `ReproducibilityManifest`
+  records the workspace version, per-crate versions, git commit, build
+  profile, and a SHA-256 plus byte length of every input artefact.
+  `AuditTrail::attach_manifest` also appends an audit event carrying the
+  manifest digest, so a manifest swapped after the fact is detectable from the
+  chain alone, and the manifest body is covered by the export's detached
+  HMAC. Runs that do not attach one export byte-identically, so packages
+  signed before this change still verify. Wired into the `fda-package`
+  milestone.
+- `scripts/diff-golden.sh` — renders a before/after numeric-drift table for
+  `test-data/golden/` against a PR, with each row judged against the
+  `tolerance_percent` the golden file itself declares. CI job
+  `golden-drift` fails the build on drift beyond tolerance, on added or
+  removed fields, and on unparseable JSON.
+- `scripts/bench-baseline.sh` + `benches/baseline.txt` — benchmark suite with
+  a stored per-stage baseline; a regression beyond the threshold (25 % by
+  default) now fails CI instead of being printed and ignored. Regeneration is
+  a deliberate manual `workflow_dispatch` act.
+- `templates/` — crate, example-binary and RFC templates. Copy-based rather
+  than `cargo generate`, because the thing worth templating is the house
+  style, and the contract the templates promise is the one CI already
+  enforces on real crates.
+- `.github/workflows/pages.yml` — publishes `web/viewer/` as a live
+  zero-cloud demo on GitHub Pages, built from the WASM engine against the
+  committed **synthetic** CT data. Kept separate from `docs.yml` because a
+  WASM + wasm-bindgen build is far more expensive than rustdoc.
+- `.gitattributes` pinning `*.sh` to LF, so CI shell scripts do not break on
+  a CRLF Windows checkout.
+
+#### Governance
+- `CONTRIBUTING.md` rewritten: **this project does not accept external pull
+  requests.** Work arrives as GitHub issues; changes land from maintainer
+  branches. The RFC process now runs through the issue tracker, with a
+  maintainer committing the accepted RFC. `.github/PULL_REQUEST_TEMPLATE.md`
+  and the RFC/feature issue templates were updated to match, and the root
+  README's Contributing section now says so.
 
 ### Added — Phase 0: Scaffolding
 - Workspace root manifest, `MIT OR Apache-2.0` dual licensing

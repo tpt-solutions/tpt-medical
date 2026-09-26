@@ -154,6 +154,34 @@ fn main() -> std::io::Result<()> {
   workspace testable without real patient data.
 - `CompressedPixelData` is asserted to be returned, never swallowed.
 
+## Known Limitations
+
+- **Two transfer syntaxes.** Implicit and explicit VR little endian only. Big
+  endian (`1.2.840.10008.1.2.2`) is a real syntax still emitted by some
+  archive exports and is not implemented.
+- **No compressed pixel data.** JPEG, JPEG-LS, JPEG 2000 and RLE are rejected
+  with `DicomError::CompressedPixelData`. This is the single biggest practical
+  limitation: many clinical archives store CT as JPEG 2000, so a real PACS will
+  usually need a decompression step at the archive boundary first.
+- **Single-frame only.** Enhanced multi-frame CT (a common Siemens/GE
+  representation) and MR object hierarchies are not supported.
+- **Incomplete tag coverage.** Only the tags needed for geometry and HU
+  mapping are decoded. Window/level, pixel padding, slice position sorting by
+  `INSTANCE_NUMBER`, private tags and structured reports are not.
+- **HU → density is the linear CT approximation**, not quantitative CT. It
+  ignores the scanner's calibration, so absolute density — and therefore
+  absolute modulus — is a screening estimate.
+- **Slice ordering assumes a single acquisition.** Sorting by projection along
+  the slice normal handles oblique acquisitions well, but a series containing
+  multiple stacks (localiser plus scan, or overlapping repeats) is not
+  de-duplicated or clustered.
+- **No DICOM networking and no DICOMweb**, so there is no C-STORE receiver and
+  no query/retrieve.
+- **The synthetic generator is a phantom, not an anatomy.** It produces
+  geometric primitives with realistic HU values and DICOM structure, which is
+  what the test suite needs, and is not a substitute for a real dataset when
+  judging whether a thresholding choice is clinically sensible.
+
 ## Related Crates
 
 - [`tpt-med-meshing`](https://github.com/tpt-solutions/tpt-medical/tree/master/crates/imaging/tpt-med-meshing) — thresholds the HU volume and builds the hex mesh.

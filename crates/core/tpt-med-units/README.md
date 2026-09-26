@@ -131,6 +131,28 @@ fn main() {
   `tpt-med-stents` (pressure) and `tpt-med-orthopedics` (length), so a units
   regression fails the workspace test suite rather than a downstream report.
 
+## Known Limitations
+
+- **No dimensional algebra.** There is no `Length * Length -> Area` or
+  `Force / Area -> Pressure`. Those expressions are the ones where unit
+  mistakes actually cause clinical errors, and this crate deliberately stops
+  at preventing *cross-quantity* arithmetic rather than checking dimensional
+  consistency. Any crate combining quantities must do that check itself.
+- **No uncertainty or tolerance tracking.** A `Length` carries a value and
+  nothing else; the metrology needed for a patient-specific claim is not
+  modelled.
+- **No unit-aware vectors or matrices.** `Vec3` in `tpt-med-geometry` is
+  unitless, so a componentwise `Length + Length` on `Vec3`s is not checked.
+- **`is_finite` is opt-in.** Arithmetic operators do not validate their
+  results, so a `NaN` propagates silently until something reads it. Callers
+  that mix measured and computed quantities should check.
+- **Conversion constants are `const fn` and not configurable.** Rounding
+  constants for a specific unit system (for example, if a study used a
+  non-standard mmHg definition) cannot be supplied without rebuilding.
+- **`Display` uses six decimal places** regardless of magnitude, so a
+  nanometre and a metre both print with the same number of digits. Convenient
+  for logs, wrong for a paper.
+
 ## Related Crates
 
 - [`tpt-med-geometry`](https://github.com/tpt-solutions/tpt-medical/tree/master/crates/core/tpt-med-geometry) — carries unitless `Vec3`/`Mat3`; the workspace convention is that geometry is fed millimetres.

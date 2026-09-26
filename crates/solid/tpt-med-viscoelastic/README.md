@@ -181,4 +181,3 @@ other regulatory body for clinical diagnostic or treatment use.
   `G∞ = 0` when `Σgᵢ = 1` and a solid response when `Σgᵢ = 0`.
 - **Shear only.** The series is defined in shear; the elastic reference model
   supplies the volumetric response.
-
