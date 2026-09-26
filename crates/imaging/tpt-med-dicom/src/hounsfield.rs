@@ -201,6 +201,19 @@ impl HounsfieldMapper {
     /// literature range 130–300 HU; 200 HU is a common middle choice for
     /// appendicular CT.
     pub const DEFAULT_BONE_THRESHOLD_HU: f64 = 200.0;
+
+    /// Convenience: a phantom's BMD value → Young's modulus for a region,
+    /// via a [`crate::BmdToApparentDensity`] conversion
+    /// (`rfcs/0007-bmd-apparent-density-conversion.md`) rather than an
+    /// apparent density obtained directly. `bmd_mg_cm3` must already be in
+    /// `conversion.convention()`'s units.
+    pub fn bmd_to_youngs_modulus(
+        bmd_mg_cm3: f64,
+        conversion: &crate::BmdToApparentDensity,
+        region: BoneRegion,
+    ) -> Modulus {
+        Self::density_to_youngs_modulus(conversion.apparent_density(bmd_mg_cm3), region)
+    }
 }
 
 #[cfg(test)]
@@ -334,6 +347,28 @@ mod tests {
     fn fit_rejects_non_finite_points() {
         assert!(QctCalibration::fit(&[(0.0, 1.0), (f64::NAN, 2.0)]).is_err());
         assert!(QctCalibration::fit(&[(0.0, 1.0), (f64::INFINITY, 2.0)]).is_err());
+    }
+
+    #[test]
+    fn bmd_modulus_uses_the_bmd_conversion() {
+        use crate::bmd::{AshFraction, BmdConvention, BmdToApparentDensity, BmdToAshDensity};
+
+        let bmd_to_ash = BmdToAshDensity::new(
+            BmdConvention::K2Hpo4Equivalent,
+            0.0012,
+            0.02,
+            "test fixture",
+        )
+        .expect("constructs");
+        let ash_fraction = AshFraction::new(0.6, "test fixture").expect("constructs");
+        let conversion = BmdToApparentDensity::new(bmd_to_ash, ash_fraction);
+
+        let expected_density = conversion.apparent_density(250.0);
+        let expected =
+            HounsfieldMapper::density_to_youngs_modulus(expected_density, BoneRegion::Trabecular);
+        let got =
+            HounsfieldMapper::bmd_to_youngs_modulus(250.0, &conversion, BoneRegion::Trabecular);
+        assert!(close(got.to_mpa(), expected.to_mpa(), 1e-12));
     }
 
     #[test]

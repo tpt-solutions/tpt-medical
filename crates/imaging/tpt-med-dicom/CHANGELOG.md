@@ -80,6 +80,26 @@ changes for consumers of this crate.
   laws expect — see the module docs). New `DicomError::Calibration` variant
   for a fit that can't be made (too few points, degenerate HU spread,
   non-finite input).
+- **`BmdToAshDensity` / `AshFraction` / `BmdToApparentDensity`** (`src/bmd.rs`,
+  `rfcs/0007-bmd-apparent-density-conversion.md`): the documented BMD→
+  apparent-density conversion `QctCalibration`'s own docs named as missing.
+  Ships **no** built-in preset relation for any manufacturer or paper — both
+  stages (BMD→ash density, ash→apparent density) refuse to construct without
+  a non-empty citation string, making provenance structurally mandatory
+  rather than an optional doc comment. `HounsfieldMapper::bmd_to_youngs_modulus`
+  is the convenience composing a `BmdToApparentDensity` with the existing
+  power laws. New `BmdConvention` enum (`K2Hpo4Equivalent`,
+  `HydroxyapatiteEquivalent`) is metadata only — it does not convert between
+  the two conventions.
+- **`locate_phantom_centroid` / `sample_phantom_rods` / `PhantomModel`**
+  (`src/phantom.rs`, `rfcs/0008-phantom-rod-sampling.md`): turns a CT scan of
+  a calibration phantom into the `(HU, known_value)` pairs `QctCalibration::fit`
+  and `BmdToAshDensity` consume. `locate_phantom_centroid` is manufacturer-
+  agnostic (thresholded connected-component centroid); `PhantomModel` (rod
+  layout + known values) is caller-supplied and cited, same discipline as
+  `BmdToAshDensity`. Rotation and slice selection stay caller-supplied in v0
+  — see the RFC for why blind detection of either was rejected. New
+  `DicomError::Phantom` variant.
 
 ### Planned
 - Follow the ingestion roadmap in `rfcs/0001-dicom-ingestion.md`:
@@ -88,12 +108,10 @@ changes for consumers of this crate.
     (RLE/JPEG/JPEG-LS/JPEG 2000 Part 1 are done — see Added above, including
     correct signed-component handling for JPEG 2000.)
   - Multi-frame objects and DICOM networking (C-STORE, DICOMweb).
-  - Automatic calibration-phantom rod detection, and a documented
-    BMD→apparent-density conversion, to make `QctCalibration` usable without
-    a human supplying the fit points by hand. (The calibration fit itself is
-    done — see Added above.)
-- A NIfTI reader, so research-space volumes can enter the pipeline alongside
-  DICOM without an external conversion step.
+- Automatic rotation detection and a small built-in library of named,
+  cited `PhantomModel`s for common commercial phantoms — explicitly out of
+  scope for `rfcs/0008-phantom-rod-sampling.md`'s v0 mechanism; see that
+  RFC's Unresolved Questions.
 
 ### Notes
 - The default HU→density relation is still the linear CT approximation

@@ -29,6 +29,7 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
+pub mod bmd;
 pub mod error;
 pub mod hounsfield;
 #[cfg(feature = "jpeg")]
@@ -38,6 +39,7 @@ pub mod jpeg2000;
 #[cfg(feature = "jpeg-ls")]
 pub mod jpeg_ls;
 pub mod parser;
+pub mod phantom;
 #[cfg(feature = "rle")]
 pub mod rle;
 pub mod series;
@@ -47,9 +49,11 @@ pub mod tags;
 /// Crate result alias.
 pub type Result<T> = core::result::Result<T, error::DicomError>;
 
+pub use bmd::{AshFraction, BmdConvention, BmdToApparentDensity, BmdToAshDensity};
 pub use error::DicomError;
 pub use hounsfield::{BoneRegion, HounsfieldMapper, QctCalibration};
 pub use parser::{DicomElement, DicomParser};
+pub use phantom::{locate_phantom_centroid, sample_phantom_rods, PhantomModel, PhantomRod};
 pub use series::{DicomSeries, DicomSlice};
 pub use tags::{TransferSyntax, Vr};
 

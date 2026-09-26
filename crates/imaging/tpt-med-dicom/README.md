@@ -56,6 +56,18 @@ route for three reasons:
   line and a real fit go through the exact same code path — see
   `hounsfield.rs` for the apparent-density-vs-BMD units caveat before
   feeding a clinical phantom's raw rod values into it.
+- **`BmdToAshDensity`/`AshFraction`/`BmdToApparentDensity`: BMD → apparent
+  density** (`bmd.rs`), for the common case where a phantom reports bone
+  mineral density (mg/cm³, K₂HPO₄- or CaHA-equivalent) rather than apparent
+  density directly. Ships no built-in preset relation for any manufacturer —
+  both conversion stages refuse to construct without a citation string.
+  `HounsfieldMapper::bmd_to_youngs_modulus` composes the result with the
+  existing power laws.
+- **`locate_phantom_centroid`/`sample_phantom_rods`/`PhantomModel`: phantom
+  rod sampling** (`phantom.rs`), turning a CT scan of a calibration phantom
+  into the `(HU, known_value)` pairs `QctCalibration::fit`/`BmdToAshDensity`
+  consume. The centroid locator is manufacturer-agnostic; the rod layout
+  (`PhantomModel`) is caller-supplied and cited, same discipline as above.
 - **Synthetic CT generation** — `SyntheticCtBuilder` and `femur_phantom` write
   real, parseable DICOM files, so the whole test suite runs without PHI.
 - **Element encoder** (`encode_element_explicit`) so tests and the synthetic
@@ -186,11 +198,19 @@ fn main() -> std::io::Result<()> {
 | `HounsfieldMapper::DEFAULT_BONE_THRESHOLD_HU` | 200.0 HU |
 | `QctCalibration::fit(&[(hu, value)])` | Least-squares line through calibration-phantom rod points |
 | `QctCalibration::{screening_default, evaluate, hu_to_apparent_density, slope, intercept}` | The fixed screening line as a `QctCalibration`; evaluate the fit |
+| `HounsfieldMapper::bmd_to_youngs_modulus` | Combined convenience, via a `BmdToApparentDensity` |
+| `BmdToAshDensity::new(convention, slope, intercept, source)` | Cited BMD → ash-density line |
+| `AshFraction::new(fraction, source)` | Cited ash → apparent-density fraction |
+| `BmdToApparentDensity::{new, apparent_density, provenance}` | Composed two-stage conversion; `provenance()` returns both citations |
+| `BmdConvention::{K2Hpo4Equivalent, HydroxyapatiteEquivalent}` | Which mineral-equivalent convention a BMD value uses |
+| `locate_phantom_centroid(&slice, background_max_hu, min_area_px)` | Manufacturer-agnostic phantom centroid, by intensity thresholding |
+| `sample_phantom_rods(&slices, &model, centroid, rotation_rad, roi_fraction)` | Per-rod `(mean_hu, known_value)` pairs from a `PhantomModel` |
+| `PhantomModel::new(rods, source)`, `PhantomRod` | Cited rod layout (offset, angle, radius, known value) |
 | `BoneRegion::{Cortical, Trabecular}` | Which correlation applies |
 | `SyntheticCtBuilder` | Builder for synthetic series (dims, spacing, thickness, origin, patient id, arbitrary HU function) |
 | `SyntheticCtSeries::{parse, write_to_dir}` | Round-trip: write real DICOM files, or parse them back |
 | `SyntheticCtBuilder::femur_phantom` | Ready-made femoral shaft phantom |
-| `DicomError` | `Io`, `NotDicom`, `UnexpectedEof`, `CompressedPixelData`, `UnknownTransferSyntax`, `UnsupportedVr`, `BadValue`, `InconsistentSeries`, `Calibration` |
+| `DicomError` | `Io`, `NotDicom`, `UnexpectedEof`, `CompressedPixelData`, `UnknownTransferSyntax`, `UnsupportedVr`, `BadValue`, `InconsistentSeries`, `Calibration`, `Phantom` |
 | `Result<T>` | Crate result alias |
 
 ## Verification
@@ -209,6 +229,20 @@ fn main() -> std::io::Result<()> {
   dedicated test pins that `screening_default()` reproduces
   `hu_to_density`'s output exactly, since the latter is now defined in terms
   of the former.
+- `BmdToAshDensity`/`AshFraction`/`BmdToApparentDensity` are checked against
+  hand-computed round numbers for both stages, and both constructors are
+  asserted to reject an empty/whitespace-only citation, non-finite
+  coefficients, and an out-of-range ash fraction.
+- `locate_phantom_centroid` is checked against a synthetic slice with a
+  hand-placed circular high-HU region at a known, non-trivial (row, col) and
+  radius, including an off-centre case, and is asserted to return `None`
+  both when nothing reaches `min_area_px` and when the only above-threshold
+  pixels are small disconnected noise. `sample_phantom_rods` is checked
+  against a synthetic slice with rod regions at known `PhantomModel` offsets
+  — the returned `(mean_hu, known_value)` pairs reproduce the exact known HU
+  values, including averaging correctly across multiple slices — and is
+  asserted to reject an out-of-bounds ROI, mismatched slice dimensions, an
+  invalid `roi_fraction`, and an empty slice list.
 - The synthetic generator round-trips: `write_to_dir` then `load_from_dir`
   reproduces the HU volume exactly, which is what makes the rest of the
   workspace testable without real patient data.
@@ -266,10 +300,16 @@ fn main() -> std::io::Result<()> {
   default**, not quantitative CT — it ignores the scanner's actual
   calibration, so absolute density (and therefore absolute modulus) from it
   alone is not a measurement. `QctCalibration::fit` lets a caller supply a
-  real phantom's rod measurements instead, but this crate does not locate a
-  calibration phantom or its rods in an image automatically, and it does not
-  convert BMD (the unit most clinical QCT phantoms actually report) to
-  apparent density — both are still manual steps.
+  real phantom's rod measurements instead; `sample_phantom_rods` +
+  `locate_phantom_centroid` (`rfcs/0008-phantom-rod-sampling.md`) turn a
+  phantom scan into those points, and `BmdToApparentDensity`
+  (`rfcs/0007-bmd-apparent-density-conversion.md`) converts a BMD-convention
+  rod value to apparent density. Neither mechanism ships a built-in
+  manufacturer preset or literature coefficient — a caller still supplies
+  (and cites) the phantom's rod layout and the published conversion
+  coefficients; only the pixel-hunting and manual averaging are automated.
+  Rotation and slice selection also stay caller-supplied — see the RFC for
+  why blind detection of either was rejected.
 - **Slice ordering assumes a single acquisition.** Sorting by projection along
   the slice normal handles oblique acquisitions well, but a series containing
   multiple stacks (localiser plus scan, or overlapping repeats) is not

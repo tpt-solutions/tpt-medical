@@ -18,6 +18,7 @@ members = [
     # Biofluids
     "crates/fluid/tpt-med-hemodynamics",
     "crates/fluid/tpt-med-cardiovascular",
+    "crates/fluid/tpt-med-electrophysiology",
     # Devices
     "crates/devices/tpt-med-stents",
     "crates/devices/tpt-med-orthopedics",
@@ -95,6 +96,7 @@ tpt-med-cartilage = { path = "crates/solid/tpt-med-cartilage", version = "0.1.0"
 tpt-med-viscoelastic = { path = "crates/solid/tpt-med-viscoelastic", version = "0.1.0" }
 tpt-med-hemodynamics = { path = "crates/fluid/tpt-med-hemodynamics", version = "0.1.0" }
 tpt-med-cardiovascular = { path = "crates/fluid/tpt-med-cardiovascular", version = "0.1.0" }
+tpt-med-electrophysiology = { path = "crates/fluid/tpt-med-electrophysiology", version = "0.1.0" }
 tpt-med-stents = { path = "crates/devices/tpt-med-stents", version = "0.1.0" }
 tpt-med-orthopedics = { path = "crates/devices/tpt-med-orthopedics", version = "0.1.0" }
 tpt-med-wear = { path = "crates/devices/tpt-med-wear", version = "0.1.0" }

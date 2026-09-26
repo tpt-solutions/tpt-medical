@@ -40,6 +40,9 @@ pub enum DicomError {
     /// A QCT phantom calibration could not be fitted from the supplied
     /// points (too few points, or a degenerate/collinear HU spread).
     Calibration(String),
+    /// A calibration-phantom rod layout or ROI sampling call was given
+    /// invalid input (empty rod list, missing citation, out-of-bounds ROI).
+    Phantom(String),
 }
 
 impl core::fmt::Display for DicomError {
@@ -78,6 +81,7 @@ impl core::fmt::Display for DicomError {
             }
             DicomError::InconsistentSeries(why) => write!(f, "inconsistent series: {why}"),
             DicomError::Calibration(why) => write!(f, "QCT calibration: {why}"),
+            DicomError::Phantom(why) => write!(f, "calibration phantom: {why}"),
         }
     }
 }

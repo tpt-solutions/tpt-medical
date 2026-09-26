@@ -129,7 +129,11 @@
 - [x] `rfcs/0002-hyperelastic-tissue.md` (Accepted)
 - [x] `rfcs/0003-fda-audit-trail.md` (Accepted)
 - [x] `rfcs/0004-nitinol-superelasticity.md` (Accepted)
-- [x] `rfcs/0005-cardiac-electrophysiology.md` (Draft)
+- [x] `rfcs/0005-cardiac-electrophysiology.md` (Accepted 2026-09-27 — Stage 1
+      fleshed out to concrete API/numerics/verification; Stages 2/3 remain
+      roadmap-depth by design and are not authorized by this acceptance)
+- [x] `rfcs/0007-bmd-apparent-density-conversion.md` (Accepted 2026-09-27)
+- [x] `rfcs/0008-phantom-rod-sampling.md` (Accepted 2026-09-27)
 
 ### Business Wedge (stretch, ties to Phase 5 + Phase 8 completion)
 - [x] White-label web component: web-based stent deployment simulator for MedTech companies — **`web/stent-simulator/` ships `<tpt-stent-simulator>` (attribute branding, `tpt-deploy` events, npm packaging metadata + README with support path); engine glue in shared `web/pkg/` via `scripts/build-web`**
@@ -304,19 +308,49 @@ than an orphan.
   no RFC needed for that reason). Deliberately does **not** solve the two
   harder problems the roadmap item implied and which still need real
   scoping work — see the two follow-ups below.
-- **Automatic calibration-phantom rod detection** — `QctCalibration::fit`
+- [x] **Automatic calibration-phantom rod detection** — `QctCalibration::fit`
   needs `(HU, known_value)` points handed to it; nothing in this crate finds
   a calibration phantom in a series or samples its rod ROIs. Needs an RFC:
   phantom geometry varies by manufacturer (Mindways QCT Pro, CIRS/Image
   Analysis, …) and there's no single detection algorithm across them.
-- **BMD → apparent-density conversion** — most clinical QCT phantoms report
+  **RFC accepted and implemented (2026-09-27):**
+  `rfcs/0008-phantom-rod-sampling.md` → `tpt-med-dicom/src/phantom.rs` —
+  `locate_phantom_centroid` (manufacturer-agnostic, thresholded connected-
+  component centroid) plus a caller-supplied, cited `PhantomModel` (rod
+  layout + known values) sampled by `sample_phantom_rods`; rotation and
+  slice selection stay caller-supplied in v0 rather than blind-detected. 13
+  new tests, `cargo test`/`clippy`/`fmt` clean, README/CHANGELOG updated.
+- [x] **BMD → apparent-density conversion** — most clinical QCT phantoms report
   rod values as bone mineral density (mg/cm³ K₂HPO₄- or CaHA-equivalent), not
   apparent (whole-tissue) density, which is what the Morgan–Keaveny modulus
   power laws in `hounsfield.rs` expect. Converting one to the other needs a
   documented, protocol-specific relation (the literature has more than one);
-  `QctCalibration` deliberately does not pick one silently. Needs an RFC.
+  `QctCalibration` deliberately does not pick one silently. **RFC accepted
+  and implemented (2026-09-27):** `rfcs/0007-bmd-apparent-density-conversion.md`
+  → `tpt-med-dicom/src/bmd.rs` — two-stage `BmdToAshDensity` → `AshFraction`
+  conversion, composed as `BmdToApparentDensity`; ships **no** built-in
+  preset relations, and both stages refuse to construct without a non-empty
+  citation string. `HounsfieldMapper::bmd_to_youngs_modulus` is the
+  composing convenience. 8 new tests, `cargo test`/`clippy`/`fmt` clean,
+  README/CHANGELOG updated.
 - **Nonlinear FEM integration** — `tpt-fem` / `tpt-fem-hyperelastic` /
   `tpt-fem-contact` behind a cargo feature, per `rfcs/0002`.
-- **Cardiac electrophysiology** — `rfcs/0005-cardiac-electrophysiology.md`
-  is still Draft.
+- [x] **Cardiac electrophysiology RFC fleshed out (2026-09-27)** — Stage 1
+  (monodomain on voxel geometry, `tpt-med-electrophysiology`) now has a
+  concrete API sketch, Mitchell–Schaeffer kinetics with a cited default
+  parameter set, explicit numerics (7-point Laplacian, RK2, CFL stability
+  bound), and a full verification-strategy section (manufactured-solution
+  stencil check, grid-convergence CV, single-cell restitution shape check).
+  Stages 2/3 (ECG forward problem, ablation screening) deliberately stay at
+  roadmap depth pending Stage 1 actually shipping. `rfcs/0005-cardiac-electrophysiology.md`
+  is **Accepted and implemented (2026-09-27)** for Stage 1 only; Stages 2/3
+  are not authorized by this acceptance. New crate
+  `crates/fluid/tpt-med-electrophysiology`: `MitchellSchaefferParams`,
+  `MonodomainTissue` (explicit RK2, diffusion-CFL + reaction-stiffness
+  stability bound — the latter added after development caught the
+  diffusion-only bound letting the reaction term diverge to `NaN`), and
+  `S1S2Protocol` (single-cell restitution, the code-verification fixture).
+  New golden dataset `test-data/golden/electrophysiology/monodomain_restitution.json`.
+  15 unit tests + 1 doctest, `cargo test`/`clippy`/`fmt` clean workspace-wide,
+  README/CHANGELOG written, `check-crate-docs.sh` passes for all 25 members.
 
