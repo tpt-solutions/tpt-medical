@@ -45,6 +45,7 @@ tpt-med-core = { path = "../crates/core/tpt-med-core", version = "0.1.0" }
 tpt-med-units = { path = "../crates/core/tpt-med-units", version = "0.1.0" }
 tpt-med-geometry = { path = "../crates/core/tpt-med-geometry", version = "0.1.0" }
 tpt-med-dicom = { path = "../crates/imaging/tpt-med-dicom", version = "0.1.0" }
+tpt-med-nifti = { path = "../crates/imaging/tpt-med-nifti", version = "0.1.0" }
 tpt-med-meshing = { path = "../crates/imaging/tpt-med-meshing", version = "0.1.0" }
 tpt-med-biomechanics = { path = "../crates/solid/tpt-med-biomechanics", version = "0.1.0" }
 tpt-med-tissue = { path = "../crates/solid/tpt-med-tissue", version = "0.1.0" }

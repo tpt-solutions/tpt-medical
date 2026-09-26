@@ -62,6 +62,24 @@ changes for consumers of this crate.
   `from_uid` now recognises all of them unconditionally — the dataset itself
   parses whether or not the matching decode feature is enabled, since only
   the `PixelData` element's own decode is feature-gated.
+- **`QctCalibration`: a fitted HU → density calibration.** `QctCalibration::fit`
+  takes a calibration phantom's measured `(HU, known_value)` rod points and
+  fits a line by ordinary least squares, replacing the fixed two-point
+  screening line (water 0 HU → 1.0 g/cm³, air −1000 HU → 0.0) with one
+  actually measured against that scan. `HounsfieldMapper::hu_to_density` is
+  now defined as `QctCalibration::screening_default().hu_to_apparent_density`,
+  so the fixed line is expressible in the same type rather than a separate
+  hardcoded formula — this is a refactor, not a behaviour change, and is
+  pinned by a dedicated equivalence test.
+  `HounsfieldMapper::hu_to_youngs_modulus_calibrated` is the calibrated
+  counterpart to the existing `hu_to_youngs_modulus`. Does **not** solve
+  automatic phantom-rod detection (points must be supplied, not extracted
+  from an image) or BMD→apparent-density conversion (most clinical QCT
+  phantoms report bone mineral density, mg/cm³ K₂HPO₄/CaHA-equivalent, a
+  different physical quantity from the apparent density the modulus power
+  laws expect — see the module docs). New `DicomError::Calibration` variant
+  for a fit that can't be made (too few points, degenerate HU spread,
+  non-finite input).
 
 ### Planned
 - Follow the ingestion roadmap in `rfcs/0001-dicom-ingestion.md`:
@@ -70,16 +88,20 @@ changes for consumers of this crate.
     (RLE/JPEG/JPEG-LS/JPEG 2000 Part 1 are done — see Added above, including
     correct signed-component handling for JPEG 2000.)
   - Multi-frame objects and DICOM networking (C-STORE, DICOMweb).
-  - Quantitative-CT phantom calibration to replace the linear HU→density
-    approximation in regulated pipelines.
+  - Automatic calibration-phantom rod detection, and a documented
+    BMD→apparent-density conversion, to make `QctCalibration` usable without
+    a human supplying the fit points by hand. (The calibration fit itself is
+    done — see Added above.)
 - A NIfTI reader, so research-space volumes can enter the pipeline alongside
   DICOM without an external conversion step.
 
 ### Notes
-- The HU→density relation is the linear CT approximation
-  (`ρ = (HU + 1000) / 1000`). **Replacing it with a calibrated relation is
-  semver-minor but changes every mesh modulus downstream**, so it requires an
-  RFC and a V&V re-run.
+- The default HU→density relation is still the linear CT approximation
+  (`ρ = (HU + 1000) / 1000`, i.e. `QctCalibration::screening_default()`).
+  `QctCalibration` is additive — nothing is forced to use it. **Changing what
+  `hu_to_density` itself returns by default would be semver-minor but change
+  every mesh modulus downstream**, so that (as opposed to offering the opt-in
+  calibrated path added here) still requires an RFC and a V&V re-run.
 - `DEFAULT_BONE_THRESHOLD_HU` is a screening default (200 HU, inside the
   130–300 HU literature band), not a clinical default.
 

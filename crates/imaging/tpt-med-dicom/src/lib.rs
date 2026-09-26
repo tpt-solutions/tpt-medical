@@ -48,7 +48,7 @@ pub mod tags;
 pub type Result<T> = core::result::Result<T, error::DicomError>;
 
 pub use error::DicomError;
-pub use hounsfield::{BoneRegion, HounsfieldMapper};
+pub use hounsfield::{BoneRegion, HounsfieldMapper, QctCalibration};
 pub use parser::{DicomElement, DicomParser};
 pub use series::{DicomSeries, DicomSlice};
 pub use tags::{TransferSyntax, Vr};

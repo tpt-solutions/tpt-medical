@@ -5,8 +5,9 @@ for the full list with status. Layering:
 
 - **core**: `tpt-med-units`, `tpt-med-geometry`, `tpt-med-core` (domain
   types, audit traits), `tpt-med-wasm` (browser bindings).
-- **imaging**: `tpt-med-dicom` (parsing + HU mapping), `tpt-med-meshing`
-  (segmentation, voxel-to-hex meshing, CSV export).
+- **imaging**: `tpt-med-dicom` (parsing + HU mapping), `tpt-med-nifti`
+  (NIfTI-1 volume parsing), `tpt-med-meshing` (segmentation, voxel-to-hex
+  meshing, CSV export).
 - **solid**: `tpt-med-biomechanics` (hex FEM), `tpt-med-tissue`,
   `tpt-med-bone`, `tpt-med-viscoelastic`, `tpt-med-cartilage`.
 - **fluid**: `tpt-med-hemodynamics` (voxel CFD, WSS/OSI),

@@ -1,0 +1,19 @@
+[package]
+name = "tpt-med-nifti"
+description = "Pure-Rust NIfTI-1 volume parsing for research-space imaging"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+readme = "README.md"
+documentation = "https://docs.rs/tpt-med-nifti"
+keywords = ["nifti", "mri", "medical-imaging", "neuroimaging", "parser"]
+categories = ["science", "parser-implementations", "encoding"]
+
+[dependencies]
+tpt-med-geometry = { path = "../../core/tpt-med-geometry", version = "0.1.0" }
+
+[lints]
+workspace = true

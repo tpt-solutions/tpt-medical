@@ -214,11 +214,25 @@ than an orphan.
   populated it. See `tpt-med-fda`'s README "Known Limitations" for the
   remaining caveat: a *caller* still has to use a correct source of versions,
   the crate cannot enforce that.
-- **NIfTI ingestion** (`tpt-med-nifti`) — research-space volumes alongside
-  DICOM, so a NIfTI export from 3D Slicer or a public dataset can enter the
-  pipeline without an external conversion step. `test-data/nifti/` is
-  reserved for its synthetic fixtures. Needs an RFC; the RAS coordinate
-  handling already exists in `tpt-med-geometry`.
+- [x] **NIfTI ingestion** (`tpt-med-nifti`, `rfcs/0006-nifti-ingestion.md`) —
+  pure-Rust parsing of uncompressed single-file NIfTI-1 (`.nii`) volumes:
+  sform/qform geometry (RAS, spec precedence), 8 datatypes,
+  `scl_slope`/`scl_inter` scaling. `SyntheticNiftiBuilder` fixtures, no real
+  dataset needed. Three explicit follow-ups this RFC deliberately left
+  open, tracked below.
+- **`.nii.gz` support** — gzip is by far the most common NIfTI file
+  extension in practice; v0 rejects it with `NiftiError::Gzipped` rather
+  than decompress it. Needs a vetted pure-Rust inflate dependency, the same
+  kind of decision `tpt-med-dicom`'s RLE/JPEG/JPEG-LS/JPEG 2000 features
+  already made three times over.
+- **`tpt-med-nifti` → `tpt-med-meshing` integration** —
+  `SegmentationMask::threshold_hu` is concretely typed to
+  `tpt_med_dicom::DicomSeries` today. Wiring a `NiftiVolume` through it needs
+  its own API-design decision (a shared trait? an adapter?), deliberately
+  left open by RFC 0006 rather than bundled into the ingestion RFC.
+- **Dual-file `.hdr`/`.img` NIfTI-1 support** — lower priority than
+  `.nii.gz` (rarer in current tooling), real gap if a workspace member's
+  dataset uses it.
 - [x] **RLE Lossless pixel data** (`1.2.840.10008.1.2.5`) — decoded behind the
   new `rle` cargo feature in `tpt-med-dicom` (`src/rle.rs`): PackBits
   segments per PS3.5 Annex G, geometry-capped so a corrupt run can't expand
@@ -257,9 +271,26 @@ than an orphan.
   wavelet-transformed color JPEG 2000); JPIP is a network reference to pixel
   data elsewhere, not pixel data itself, and would need its own transport
   story before decoding matters.
-- **Quantitative CT calibration** — replace the linear HU→density
-  approximation with a phantom-calibrated relation, so absolute density and
-  modulus stop being screening estimates.
+- [x] **Quantitative CT calibration (fit)** — `QctCalibration::fit` in
+  `tpt-med-dicom` fits a real HU→density line by ordinary least squares from
+  a calibration phantom's measured `(HU, known_value)` rod points, replacing
+  the fixed two-point screening line for anyone who supplies real
+  measurements. `HounsfieldMapper::hu_to_density` is unchanged (still that
+  fixed line by default; the new type is additive, not a behaviour change —
+  no RFC needed for that reason). Deliberately does **not** solve the two
+  harder problems the roadmap item implied and which still need real
+  scoping work — see the two follow-ups below.
+- **Automatic calibration-phantom rod detection** — `QctCalibration::fit`
+  needs `(HU, known_value)` points handed to it; nothing in this crate finds
+  a calibration phantom in a series or samples its rod ROIs. Needs an RFC:
+  phantom geometry varies by manufacturer (Mindways QCT Pro, CIRS/Image
+  Analysis, …) and there's no single detection algorithm across them.
+- **BMD → apparent-density conversion** — most clinical QCT phantoms report
+  rod values as bone mineral density (mg/cm³ K₂HPO₄- or CaHA-equivalent), not
+  apparent (whole-tissue) density, which is what the Morgan–Keaveny modulus
+  power laws in `hounsfield.rs` expect. Converting one to the other needs a
+  documented, protocol-specific relation (the literature has more than one);
+  `QctCalibration` deliberately does not pick one silently. Needs an RFC.
 - **Nonlinear FEM integration** — `tpt-fem` / `tpt-fem-hyperelastic` /
   `tpt-fem-contact` behind a cargo feature, per `rfcs/0002`.
 - **Cardiac electrophysiology** — `rfcs/0005-cardiac-electrophysiology.md`

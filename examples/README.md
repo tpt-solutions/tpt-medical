@@ -13,7 +13,7 @@ are meant to be composed.
 | **Status** | Alpha, `0.1.0` — `publish = false` |
 | **License** | MIT OR Apache-2.0 |
 | **MSRV** | 1.82 |
-| **Dependencies** | all 20 library crates |
+| **Dependencies** | all 21 library crates |
 | **Changelog** | [CHANGELOG.md](CHANGELOG.md) |
 
 ---
@@ -22,7 +22,7 @@ are meant to be composed.
 
 Three reasons, in order of importance:
 
-1. **They are the integration tests.** Depending on all 20 library crates at
+1. **They are the integration tests.** Depending on all 21 library crates at
    once means a breaking change to any public API fails the workspace build
    immediately, in one place, instead of surfacing as a downstream compile
    error in a user's project.

@@ -7,6 +7,7 @@ members = [
     "crates/core/tpt-med-geometry",
     "crates/core/tpt-med-wasm",
     "crates/imaging/tpt-med-dicom",
+    "crates/imaging/tpt-med-nifti",
     "crates/imaging/tpt-med-meshing",
     # Solid biomechanics
     "crates/solid/tpt-med-biomechanics",
@@ -69,7 +70,14 @@ tpt-eng-materials = { version = "=0.1.0", package = "tpt-eng-materials" }
 tpt-eng-biomech = { version = "=0.1.0", package = "tpt-eng-biomech" }
 tpt-sci-cfd-core = { version = "=0.1.0", package = "tpt-sci-cfd-core" }
 tpt-sci-hemodynamics = { version = "=0.1.0", package = "tpt-sci-hemodynamics" }
-tpt-fem = { version = "=0.1.0", package = "tpt-fem" }
+# `default-features = false` here, not just on the consuming crate: Cargo's
+# workspace-dependency inheritance only lets a member crate *add* features to
+# a `{ workspace = true }` dependency, never remove ones the workspace entry
+# defaults on. `tpt-fem`'s own `default` feature set pulls in mesh-gen,
+# io-vtk/io-abaqus/io-exodus, thermal and eigen — none of which any
+# `tpt-med-*` crate needs — so it must be disabled at this level for a
+# member's `features = [...]` selection to actually be a selection.
+tpt-fem = { version = "=0.1.0", package = "tpt-fem", default-features = false }
 tpt-fem-hyperelastic = { version = "=0.1.0", package = "tpt-fem-hyperelastic" }
 tpt-fem-contact = { version = "=0.1.0", package = "tpt-fem-contact" }
 
@@ -78,6 +86,7 @@ tpt-med-core = { path = "crates/core/tpt-med-core", version = "0.1.0" }
 tpt-med-units = { path = "crates/core/tpt-med-units", version = "0.1.0" }
 tpt-med-geometry = { path = "crates/core/tpt-med-geometry", version = "0.1.0" }
 tpt-med-dicom = { path = "crates/imaging/tpt-med-dicom", version = "0.1.0" }
+tpt-med-nifti = { path = "crates/imaging/tpt-med-nifti", version = "0.1.0" }
 tpt-med-meshing = { path = "crates/imaging/tpt-med-meshing", version = "0.1.0" }
 tpt-med-biomechanics = { path = "crates/solid/tpt-med-biomechanics", version = "0.1.0" }
 tpt-med-tissue = { path = "crates/solid/tpt-med-tissue", version = "0.1.0" }

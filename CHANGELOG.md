@@ -14,6 +14,16 @@ here only if it affects the workspace as a whole.
 ## [Unreleased]
 
 ### Added
+- **New crate: `tpt-med-nifti`** (`rfcs/0006-nifti-ingestion.md`) — pure-Rust
+  parsing of uncompressed, single-file NIfTI-1 (`.nii`) volumes, so a
+  research-space CT/MR export (`dcm2niix`, FSL, FreeSurfer, ANTs, most public
+  imaging datasets) can enter the pipeline without converting back to DICOM
+  first. sform/qform geometry (NIfTI's own precedence), 8 datatypes,
+  `scl_slope`/`scl_inter` value scaling. Deliberately does not read
+  `.nii.gz`, the dual-file `.hdr`/`.img` form, or NIfTI-2, and does not wire
+  into `tpt-med-meshing` — see the crate's own CHANGELOG and the RFC's
+  Unresolved Questions for why each is left open rather than guessed at.
+  Workspace member count: 24.
 - **CI: `tpt-med-dicom` compressed-pixel-data feature coverage.** Its `rle`,
   `jpeg`, `jpeg-ls` and `jpeg2000` cargo features are all off by default, so
   `cargo clippy --workspace` and `cargo test --workspace` never compile them.

@@ -49,6 +49,13 @@ route for three reasons:
   oblique acquisitions; `from_slices` accepts an already-ordered vector.
 - **Hounsfield Unit mapping** — `stored × RescaleSlope + RescaleIntercept`, then
   HU → apparent density → Young's modulus through published power laws.
+- **`QctCalibration`: phantom-fitted HU → density**, replacing the fixed
+  screening line with an ordinary-least-squares fit through measured
+  calibration-phantom rod points. `HounsfieldMapper::hu_to_density` is now
+  defined in terms of `QctCalibration::screening_default()`, so the fixed
+  line and a real fit go through the exact same code path — see
+  `hounsfield.rs` for the apparent-density-vs-BMD units caveat before
+  feeding a clinical phantom's raw rod values into it.
 - **Synthetic CT generation** — `SyntheticCtBuilder` and `femur_phantom` write
   real, parseable DICOM files, so the whole test suite runs without PHI.
 - **Element encoder** (`encode_element_explicit`) so tests and the synthetic
@@ -96,9 +103,12 @@ networking (C-STORE, DICOMweb) are likewise out of scope for v0.
 - Geometry follows the DICOM patient coordinate system (**LPS**), exposed via
   `ImageFrame` from tags (0020,0032) and (0020,0037).
 - `HU = stored × RescaleSlope + RescaleIntercept`.
-- Apparent density uses the linear CT approximation: `ρ = (HU + 1000) / 1000`
-  g/cm³, so water is 1.0 and air is 0.0. Quantitative-CT phantom calibration
-  replaces this in regulated pipelines.
+- By default, apparent density uses the linear CT approximation:
+  `ρ = (HU + 1000) / 1000` g/cm³, so water is 1.0 and air is 0.0
+  (`HounsfieldMapper::hu_to_density`, equivalently
+  `QctCalibration::screening_default()`). A `QctCalibration` fitted from a
+  real calibration phantom's rods replaces this in regulated pipelines —
+  see `hounsfield.rs` for the apparent-density-vs-BMD units caveat.
 - Modulus power laws (Morgan–Keaveny style):
   - cortical: `E = 10500 · ρ^2.0`
   - trabecular: `E = 6850 · ρ^1.49`
@@ -169,15 +179,18 @@ fn main() -> std::io::Result<()> {
 | `DicomElement::{as_us, as_is, as_ds_first, as_ds_vec, as_text}` | Typed accessors; each returns a typed `DicomError` on mismatch |
 | `TransferSyntax::from_uid`, `::implicit_vr(tag)` | Transfer syntax detection and implicit-VR tag lookup |
 | `Vr::from_ascii`, `::ascii`, `::uses_long_length` | VR handling (long-form value lengths) |
-| `HounsfieldMapper::hu_to_density` | HU → apparent density (g/cm³) |
+| `HounsfieldMapper::hu_to_density` | HU → apparent density (g/cm³) via the fixed screening line |
 | `HounsfieldMapper::density_to_youngs_modulus` | Density → modulus via the cortical or trabecular law |
-| `HounsfieldMapper::hu_to_youngs_modulus` | Combined convenience |
+| `HounsfieldMapper::hu_to_youngs_modulus` | Combined convenience (screening line) |
+| `HounsfieldMapper::hu_to_youngs_modulus_calibrated` | Combined convenience, via a fitted `QctCalibration` |
 | `HounsfieldMapper::DEFAULT_BONE_THRESHOLD_HU` | 200.0 HU |
+| `QctCalibration::fit(&[(hu, value)])` | Least-squares line through calibration-phantom rod points |
+| `QctCalibration::{screening_default, evaluate, hu_to_apparent_density, slope, intercept}` | The fixed screening line as a `QctCalibration`; evaluate the fit |
 | `BoneRegion::{Cortical, Trabecular}` | Which correlation applies |
 | `SyntheticCtBuilder` | Builder for synthetic series (dims, spacing, thickness, origin, patient id, arbitrary HU function) |
 | `SyntheticCtSeries::{parse, write_to_dir}` | Round-trip: write real DICOM files, or parse them back |
 | `SyntheticCtBuilder::femur_phantom` | Ready-made femoral shaft phantom |
-| `DicomError` | `Io`, `NotDicom`, `UnexpectedEof`, `CompressedPixelData`, `UnknownTransferSyntax`, `UnsupportedVr`, `BadValue`, `InconsistentSeries` |
+| `DicomError` | `Io`, `NotDicom`, `UnexpectedEof`, `CompressedPixelData`, `UnknownTransferSyntax`, `UnsupportedVr`, `BadValue`, `InconsistentSeries`, `Calibration` |
 | `Result<T>` | Crate result alias |
 
 ## Verification
@@ -188,6 +201,14 @@ fn main() -> std::io::Result<()> {
 - Rescale slope/intercept handling is pinned, including negative intercepts.
 - Density and modulus correlations are locked to the exact power laws above,
   with a dedicated air-voxel clamping test.
+- `QctCalibration::fit` is checked against a noiseless exact line (recovers
+  the true slope/intercept), a noisy set of points with symmetric error
+  (recovers the true line within tolerance, proving it minimises squared
+  error rather than just interpolating), and is asserted to reject too few
+  points, a degenerate (collinear-HU) rod set, and non-finite input. A
+  dedicated test pins that `screening_default()` reproduces
+  `hu_to_density`'s output exactly, since the latter is now defined in terms
+  of the former.
 - The synthetic generator round-trips: `write_to_dir` then `load_from_dir`
   reproduces the HU volume exactly, which is what makes the rest of the
   workspace testable without real patient data.
@@ -241,9 +262,14 @@ fn main() -> std::io::Result<()> {
 - **Incomplete tag coverage.** Only the tags needed for geometry and HU
   mapping are decoded. Window/level, pixel padding, slice position sorting by
   `INSTANCE_NUMBER`, private tags and structured reports are not.
-- **HU → density is the linear CT approximation**, not quantitative CT. It
-  ignores the scanner's calibration, so absolute density — and therefore
-  absolute modulus — is a screening estimate.
+- **`HounsfieldMapper::hu_to_density` is still a screening estimate by
+  default**, not quantitative CT — it ignores the scanner's actual
+  calibration, so absolute density (and therefore absolute modulus) from it
+  alone is not a measurement. `QctCalibration::fit` lets a caller supply a
+  real phantom's rod measurements instead, but this crate does not locate a
+  calibration phantom or its rods in an image automatically, and it does not
+  convert BMD (the unit most clinical QCT phantoms actually report) to
+  apparent density — both are still manual steps.
 - **Slice ordering assumes a single acquisition.** Sorting by projection along
   the slice normal handles oblique acquisitions well, but a series containing
   multiple stacks (localiser plus scan, or overlapping repeats) is not
