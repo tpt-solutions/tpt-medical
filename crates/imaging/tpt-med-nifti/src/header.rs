@@ -11,7 +11,8 @@ use crate::error::{NiftiError, Result};
 pub const HEADER_LEN: usize = 348;
 
 /// A little/big-endian `i16`/`i32`/`f32` reader over a fixed-size header
-/// buffer, with the endianness resolved once by [`detect_endianness`].
+/// buffer, with the endianness resolved once by [`parse_header`] /
+/// [`parse_header_dual`] from `sizeof_hdr`.
 pub struct Header<'a> {
     bytes: &'a [u8],
     big_endian: bool,
@@ -277,6 +278,22 @@ impl<'a> Header<'a> {
 ///
 /// `bytes` must be at least [`HEADER_LEN`] long.
 pub fn parse_header(bytes: &[u8]) -> Result<Header<'_>> {
+    parse_header_with_magic(bytes, "n+1")
+}
+
+/// Like [`parse_header`], but requires the dual-file (`.hdr`/`.img`) magic
+/// `"ni1"` at byte offset 344 instead of the single-file `"n+1"`. Which
+/// magic is *correct* depends on which entry point the caller used —
+/// `NiftiVolume::parse_bytes` takes `n+1`, `NiftiVolume::parse_dual_bytes`
+/// takes `ni1` — so the check lives here with the magic as a parameter and
+/// each entry point asks for its own.
+///
+/// `bytes` must be at least [`HEADER_LEN`] long.
+pub fn parse_header_dual(bytes: &[u8]) -> Result<Header<'_>> {
+    parse_header_with_magic(bytes, "ni1")
+}
+
+fn parse_header_with_magic<'a>(bytes: &'a [u8], magic: &str) -> Result<Header<'a>> {
     if bytes.len() < HEADER_LEN {
         return Err(NiftiError::UnexpectedEof {
             offset: bytes.len(),
@@ -301,9 +318,12 @@ pub fn parse_header(bytes: &[u8]) -> Result<Header<'_>> {
     // Magic (byte 344): only the first 3 bytes are checked -- some
     // real-world writers pad the 4th byte inconsistently (a known quirk,
     // not something worth refusing a file over).
-    if &bytes[344..347] != b"n+1" {
+    if &bytes[344..347] != magic.as_bytes() {
         return Err(NiftiError::BadValue {
-            reason: format!("magic is {:?}, expected \"n+1\"", &bytes[344..347]),
+            reason: format!(
+                "magic is {:?}, expected {magic:?}",
+                core::str::from_utf8(&bytes[344..347]).unwrap_or("<not utf-8>")
+            ),
         });
     }
 

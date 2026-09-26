@@ -15,21 +15,31 @@ here only if it affects the workspace as a whole.
 
 ### Added
 - **New crate: `tpt-med-nifti`** (`rfcs/0006-nifti-ingestion.md`) — pure-Rust
-  parsing of uncompressed, single-file NIfTI-1 (`.nii`) volumes, so a
-  research-space CT/MR export (`dcm2niix`, FSL, FreeSurfer, ANTs, most public
-  imaging datasets) can enter the pipeline without converting back to DICOM
-  first. sform/qform geometry (NIfTI's own precedence), 8 datatypes,
-  `scl_slope`/`scl_inter` value scaling. Deliberately does not read
-  `.nii.gz`, the dual-file `.hdr`/`.img` form, or NIfTI-2, and does not wire
-  into `tpt-med-meshing` — see the crate's own CHANGELOG and the RFC's
-  Unresolved Questions for why each is left open rather than guessed at.
-  Workspace member count: 24.
+  parsing of NIfTI-1 volumes, so a research-space CT/MR export
+  (`dcm2niix`, FSL, FreeSurfer, ANTs, most public imaging datasets) can
+  enter the pipeline without converting back to DICOM first. Single-file
+  `.nii` **and** dual-file `.hdr`/`.img` layouts, sform/qform geometry
+  (NIfTI's own precedence), 8 datatypes, `scl_slope`/`scl_inter` value
+  scaling, and `.nii.gz` behind an off-by-default `gzip` feature (pure-Rust
+  `flate2`; streaming, geometry-capped inflate). NIfTI-2 remains out of
+  scope — see the crate's own CHANGELOG and RFC 0006's Unresolved Questions
+  (all three now annotated with how they were resolved) for why each
+  decision was made rather than guessed at. Workspace member count: 24.
+- **NIfTI enters the mesh pipeline.** `tpt-med-meshing` gained
+  `SegmentationMask::threshold_nifti(&NiftiVolume, min_hu)` — a direct
+  constructor, not a shared volume trait, because `NiftiVolume` is still
+  the only non-DICOM source (the shape RFC 0006's Unresolved Question told
+  the first implementer to pick). RAS → LPS conversion happens at that
+  boundary, so masks and meshes from either source format share one
+  patient frame.
 - **CI: `tpt-med-dicom` compressed-pixel-data feature coverage.** Its `rle`,
   `jpeg`, `jpeg-ls` and `jpeg2000` cargo features are all off by default, so
   `cargo clippy --workspace` and `cargo test --workspace` never compile them.
   The `clippy` and `test` jobs now run a dedicated
   `-p tpt-med-dicom --features rle,jpeg,jpeg-ls,jpeg2000` pass so those code
-  paths are actually checked, not just locally.
+  paths are actually checked, not just locally. The same pattern covers
+  `tpt-med-nifti`'s off-by-default `gzip` feature (a
+  `-p tpt-med-nifti --features gzip` pass in both jobs).
 - **Per-crate documentation set.** Every one of the 23 workspace members now
   ships a comprehensive `README.md` and a `CHANGELOG.md`:
   - `README.md` — overview, why the crate exists, features, conventions and

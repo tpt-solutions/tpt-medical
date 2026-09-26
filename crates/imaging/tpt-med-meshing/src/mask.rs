@@ -1,7 +1,8 @@
-//! Binary segmentation masks on the CT voxel grid.
+//! Segmentation masks on the image voxel grid, from DICOM or NIfTI sources.
 
 use tpt_med_dicom::DicomSeries;
-use tpt_med_geometry::Vec3;
+use tpt_med_geometry::{ras_to_lps, Vec3};
+use tpt_med_nifti::NiftiVolume;
 
 /// A segmentation on the CT voxel grid: solid/empty per voxel, with the HU
 /// values and patient-space geometry needed for meshing.
@@ -28,8 +29,8 @@ pub struct SegmentationMask {
 impl SegmentationMask {
     /// Thresholds a CT series into a bone mask: voxels with
     /// `HU >= min_hu` are solid. Uses
-    /// [`HounsfieldMapper::DEFAULT_BONE_THRESHOLD_HU`] when a data-driven
-    /// default is acceptable.
+    /// [`HounsfieldMapper::DEFAULT_BONE_THRESHOLD_HU`](tpt_med_dicom::HounsfieldMapper::DEFAULT_BONE_THRESHOLD_HU)
+    /// when a data-driven default is acceptable.
     pub fn threshold_hu(series: &DicomSeries, min_hu: f64) -> Self {
         let (nx, ny, nz) = series.dims();
         let mut voxels = vec![false; nx * ny * nz];
@@ -70,6 +71,43 @@ impl SegmentationMask {
             spacing: (series.pixel_spacing.1, series.pixel_spacing.0, z_pitch),
             voxels,
             hu,
+        }
+    }
+
+    /// Thresholds a NIfTI volume into a bone mask: voxels whose value is
+    /// `>= min_hu` are solid — the same rule and the same default
+    /// (`HounsfieldMapper::DEFAULT_BONE_THRESHOLD_HU`) as
+    /// [`Self::threshold_hu`], because a CT NIfTI export's `values` are HU
+    /// when its writer baked DICOM's `RescaleSlope`/`RescaleIntercept` into
+    /// `scl_slope`/`scl_inter`, as `dcm2niix` does.
+    ///
+    /// NIfTI geometry is **RAS**; origin and direction columns are converted
+    /// through [`ras_to_lps`] so the mask lands in the same **LPS** patient
+    /// frame [`Self::threshold_hu`] produces — a mask means the same thing
+    /// regardless of which format it was read from. The source volume must
+    /// be well-formed (as the parser guarantees): `values` covers exactly
+    /// `dims.0 * dims.1 * dims.2` voxels in x-fastest order.
+    pub fn threshold_nifti(volume: &NiftiVolume, min_hu: f64) -> Self {
+        let (nx, ny, nz) = volume.dims;
+        debug_assert_eq!(volume.values.len(), nx * ny * nz);
+        let voxels: Vec<bool> = volume.values.iter().map(|&h| h >= min_hu).collect();
+
+        // RAS → LPS flips x and y, so each direction column maps through
+        // the same involution the origin does (normalised for parity with
+        // the DICOM path's direction-cosine handling).
+        let row_dir = ras_to_lps(volume.rotation.col(0)).normalize();
+        let col_dir = ras_to_lps(volume.rotation.col(1)).normalize();
+        let slice_dir = ras_to_lps(volume.rotation.col(2)).normalize();
+
+        Self {
+            dims: volume.dims,
+            origin: ras_to_lps(volume.origin),
+            row_dir,
+            col_dir,
+            slice_dir,
+            spacing: volume.voxel_spacing,
+            voxels,
+            hu: volume.values.clone(),
         }
     }
 
@@ -169,5 +207,63 @@ mod tests {
         assert!((n1.x - n0.x - 1.0).abs() < 1e-12);
         assert!((n1.y - n0.y - 1.0).abs() < 1e-12);
         assert!((n1.z - n0.z - 1.0).abs() < 1e-12);
+    }
+
+    /// A 4x3x2 volume with spacing (1, 2, 3) mm and origin (10, 20, 30)
+    /// RAS: the `i < 2` half is bone (800 HU), the rest soft tissue (50 HU).
+    fn synthetic_bone_volume() -> NiftiVolume {
+        let (nx, ny, nz) = (4usize, 3, 2);
+        let mut values = vec![50.0; nx * ny * nz];
+        for k in 0..nz {
+            for j in 0..ny {
+                for i in 0..2 {
+                    values[i + nx * (j + ny * k)] = 800.0;
+                }
+            }
+        }
+        let bytes = tpt_med_nifti::synthetic::SyntheticNiftiBuilder::new(4, 3, 2, (1.0, 2.0, 3.0))
+            .with_origin(Vec3::new(10.0, 20.0, 30.0))
+            .with_values_f32(&values)
+            .build();
+        NiftiVolume::parse_bytes(&bytes).expect("synthetic NIfTI parses")
+    }
+
+    #[test]
+    fn threshold_nifti_segments_and_converts_ras_to_lps() {
+        let vol = synthetic_bone_volume();
+        let mask = SegmentationMask::threshold_nifti(&vol, 200.0);
+        assert_eq!(mask.dims, (4, 3, 2));
+        // The i < 2 half is solid: 2 * 3 * 2 voxels, boundary included.
+        assert_eq!(mask.solid_count(), 12);
+        assert!(mask.is_solid(0, 0, 0));
+        assert!(mask.is_solid(1, 0, 0));
+        assert!(!mask.is_solid(2, 0, 0));
+        assert!(!mask.is_solid(3, 2, 1));
+        assert!(mask.mean_solid_hu().unwrap() >= 200.0);
+
+        // RAS (10, 20, 30) → LPS (-10, -20, 30); the +x/+y columns flip
+        // and +z does not — the frame `threshold_hu`'s DICOM path produces.
+        assert!((mask.origin - Vec3::new(-10.0, -20.0, 30.0)).norm() < 1e-6);
+        assert!((mask.row_dir - Vec3::new(-1.0, 0.0, 0.0)).norm() < 1e-9);
+        assert!((mask.col_dir - Vec3::new(0.0, -1.0, 0.0)).norm() < 1e-9);
+        assert!((mask.slice_dir - Vec3::new(0.0, 0.0, 1.0)).norm() < 1e-9);
+        assert!((mask.spacing.0 - 1.0).abs() < 1e-6);
+        assert!((mask.spacing.1 - 2.0).abs() < 1e-6);
+        assert!((mask.spacing.2 - 3.0).abs() < 1e-6);
+
+        // The mask's voxel centres are the volume's voxel positions in LPS.
+        let p_ras = vol.voxel_position(1, 1, 1);
+        let p_lps = mask.voxel_center(1, 1, 1);
+        assert!((ras_to_lps(p_ras) - p_lps).norm() < 1e-6);
+    }
+
+    #[test]
+    fn nifti_mask_meshes_end_to_end() {
+        let vol = synthetic_bone_volume();
+        let mask = SegmentationMask::threshold_nifti(&vol, 200.0);
+        let mesh = crate::MedicalMesher::default()
+            .voxels_to_hex_mesh(&mask)
+            .expect("a NIfTI-sourced mask meshes like a DICOM one");
+        assert_eq!(mesh.elements.len(), mask.solid_count());
     }
 }

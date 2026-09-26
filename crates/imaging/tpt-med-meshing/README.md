@@ -12,7 +12,7 @@ CT Hounsfield volume and a finite-element mesh.
 | **Status** | Alpha, `0.1.0` |
 | **License** | MIT OR Apache-2.0 |
 | **MSRV** | 1.82 |
-| **Dependencies** | [`tpt-med-core`](../../core/tpt-med-core), [`tpt-med-dicom`](../tpt-med-dicom), [`tpt-med-geometry`](../../core/tpt-med-geometry), [`tpt-med-units`](../../core/tpt-med-units) |
+| **Dependencies** | [`tpt-med-core`](../../core/tpt-med-core), [`tpt-med-dicom`](../tpt-med-dicom), [`tpt-med-geometry`](../../core/tpt-med-geometry), [`tpt-med-nifti`](../tpt-med-nifti), [`tpt-med-units`](../../core/tpt-med-units) |
 | **Changelog** | [CHANGELOG.md](CHANGELOG.md) |
 
 ---
@@ -37,8 +37,11 @@ for aesthetics.
 
 ## Features
 
-- **Threshold segmentation** — `SegmentationMask::threshold_hu` with HU
-  statistics (`solid_count`, `mean_solid_hu`) for sanity-checking the result.
+- **Threshold segmentation from either ingestion crate** —
+  `SegmentationMask::threshold_hu` (DICOM) and
+  `SegmentationMask::threshold_nifti` (NIfTI; RAS converted to LPS at the
+  boundary so the two produce interchangeable masks), with HU statistics
+  (`solid_count`, `mean_solid_hu`) for sanity-checking the result.
 - **Voxel → hex meshing** — one hex per solid voxel, **shared corner nodes
   compacted** (a 512³ mask does not allocate 8 nodes per voxel).
 - **HU-derived per-element materials** — mean HU, apparent density, Young's
@@ -57,8 +60,10 @@ for aesthetics.
 
 ## Conventions
 
-- **Coordinates:** patient space, millimetres, taken from the DICOM
-  `ImageFrame` — no re-centring, no reorientation.
+- **Coordinates:** patient space (LPS), millimetres, taken from the DICOM
+  `ImageFrame` — no re-centring, no reorientation. NIfTI volumes arrive in
+  RAS and are converted once, inside `threshold_nifti`, so every mask and
+  mesh downstream is LPS regardless of the source format.
 - **Voxel indexing:** `index = (z·ny + y)·nx + x`.
 - **Hex node ordering:** the 8 corners in `(±x, ±y, ±z)` bit order
   `[000, 100, 110, 010, 001, 101, 111, 011]` relative to the voxel's minimum
@@ -98,6 +103,29 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
+From a research-space NIfTI volume the shape is identical — the threshold
+rule and the patient frame are the same, only the entry point differs:
+
+```rust
+use std::path::Path;
+use tpt_med_meshing::{MedicalMesher, SegmentationMask};
+use tpt_med_nifti::NiftiVolume;
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // 1. NIfTI volume (.nii, or .nii.gz with tpt-med-nifti's `gzip`
+    //    feature) -> values treated as HU for a CT export.
+    let vol = NiftiVolume::parse_file(Path::new("ct_export.nii"))?;
+
+    // 2. Same threshold, same LPS patient frame as threshold_hu.
+    let mask = SegmentationMask::threshold_nifti(&vol, 200.0);
+
+    // 3. Mesh it exactly as a DICOM-sourced mask.
+    let mesh = MedicalMesher::default().voxels_to_hex_mesh(&mask)?;
+    println!("{} elements", mesh.elements.len());
+    Ok(())
+}
+```
+
 From a plain voxel model (no DICOM involved) you can still mesh any boolean
 mask, which is what the fluid and surgical-planning crates do.
 
@@ -105,7 +133,8 @@ mask, which is what the fluid and surgical-planning crates do.
 
 | Item | Purpose |
 |---|---|
-| `SegmentationMask::threshold_hu(&DicomSeries, min_hu)` | Threshold an HU volume into a solid/void mask |
+| `SegmentationMask::threshold_hu(&DicomSeries, min_hu)` | Threshold a DICOM HU volume into a solid/void mask |
+| `SegmentationMask::threshold_nifti(&NiftiVolume, min_hu)` | Same threshold on a NIfTI volume; RAS geometry converted to the LPS frame `threshold_hu` produces |
 | `SegmentationMask::{solid_count, mean_solid_hu}` | Segmentation quality indicators — check these before meshing |
 | `SegmentationMask::{index, is_solid}` | Bounds-checked voxel access |
 | `SegmentationMask::{voxel_center, node_position}` | Voxel centre and node-grid positions in patient space (mm) |
@@ -132,6 +161,11 @@ mask, which is what the fluid and surgical-planning crates do.
   moduli. Mean HU and Poisson's ratio are intentionally *not* exported.
 - `mean_solid_hu` is tested so a mis-set threshold (e.g. 0 HU capturing the
   whole image) is obvious from the output.
+- The NIfTI path is tested on a synthetic volume for the threshold result,
+  the RAS → LPS conversion (origin, direction columns, and the invariant
+  that `ras_to_lps(volume.voxel_position(..)) == mask.voxel_center(..)`),
+  and an end-to-end `voxels_to_hex_mesh` run whose element count equals the
+  mask's solid count.
 - `MeshError::EmptyMask` is covered: meshing a void mask is an error, not a
   panic and not an empty mesh.
 
@@ -142,11 +176,12 @@ mask, which is what the fluid and surgical-planning crates do.
   surface. `smooth_mesh` relaxes the nodes for display, but it does not
   recover curvature the scan never measured, and it moves surface nodes away
   from the data the moduli were computed from.
-- **Thresholding is binary.** `threshold_hu` produces solid/void with no
-  partial-volume weighting, so a voxel that is half bone and half soft tissue
-  is fully one or the other. This is a known source of small systematic errors
-  in absolute stress, and is usually acceptable because the resulting modulus
-  error is small next to the biological variability.
+- **Thresholding is binary.** `threshold_hu` / `threshold_nifti` produce
+  solid/void with no partial-volume weighting, so a voxel that is half bone
+  and half soft tissue is fully one or the other. This is a known source of
+  small systematic errors in absolute stress, and is usually acceptable
+  because the resulting modulus error is small next to the biological
+  variability.
 - **No morphological post-processing.** No hole filling, no island removal, no
   connected-component labelling, no closing or opening. A noisy threshold can
   leave specks and voids that then become elements or holes in the FEM mesh.
@@ -170,6 +205,7 @@ mask, which is what the fluid and surgical-planning crates do.
 ## Related Crates
 
 - [`tpt-med-dicom`](https://github.com/tpt-solutions/tpt-medical/tree/master/crates/imaging/tpt-med-dicom) — supplies the HU volume and the modulus correlations.
+- [`tpt-med-nifti`](https://github.com/tpt-solutions/tpt-medical/tree/master/crates/imaging/tpt-med-nifti) — the other volume source; `threshold_nifti` is the adapter between it and this crate.
 - [`tpt-med-biomechanics`](https://github.com/tpt-solutions/tpt-medical/tree/master/crates/solid/tpt-med-biomechanics) — consumes `VoxelHexMesh` directly; the hex ordering is the contract between them.
 - [`tpt-med-wasm`](https://github.com/tpt-solutions/tpt-medical/tree/master/crates/core/tpt-med-wasm) — exposes mesh buffers to WebGL2.
 - [`tpt-med-hemodynamics`](https://github.com/tpt-solutions/tpt-medical/tree/master/crates/fluid/tpt-med-hemodynamics) — `FluidDomain::from_mask` uses the same voxel-mask idea for lumen geometry.

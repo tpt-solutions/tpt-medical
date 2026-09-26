@@ -10,10 +10,16 @@ pub enum NiftiError {
     /// Not a NIfTI-1 file: neither little- nor big-endian interpretation of
     /// `sizeof_hdr` gives 348, or the magic bytes are not `"n+1"`.
     NotNifti(PathBuf),
-    /// The file is gzip-compressed (`.nii.gz`, detected by its `1F 8B` magic
-    /// bytes). Decompression needs a dependency decision this crate has not
-    /// made yet — see `rfcs/0006-nifti-ingestion.md`.
+    /// The input is gzip-compressed (`.nii.gz`, or a gzipped `.hdr`/`.img`
+    /// part, detected by its `1F 8B` magic bytes) and this build has no
+    /// decompressor: the `gzip` feature is off. Enable `gzip`, or
+    /// decompress before ingestion; see `rfcs/0006-nifti-ingestion.md`.
     Gzipped(PathBuf),
+    /// The stream announced itself as gzip (`1F 8B` magic bytes) but could
+    /// not be decompressed: its gzip header, deflate stream, or checksum is
+    /// corrupt. Only reachable with the `gzip` feature enabled — without it
+    /// `Gzipped` is produced instead.
+    CorruptGzip(std::io::Error),
     /// A `datatype` code this crate does not decode.
     UnsupportedDatatype(i16),
     /// The header's `bitpix` disagrees with the size implied by `datatype`.
@@ -46,10 +52,12 @@ impl core::fmt::Display for NiftiError {
             NiftiError::NotNifti(p) => write!(f, "not a NIfTI-1 file: {}", p.display()),
             NiftiError::Gzipped(p) => write!(
                 f,
-                "{} is gzip-compressed (.nii.gz); decompress before ingestion \
-                 (see rfcs/0006-nifti-ingestion.md)",
+                "{} is gzip-compressed (.nii.gz); enable this crate's `gzip` \
+                 feature or decompress before ingestion (see \
+                 rfcs/0006-nifti-ingestion.md)",
                 p.display()
             ),
+            NiftiError::CorruptGzip(e) => write!(f, "corrupt gzip stream: {e}"),
             NiftiError::UnsupportedDatatype(dt) => {
                 write!(f, "unsupported NIfTI datatype code {dt}")
             }
@@ -72,7 +80,7 @@ impl core::fmt::Display for NiftiError {
 impl std::error::Error for NiftiError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            NiftiError::Io(e) => Some(e),
+            NiftiError::Io(e) | NiftiError::CorruptGzip(e) => Some(e),
             _ => None,
         }
     }

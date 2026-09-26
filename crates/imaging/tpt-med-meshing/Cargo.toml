@@ -16,6 +16,7 @@ categories = ["science", "graphics", "data-structures"]
 tpt-med-core = { path = "../../core/tpt-med-core", version = "0.1.0" }
 tpt-med-dicom = { path = "../tpt-med-dicom", version = "0.1.0" }
 tpt-med-geometry = { path = "../../core/tpt-med-geometry", version = "0.1.0" }
+tpt-med-nifti = { path = "../tpt-med-nifti", version = "0.1.0" }
 tpt-med-units = { path = "../../core/tpt-med-units", version = "0.1.0" }
 
 [lints]

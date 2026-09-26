@@ -12,8 +12,20 @@ documentation = "https://docs.rs/tpt-med-nifti"
 keywords = ["nifti", "mri", "medical-imaging", "neuroimaging", "parser"]
 categories = ["science", "parser-implementations", "encoding"]
 
+[features]
+# Decompress gzip-compressed `.nii.gz` volumes (and gzipped `.hdr`/`.img`
+# parts) via `flate2`'s pure-Rust backend (`rust_backend` = miniz_oxide; no C
+# in the build). Off by default: the zero-dependency build is this crate's
+# default posture, exactly as RFC 0006 specified — the same named-feature,
+# `cargo deny`-approved-dependency, off-by-default pattern
+# `tpt-med-dicom`'s RLE/JPEG/JPEG-LS/JPEG 2000 features established. Without
+# it a gzipped input yields `NiftiError::Gzipped`, naming the file rather
+# than misparsing it.
+gzip = ["dep:flate2"]
+
 [dependencies]
 tpt-med-geometry = { path = "../../core/tpt-med-geometry", version = "0.1.0" }
+flate2 = { version = "1.1", optional = true, default-features = false, features = ["rust_backend"] }
 
 [lints]
 workspace = true

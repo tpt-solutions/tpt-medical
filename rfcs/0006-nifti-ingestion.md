@@ -242,11 +242,35 @@ zero/negative dimension, `vox_offset` before the header, etc.).
   meshing integration, informed by whether a second non-DICOM volume source
   ever materialises (if `tpt-med-nifti` stays the only one, a narrower
   `DicomSeries`-specific adapter may be simpler than a general trait).
+  **Resolved (2026-09-27):** no trait, no adapter —
+  `SegmentationMask::threshold_nifti(&NiftiVolume, min_hu)` is a direct
+  constructor on `tpt-med-meshing`'s side, taken on the RFC's own guidance
+  (`NiftiVolume` is still the only non-DICOM source, so a trait would be
+  generalisation ahead of a second consumer). NIfTI's RAS geometry is
+  converted to LPS inside it, so the two constructors produce
+  interchangeable masks. If a second non-DICOM source ever arrives, the
+  shared rule can be lifted into a trait then — the two signatures are the
+  seam where it would go.
 - **`.nii.gz` support.** Needs a vetted pure-Rust inflate dependency, the
   same kind of decision RFC 0001's compressed-transfer-syntax work already
   made three times over for `tpt-med-dicom`. Settled by: whoever picks this
   up, following that precedent (named feature, `cargo deny`-approved
   dependency, off by default).
+  **Resolved (2026-09-27):** cargo feature `gzip`, off by default, on
+  `flate2` with `default-features = false, features = ["rust_backend"]`
+  (pure-Rust miniz_oxide; MIT OR Apache-2.0; `rust-version` 1.67, under the
+  workspace MSRV). Single-file decompression is streaming and
+  geometry-capped (the header's declared extent bounds the allocation),
+  mirroring the RLE decoder's posture; the typed `Gzipped` error remains
+  for feature-off builds and a new `CorruptGzip` names decompression
+  failures. Gzipped dual-file parts (`.hdr.gz`/`.img.gz`) come for free
+  from the same feature.
 - **Dual-file `.hdr`/`.img` support.** Lower priority than `.nii.gz` — rarer
   in current tooling — but a real gap if a workspace member's dataset uses
   it. Settled by: whoever hits it first.
+  **Resolved (2026-09-27):** `NiftiVolume::{parse_dual_file,
+  parse_dual_bytes}` accept magic `ni1`, honour `vox_offset` as an offset
+  into the `.img` (0 is the norm), and reject the other layout's magic with
+  a pointer to the entry point that can read it. Header/value decoding was
+  factored into one shared `decode_header`/`decode_values` pair so the
+  single-file, dual-file, and gzip paths cannot drift apart.

@@ -220,19 +220,43 @@ than an orphan.
   `scl_slope`/`scl_inter` scaling. `SyntheticNiftiBuilder` fixtures, no real
   dataset needed. Three explicit follow-ups this RFC deliberately left
   open, tracked below.
-- **`.nii.gz` support** — gzip is by far the most common NIfTI file
+- [x] **`.nii.gz` support** — gzip is by far the most common NIfTI file
   extension in practice; v0 rejects it with `NiftiError::Gzipped` rather
   than decompress it. Needs a vetted pure-Rust inflate dependency, the same
   kind of decision `tpt-med-dicom`'s RLE/JPEG/JPEG-LS/JPEG 2000 features
-  already made three times over.
-- **`tpt-med-nifti` → `tpt-med-meshing` integration** —
+  already made three times over. **Done (2026-09-27)** — `gzip` cargo
+  feature (off by default) on `tpt-med-nifti`, `flate2` with the pure-Rust
+  `rust_backend` (miniz_oxide; MIT OR Apache-2.0; `rust-version` 1.67,
+  under the workspace MSRV). Single-file decompression is streaming and
+  geometry-capped (the header's declared extent bounds what is ever
+  allocated), the typed `Gzipped` error stays for feature-off builds, a
+  new `CorruptGzip` names decompression failures, and gzipped `.hdr`/`.img`
+  parts work off the same feature. CI clippy/test gained a
+  `-p tpt-med-nifti --features gzip` pass.
+- [x] **`tpt-med-nifti` → `tpt-med-meshing` integration** —
   `SegmentationMask::threshold_hu` is concretely typed to
   `tpt_med_dicom::DicomSeries` today. Wiring a `NiftiVolume` through it needs
   its own API-design decision (a shared trait? an adapter?), deliberately
   left open by RFC 0006 rather than bundled into the ingestion RFC.
-- **Dual-file `.hdr`/`.img` NIfTI-1 support** — lower priority than
+  **Done (2026-09-27)** — `SegmentationMask::threshold_nifti(&NiftiVolume,
+  min_hu)`, a direct constructor on the meshing side (no shared trait:
+  `NiftiVolume` is still the only non-DICOM source, exactly the narrower
+  shape the RFC said to pick). NIfTI's RAS origin/directions are converted
+  through `ras_to_lps` into the LPS patient frame `threshold_hu` produces,
+  so masks and meshes are interchangeable across sources; `tpt-med-meshing`
+  gained the `tpt-med-nifti` dependency; tests cover the threshold result,
+  the frame conversion (including the `voxel_position`/`voxel_center`
+  invariant), and an end-to-end `voxels_to_hex_mesh` run.
+- [x] **Dual-file `.hdr`/`.img` NIfTI-1 support** — lower priority than
   `.nii.gz` (rarer in current tooling), real gap if a workspace member's
-  dataset uses it.
+  dataset uses it. **Done (2026-09-27)** —
+  `NiftiVolume::{parse_dual_file, parse_dual_bytes}` accept the `ni1`
+  magic, honour `vox_offset` as an offset into the `.img` (0 is the norm),
+  and reject the other layout's magic with a pointer to the entry point
+  that can read it; `SyntheticNiftiBuilder::build_dual` writes the pair for
+  tests; gzipped parts work when `gzip` is on. Header/value decoding was
+  factored into one shared `decode_header`/`decode_values` so the
+  single-file, dual-file, and gzip paths cannot drift apart.
 - [x] **RLE Lossless pixel data** (`1.2.840.10008.1.2.5`) — decoded behind the
   new `rle` cargo feature in `tpt-med-dicom` (`src/rle.rs`): PackBits
   segments per PS3.5 Annex G, geometry-capped so a corrupt run can't expand

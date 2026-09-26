@@ -1,7 +1,10 @@
 //! Threshold segmentation and voxel-to-hexahedral meshing.
 //!
-//! The pipeline: a [`DicomSeries`](tpt_med_dicom::DicomSeries) is thresholded
-//! into a [`SegmentationMask`] (per-voxel bone / not-bone), and
+//! The pipeline: a [`DicomSeries`](tpt_med_dicom::DicomSeries) or a
+//! [`NiftiVolume`](tpt_med_nifti::NiftiVolume) is thresholded into a
+//! [`SegmentationMask`] (per-voxel bone / not-bone — the NIfTI path
+//! converts RAS into the same LPS patient frame the DICOM path produces, so
+//! downstream code cannot tell the sources apart), and
 //! [`MedicalMesher::voxels_to_hex_mesh`] converts the mask into a structured
 //! hexahedral mesh with one element per solid voxel and HU-derived elastic
 //! moduli per element. Laplacian smoothing relaxes the stair-step surface

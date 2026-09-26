@@ -16,6 +16,17 @@ changes for consumers of this crate.
   stair-step surface that `smooth_mesh` relaxes for display but that is
   meaningful for biomechanics), and the shared hex corner-ordering contract
   with `tpt-med-biomechanics`.
+- **`SegmentationMask::threshold_nifti(&NiftiVolume, min_hu)`** — the
+  `tpt-med-nifti` integration RFC 0006 deliberately left open. Same
+  threshold rule and same default as `threshold_hu`; NIfTI's native RAS
+  origin and direction columns are converted through `ras_to_lps` into the
+  LPS patient frame `threshold_hu` produces, so a mask (and the mesh built
+  from it) is interchangeable regardless of which format the volume came
+  from. Settled as a narrow direct constructor, not a shared volume trait,
+  because `NiftiVolume` is currently the only non-DICOM source — a trait
+  would be generalisation ahead of a second consumer, which RFC 0006's
+  Unresolved Question explicitly warned against. New dependency:
+  `tpt-med-nifti` (zero-dependency itself; the `gzip` feature stays off).
 
 ### Planned
 - Per-voxel material overrides, so a caller can supply a QCT-calibrated or
