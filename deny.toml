@@ -16,10 +16,6 @@ allow = [
     "Unicode-3.0",
     "CDLA-Permissive-2.0",
 ]
-copyleft = "deny"
-allow-osi-fsf-free = "neither"
-default = "deny"
-unlicensed = "deny"
 
 [[licenses.clarify]]
 name = "unicode-ident"

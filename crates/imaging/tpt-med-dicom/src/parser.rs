@@ -99,6 +99,7 @@ impl DicomParser {
         let mut cursor = Cursor {
             data: bytes,
             pos: 132,
+            encapsulated: false,
         };
 
         // File Meta Information is always explicit VR little endian
@@ -119,13 +120,22 @@ impl DicomParser {
             }
         }
         let ts = transfer_syntax.unwrap_or(TransferSyntax::ImplicitVrLittleEndian);
+        // Encapsulated syntaxes still carry an explicit-VR-LE dataset; only the
+        // pixel data is compressed. Without this, an RLE file would be parsed
+        // as implicit VR and every tag after the meta group would be garbage.
+        let dataset_ts = ts.dataset_encoding();
+        cursor.encapsulated = ts.is_encapsulated();
 
-        let mut builder = crate::series::SliceBuilder::default();
+        let mut builder = crate::series::SliceBuilder::new(ts);
         if let Some(el) = pending_dataset_element {
             builder.absorb(el)?;
         }
         while cursor.has_more() {
-            let el = cursor.next_element(ts)?;
+            let el = if dataset_ts == TransferSyntax::ExplicitVrLittleEndian {
+                cursor.next_explicit()?
+            } else {
+                cursor.next_element(dataset_ts)?
+            };
             builder.absorb(el)?;
         }
         builder.build()
@@ -135,6 +145,10 @@ impl DicomParser {
 struct Cursor<'a> {
     data: &'a [u8],
     pos: usize,
+    /// Whether pixel data arrives encapsulated. Decides whether an
+    /// undefined-length PixelData is fragment data to collect or a sequence
+    /// to skip.
+    encapsulated: bool,
 }
 
 /// Item (FFFE,E000).
@@ -220,32 +234,104 @@ impl<'a> Cursor<'a> {
 
     /// Reads one element in the dataset's transfer syntax.
     fn next_element(&mut self, ts: TransferSyntax) -> Result<DicomElement> {
-        match ts {
-            TransferSyntax::ExplicitVrLittleEndian => self.next_explicit(),
-            TransferSyntax::ImplicitVrLittleEndian => {
-                let g = self.u16_le("tag group")?;
-                let e = self.u16_le("tag element")?;
-                let tag = (g, e);
-                let len = self.u32_le("length")?;
-                let vr = implicit_vr(tag);
-                let value = if len == 0xFFFF_FFFF {
-                    self.skip_undefined(ts)?;
-                    Vec::new()
-                } else {
-                    self.read_exact(len as usize, "element value")?.to_vec()
-                };
-                Ok(DicomElement { tag, vr, value })
-            }
-        }
+        let g = self.u16_le("tag group")?;
+        let e = self.u16_le("tag element")?;
+        let tag = (g, e);
+        let len = self.u32_le("length")?;
+        let vr = implicit_vr(tag);
+        let value = if len == 0xFFFF_FFFF {
+            self.skip_undefined(ts)?;
+            Vec::new()
+        } else {
+            self.read_exact(len as usize, "element value")?.to_vec()
+        };
+        Ok(DicomElement { tag, vr, value })
     }
 
+    /// Reads an element value, handling both native and encapsulated forms.
+    ///
+    /// An undefined-length value on a compressed syntax is the encapsulated
+    /// pixel data: a run of (FFFE,E000) item fragments terminated by a
+    /// sequence delimiter. Those fragments are returned so the caller can
+    /// decode them. On a native syntax an undefined length is a sequence
+    /// value, which is skipped and returned empty.
     fn read_value(&mut self, tag: Tag, _vr: Vr, len: usize) -> Result<Vec<u8>> {
         if len == usize::MAX {
+            if tag == tags::PIXEL_DATA && self.encapsulated {
+                return self.read_fragments();
+            }
             self.skip_undefined(TransferSyntax::ExplicitVrLittleEndian)?;
             return Ok(Vec::new());
         }
         let _ = tag;
         Ok(self.read_exact(len, "element value")?.to_vec())
+    }
+
+    /// Collects encapsulated pixel data fragments up to the sequence delimiter.
+    ///
+    /// PS3.5 Annex A.4: the first item is the Basic Offset Table, which is
+    /// empty unless a multi-frame object provides frame offsets. It is
+    /// dropped, so what remains is one fragment per frame.
+    fn read_fragments(&mut self) -> Result<Vec<u8>> {
+        let mut fragments: Vec<Vec<u8>> = Vec::new();
+        let mut offset_table_seen = false;
+        loop {
+            if !self.has_more() {
+                return Err(DicomError::UnexpectedEof {
+                    offset: self.pos,
+                    while_reading: "encapsulated pixel data",
+                });
+            }
+            let g = self.u16_le("fragment tag group")?;
+            let e = self.u16_le("fragment tag element")?;
+            match (g, e) {
+                ITEM => {
+                    let len = self.u32_le("fragment length")?;
+                    if len == 0xFFFF_FFFF {
+                        // A fragment must have a defined length; an undefined
+                        // one means the stream is malformed rather than
+                        // multi-frame, and cannot be skipped safely.
+                        return Err(DicomError::BadValue {
+                            tag: tags::PIXEL_DATA,
+                            reason: "encapsulated fragment has undefined length".into(),
+                        });
+                    }
+                    let data = self.read_exact(len as usize, "fragment data")?.to_vec();
+                    if !offset_table_seen {
+                        offset_table_seen = true;
+                        // The Basic Offset Table is a separate item whose value
+                        // is frame offsets, not pixel data. A single-frame
+                        // object carries it empty, so a non-empty table means
+                        // multiple frames, which this crate does not support.
+                        if !data.is_empty() {
+                            return Err(DicomError::BadValue {
+                                tag: tags::PIXEL_DATA,
+                                reason: "multi-frame encapsulated pixel data is not supported"
+                                    .into(),
+                            });
+                        }
+                    } else {
+                        fragments.push(data);
+                    }
+                }
+                SEQ_DELIM => {
+                    let _len = self.u32_le("sequence delimiter length")?;
+                    return Ok(fragments.concat());
+                }
+                ITEM_DELIM => {
+                    let _len = self.u32_le("item delimiter length")?;
+                }
+                other => {
+                    return Err(DicomError::BadValue {
+                        tag: other,
+                        reason: format!(
+                            "unexpected ({:04x},{:04x}) in encapsulated pixel data",
+                            other.0, other.1
+                        ),
+                    });
+                }
+            }
+        }
     }
 
     /// Consumes an undefined-length construct (sequence of items or
@@ -270,8 +356,12 @@ impl<'a> Cursor<'a> {
                     depth -= 1;
                 }
                 _ => {
-                    // Regular element inside an item, encoded per `ts`.
-                    match ts {
+                    // Regular element inside an item, encoded per the
+                    // dataset's encoding. Every encapsulated syntax narrows
+                    // to `ExplicitVrLittleEndian` here (PS3.5 §A.4), so this
+                    // covers RLE/JPEG/JPEG-LS/JPEG 2000 without a match arm
+                    // per syntax.
+                    match ts.dataset_encoding() {
                         TransferSyntax::ExplicitVrLittleEndian => {
                             let (vr, len) = self.read_explicit_header((g, e))?;
                             let _ = vr;
@@ -285,6 +375,7 @@ impl<'a> Cursor<'a> {
                             let len = self.u32_le("nested length")?;
                             self.skip(len as usize, "nested element")?;
                         }
+                        _ => unreachable!("dataset_encoding narrows to explicit or implicit VR LE"),
                     }
                 }
             }

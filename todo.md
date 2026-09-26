@@ -200,21 +200,63 @@ Findings from a full-workspace review (build/clippy/test run + doc/RFC read).
 ---
 
 ## Post-Phase 9 roadmap
-Scoped but not started. Nothing here is implemented; each is a real
-follow-up rather than an orphan.
+Scoped but not started unless marked done. Each is a real follow-up rather
+than an orphan.
 
+- [x] **Per-crate versions in the reproducibility manifest** — `examples/build.rs`
+  parses the workspace `Cargo.lock` into `tpt_med_examples::crate_versions`, a
+  generated `(crate name, resolved version)` table; `fda-package` looks up
+  each participating crate's real version there instead of stamping every
+  entry with the calling binary's own `CARGO_PKG_VERSION`. Dependency-free
+  (line-scans `Cargo.lock` rather than pulling in a TOML parser or
+  `cargo_metadata`). `ReproducibilityManifest` itself already supported
+  per-crate versions (`with_crates`); the gap was only in how the example
+  populated it. See `tpt-med-fda`'s README "Known Limitations" for the
+  remaining caveat: a *caller* still has to use a correct source of versions,
+  the crate cannot enforce that.
 - **NIfTI ingestion** (`tpt-med-nifti`) — research-space volumes alongside
   DICOM, so a NIfTI export from 3D Slicer or a public dataset can enter the
   pipeline without an external conversion step. `test-data/nifti/` is
   reserved for its synthetic fixtures. Needs an RFC; the RAS coordinate
   handling already exists in `tpt-med-geometry`.
-- **Compressed DICOM transfer syntaxes** — JPEG, JPEG-LS, JPEG 2000 and RLE
-  pixel data, currently rejected with `DicomError::CompressedPixelData`. The
-  single biggest practical gap: many clinical archives store CT as JPEG 2000.
-  Must land behind a named feature with `cargo deny`-approved dependencies.
-- **Per-crate versions in the reproducibility manifest** — needs a build
-  script or a generated version table, before the independent-release cadence
-  makes the workspace version wrong.
+- [x] **RLE Lossless pixel data** (`1.2.840.10008.1.2.5`) — decoded behind the
+  new `rle` cargo feature in `tpt-med-dicom` (`src/rle.rs`): PackBits
+  segments per PS3.5 Annex G, geometry-capped so a corrupt run can't expand
+  unbounded, single-frame only (a non-empty Basic Offset Table is rejected).
+  Needs no new dependency, so nothing new for `cargo deny` to approve. The
+  parser now recognises the encapsulated pixel-data item stream (PS3.5 Annex
+  A.4) generally, so this is the template for the remaining codecs below.
+- [x] **JPEG-family compressed DICOM transfer syntaxes** — three new opt-in
+  cargo features on `tpt-med-dicom`, one per codec, each off by default:
+  - `jpeg`: Baseline/Extended DCT (lossy, `.50`/`.51`) and Lossless Process
+    14/SV1 (exact, `.57`/`.70`), via [`jpeg-decoder`](https://crates.io/crates/jpeg-decoder)
+    (image-rs — the same codec crate covers both coding processes).
+  - `jpeg-ls`: Lossless and Near-Lossless (`.80`/`.81`), via
+    [`pure_jpegls`](https://crates.io/crates/pure_jpegls).
+  - `jpeg2000`: Lossless Only and lossless-or-lossy (`.90`/`.91`), via
+    [`pdfluent-jpeg2000`](https://crates.io/crates/pdfluent-jpeg2000)
+    (`image`/`simd` extras disabled, so no further dependencies pulled in).
+
+  All three reuse the encapsulated-fragment collection the `rle` feature's
+  parser work already generalised — no parser changes needed. See
+  `tpt-med-dicom`'s CHANGELOG and README for per-codec detail, and the
+  follow-up below that this work surfaced rather than closed out.
+- [x] **`jpeg2000` feature: fix the signed-`PixelRepresentation` gap** —
+  `pdfluent-jpeg2000` applies the unsigned DC level-shift to every component
+  regardless of the codestream's own signed bit (its source says so
+  explicitly). Since the shift is a fixed, known offset (`2^(precision-1)`),
+  `jpeg2000::decode_frame` now re-reads the SIZ marker's `Ssiz` byte directly
+  from the raw codestream (the crate discards it) and undoes the shift itself
+  when the component really is signed, instead of rejecting all signed
+  objects outright. A file where the codestream's own signed bit and the
+  dataset's `PixelRepresentation` disagree is non-conformant and still
+  rejected, since there is no safe way to resolve that disagreement.
+- **JPEG 2000 Part 2 multi-component and JPIP-referenced pixel data** — still
+  rejected with `DicomError::CompressedPixelData`; no decoder exists for
+  either. Multi-component is a real but uncommon gap (multi-channel or
+  wavelet-transformed color JPEG 2000); JPIP is a network reference to pixel
+  data elsewhere, not pixel data itself, and would need its own transport
+  story before decoding matters.
 - **Quantitative CT calibration** — replace the linear HU→density
   approximation with a phantom-calibrated relation, so absolute density and
   modulus stop being screening estimates.

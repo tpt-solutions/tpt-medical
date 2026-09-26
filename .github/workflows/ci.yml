@@ -31,6 +31,10 @@ jobs:
           components: clippy
       - uses: Swatinem/rust-cache@v2
       - run: cargo clippy --workspace --all-targets -- -D warnings
+      # Cargo features are additive per crate, not workspace-wide, so a
+      # feature-gated module (e.g. tpt-med-dicom's `rle`/`jpeg`/`jpeg-ls`/
+      # `jpeg2000`) needs its own pass or `--workspace` never compiles it.
+      - run: cargo clippy -p tpt-med-dicom --all-targets --features rle,jpeg,jpeg-ls,jpeg2000 -- -D warnings
 
   test:
     name: Tests
@@ -43,6 +47,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --workspace --profile ${{ matrix.profile }}
+      - run: cargo test -p tpt-med-dicom --features rle,jpeg,jpeg-ls,jpeg2000 --profile ${{ matrix.profile }}
 
   build:
     name: Build (${{ matrix.target }})

@@ -15,6 +15,13 @@ changes for consumers of this crate.
 - Crate README documenting all seven binaries, what each demonstrates, and the
   fact that they are the integration tests of the workspace rather than toy
   snippets.
+- `build.rs` + `crate_versions` module: a generated `(crate name, resolved
+  version)` table read from the workspace `Cargo.lock` at build time, with no
+  new dependency. `fda-package` uses `crate_versions::version_of` to record
+  each participating crate's real version in the `tpt-med-fda` reproducibility
+  manifest, instead of stamping every crate with this binary's own
+  `CARGO_PKG_VERSION` — the two agree today only because every crate pins to
+  the workspace version.
 
 ### Notes
 - `publish = false`. This package exists to depend on all 20 library crates at

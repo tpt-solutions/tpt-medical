@@ -11,12 +11,64 @@ changes for consumers of this crate.
 
 ## [Unreleased]
 
+### Added
+- **`rle` cargo feature: RLE Lossless (`1.2.840.10008.1.2.5`) pixel data.**
+  Off by default — without it an RLE object still yields
+  `DicomError::CompressedPixelData`, unchanged from before. With it,
+  `src/rle.rs` decodes the PackBits segments per PS3.5 Annex G, single-frame
+  only (a non-empty Basic Offset Table is rejected as unsupported
+  multi-frame), and every run is capped to `rows * columns` so a corrupt or
+  hostile fragment cannot expand without bound. Needs no new dependency, so
+  there is nothing new for `cargo deny` to approve.
+- The parser now recognises the general encapsulated pixel-data item stream
+  (PS3.5 Annex A.4) for any transfer syntax whose dataset is explicit VR
+  little endian — the RLE decoder was the first consumer, and the `jpeg`/
+  `jpeg-ls`/`jpeg2000` decoders below reuse the same fragment collection
+  without any parser changes.
+- **`jpeg` cargo feature: the classic ITU-T T.81 JPEG family**, via
+  [`jpeg-decoder`](https://crates.io/crates/jpeg-decoder) (image-rs, MIT OR
+  Apache-2.0). Off by default. One dependency covers two DICOM transfer
+  syntaxes because the crate implements both T.81 coding processes:
+  - Baseline / Extended DCT (`1.2.840.10008.1.2.4.50` / `.51`) — lossy;
+    decoded values are an approximation of the originals.
+  - Lossless, Process 14 and Process 14 SV1 (`.57` / `.70`, the latter being
+    the "default lossless JPEG" transfer syntax) — exact, DPCM + Huffman.
+
+  `src/jpeg.rs`. Single-component (grayscale) frames only.
+- **`jpeg-ls` cargo feature: JPEG-LS**, via
+  [`pure_jpegls`](https://crates.io/crates/pure_jpegls) (MIT OR Apache-2.0).
+  Off by default. Covers JPEG-LS Lossless (`.80`, exact) and Near-Lossless
+  (`.81`, bounded per-sample error — not exact). `src/jpeg_ls.rs`.
+  Single-component only.
+- **`jpeg2000` cargo feature: JPEG 2000**, via
+  [`pdfluent-jpeg2000`](https://crates.io/crates/pdfluent-jpeg2000)
+  (`hayro-jpeg2000`, Apache-2.0 OR MIT), built with its `image`/`simd` extras
+  disabled so it adds no further dependency. Off by default. Covers JPEG
+  2000 Lossless Only (`.90`) and JPEG 2000 (`.91`, lossless or lossy — the
+  UID alone does not say which). `src/jpeg2000.rs`. **Works around a real bug
+  in the underlying crate**: it applies JPEG 2000's unsigned DC level shift
+  to every component unconditionally, regardless of the codestream's own
+  signed bit (which the crate reads and discards, by its own admission not
+  knowing how to handle the signed case). Since the shift is a fixed, known
+  offset, `decode_frame` re-reads that bit directly from the raw SIZ marker
+  bytes and undoes the shift itself when the component really is signed. A
+  file where the codestream's signed bit and the dataset's
+  `PixelRepresentation` disagree is non-conformant and has no safe
+  resolution, so it is rejected rather than guessed at. See the module doc
+  comment.
+- `TransferSyntax` gained one variant per newly-recognised UID
+  (`JpegBaseline`, `JpegExtended`, `JpegLossless`, `JpegLosslessSv1`,
+  `JpegLsLossless`, `JpegLsNearLossless`, `Jpeg2000Lossless`, `Jpeg2000`).
+  `from_uid` now recognises all of them unconditionally — the dataset itself
+  parses whether or not the matching decode feature is enabled, since only
+  the `PixelData` element's own decode is feature-gated.
+
 ### Planned
 - Follow the ingestion roadmap in `rfcs/0001-dicom-ingestion.md`:
-  - Encapsulated/compressed pixel data (JPEG, JPEG-LS, JPEG 2000, RLE) —
-    currently rejected with `DicomError::CompressedPixelData`. Decoding must
-    land behind a clearly named feature with the decompression dependencies
-    `cargo deny` has approved, and must never silently fall back.
+  - JPEG 2000 Part 2 multi-component and JPIP-referenced pixel data — no
+    decoder yet, still rejected with `DicomError::CompressedPixelData`.
+    (RLE/JPEG/JPEG-LS/JPEG 2000 Part 1 are done — see Added above, including
+    correct signed-component handling for JPEG 2000.)
   - Multi-frame objects and DICOM networking (C-STORE, DICOMweb).
   - Quantitative-CT phantom calibration to replace the linear HU→density
     approximation in regulated pipelines.

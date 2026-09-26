@@ -37,6 +37,9 @@ pub enum DicomError {
     },
     /// A series is internally inconsistent (mixed geometry, empty dir, …).
     InconsistentSeries(String),
+    /// A QCT phantom calibration could not be fitted from the supplied
+    /// points (too few points, or a degenerate/collinear HU spread).
+    Calibration(String),
 }
 
 impl core::fmt::Display for DicomError {
@@ -74,6 +77,7 @@ impl core::fmt::Display for DicomError {
                 )
             }
             DicomError::InconsistentSeries(why) => write!(f, "inconsistent series: {why}"),
+            DicomError::Calibration(why) => write!(f, "QCT calibration: {why}"),
         }
     }
 }

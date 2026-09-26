@@ -5,9 +5,9 @@ use std::path::Path;
 use crate::error::{DicomError, Result};
 use crate::parser::{DicomElement, DicomParser};
 use crate::tags::{
-    BITS_ALLOCATED, COLUMNS, IMAGE_ORIENTATION_PATIENT, IMAGE_POSITION_PATIENT, INSTANCE_NUMBER,
-    MODALITY, PATIENT_ID, PIXEL_DATA, PIXEL_REPRESENTATION, PIXEL_SPACING, RESCALE_INTERCEPT,
-    RESCALE_SLOPE, ROWS, SERIES_INSTANCE_UID, SLICE_THICKNESS, STUDY_DATE,
+    TransferSyntax, BITS_ALLOCATED, COLUMNS, IMAGE_ORIENTATION_PATIENT, IMAGE_POSITION_PATIENT,
+    INSTANCE_NUMBER, MODALITY, PATIENT_ID, PIXEL_DATA, PIXEL_REPRESENTATION, PIXEL_SPACING,
+    RESCALE_INTERCEPT, RESCALE_SLOPE, ROWS, SERIES_INSTANCE_UID, SLICE_THICKNESS, STUDY_DATE,
 };
 use tpt_med_geometry::{ImageFrame, Vec3};
 
@@ -121,9 +121,19 @@ pub(crate) struct SliceBuilder {
     slice: DicomSlice,
     bits_allocated: u16,
     pixel_representation: u16,
+    /// The dataset's transfer syntax, needed to decode encapsulated pixel data.
+    /// `None` only in `Default`; the parser always sets it.
+    transfer_syntax: Option<TransferSyntax>,
 }
 
 impl SliceBuilder {
+    pub(crate) fn new(transfer_syntax: TransferSyntax) -> Self {
+        Self {
+            transfer_syntax: Some(transfer_syntax),
+            ..Self::default()
+        }
+    }
+
     pub(crate) fn absorb(&mut self, el: DicomElement) -> Result<()> {
         match el.tag {
             INSTANCE_NUMBER => self.slice.instance_number = el.as_is()? as u32,
@@ -157,15 +167,7 @@ impl SliceBuilder {
             STUDY_DATE => self.slice.study_date = Some(el.as_text()),
             SERIES_INSTANCE_UID => self.slice.series_uid = Some(el.as_text()),
             PIXEL_DATA => {
-                // Defined-length native pixel data only; encapsulated data
-                // arrives as an empty value after undefined-length skipping.
-                self.slice.pixel_data = decode_pixels(
-                    &el.value,
-                    self.bits_allocated,
-                    self.pixel_representation,
-                    self.slice.rows as usize * self.slice.columns as usize,
-                    el.tag,
-                )?;
+                self.slice.pixel_data = self.decode_pixel_data(&el)?;
             }
             _ => {}
         }
@@ -174,6 +176,92 @@ impl SliceBuilder {
 
     pub(crate) fn build(self) -> Result<DicomSlice> {
         Ok(self.slice)
+    }
+
+    /// Decodes a PixelData element according to the dataset's transfer syntax.
+    ///
+    /// For a compressed syntax the value holds the concatenated encapsulated
+    /// fragments collected by the parser, so it is handed to the matching
+    /// decoder. When that decoder is behind a cargo feature that is not
+    /// enabled, the error names the feature rather than reporting a
+    /// decode failure: the data is fine, the build just cannot read it.
+    fn decode_pixel_data(&self, el: &DicomElement) -> Result<Vec<i32>> {
+        let expected = self.slice.rows as usize * self.slice.columns as usize;
+
+        macro_rules! feature_gated_decode {
+            ($feature:literal, $module:ident, $uid:literal, $name:literal) => {{
+                #[cfg(feature = $feature)]
+                {
+                    crate::$module::decode_frame(
+                        &el.value,
+                        self.slice.rows,
+                        self.slice.columns,
+                        self.bits_allocated,
+                        self.pixel_representation,
+                        el.tag,
+                    )
+                }
+                #[cfg(not(feature = $feature))]
+                {
+                    let _ = (el, expected);
+                    Err(DicomError::CompressedPixelData(
+                        concat!($uid, " (", $name, ")").to_string(),
+                    ))
+                }
+            }};
+        }
+
+        match self.transfer_syntax {
+            Some(TransferSyntax::RleLossless) => {
+                feature_gated_decode!("rle", rle, "1.2.840.10008.1.2.5", "RLE Lossless")
+            }
+            Some(TransferSyntax::JpegBaseline) => {
+                feature_gated_decode!("jpeg", jpeg, "1.2.840.10008.1.2.4.50", "JPEG Baseline")
+            }
+            Some(TransferSyntax::JpegExtended) => {
+                feature_gated_decode!("jpeg", jpeg, "1.2.840.10008.1.2.4.51", "JPEG Extended")
+            }
+            Some(TransferSyntax::JpegLossless) => {
+                feature_gated_decode!("jpeg", jpeg, "1.2.840.10008.1.2.4.57", "JPEG Lossless")
+            }
+            Some(TransferSyntax::JpegLosslessSv1) => {
+                feature_gated_decode!("jpeg", jpeg, "1.2.840.10008.1.2.4.70", "JPEG Lossless, SV1")
+            }
+            Some(TransferSyntax::JpegLsLossless) => {
+                feature_gated_decode!(
+                    "jpeg-ls",
+                    jpeg_ls,
+                    "1.2.840.10008.1.2.4.80",
+                    "JPEG-LS Lossless"
+                )
+            }
+            Some(TransferSyntax::JpegLsNearLossless) => {
+                feature_gated_decode!(
+                    "jpeg-ls",
+                    jpeg_ls,
+                    "1.2.840.10008.1.2.4.81",
+                    "JPEG-LS Near-Lossless"
+                )
+            }
+            Some(TransferSyntax::Jpeg2000Lossless) => {
+                feature_gated_decode!(
+                    "jpeg2000",
+                    jpeg2000,
+                    "1.2.840.10008.1.2.4.90",
+                    "JPEG 2000 Lossless"
+                )
+            }
+            Some(TransferSyntax::Jpeg2000) => {
+                feature_gated_decode!("jpeg2000", jpeg2000, "1.2.840.10008.1.2.4.91", "JPEG 2000")
+            }
+            _ => decode_pixels(
+                &el.value,
+                self.bits_allocated,
+                self.pixel_representation,
+                expected,
+                el.tag,
+            ),
+        }
     }
 }
 
@@ -343,5 +431,86 @@ impl DicomSeries {
             slice_thickness,
             modality,
         })
+    }
+}
+
+#[cfg(all(test, feature = "jpeg-ls"))]
+mod encapsulated_pixel_data_tests {
+    use crate::parser::{encode_element_explicit, DicomParser};
+    use crate::tags::{
+        Vr, BITS_ALLOCATED, COLUMNS, PIXEL_DATA, PIXEL_REPRESENTATION, ROWS, TRANSFER_SYNTAX_UID,
+    };
+
+    fn explicit_us(tag: crate::tags::Tag, v: u16) -> Vec<u8> {
+        encode_element_explicit(tag, Vr::Us, &v.to_le_bytes())
+    }
+
+    /// Builds an encapsulated PixelData element (PS3.5 Annex A.4): tag, `OB`
+    /// long-form header with undefined length, an empty Basic Offset Table
+    /// item (single frame), one fragment item holding the whole compressed
+    /// frame, then the sequence delimiter.
+    fn encapsulated_pixel_data(frame: &[u8]) -> Vec<u8> {
+        let mut out = Vec::new();
+        out.extend_from_slice(&PIXEL_DATA.0.to_le_bytes());
+        out.extend_from_slice(&PIXEL_DATA.1.to_le_bytes());
+        out.extend_from_slice(b"OB");
+        out.extend_from_slice(&[0, 0]); // reserved
+        out.extend_from_slice(&0xFFFF_FFFFu32.to_le_bytes()); // undefined length
+                                                              // Basic Offset Table: empty (single frame).
+        out.extend_from_slice(&0xFFFEu16.to_le_bytes());
+        out.extend_from_slice(&0xE000u16.to_le_bytes());
+        out.extend_from_slice(&0u32.to_le_bytes());
+        // Fragment.
+        out.extend_from_slice(&0xFFFEu16.to_le_bytes());
+        out.extend_from_slice(&0xE000u16.to_le_bytes());
+        out.extend_from_slice(&(frame.len() as u32).to_le_bytes());
+        out.extend_from_slice(frame);
+        // Sequence delimiter.
+        out.extend_from_slice(&0xFFFEu16.to_le_bytes());
+        out.extend_from_slice(&0xE0DDu16.to_le_bytes());
+        out.extend_from_slice(&0u32.to_le_bytes());
+        out
+    }
+
+    fn part10(transfer_syntax_uid: &[u8], dataset: &[u8]) -> Vec<u8> {
+        let mut buf = vec![0u8; 128];
+        buf.extend_from_slice(b"DICM");
+        buf.extend_from_slice(&encode_element_explicit(
+            TRANSFER_SYNTAX_UID,
+            Vr::Ui,
+            transfer_syntax_uid,
+        ));
+        buf.extend_from_slice(dataset);
+        buf
+    }
+
+    /// The parser and `SliceBuilder` are exercised together here, unlike
+    /// `jpeg_ls::decode_frame`'s own unit tests: this proves the transfer
+    /// syntax is actually recognised from its UID, the encapsulated
+    /// fragment stream is actually collected by the parser (not just handed
+    /// to the decoder pre-assembled), and the decoded values reach
+    /// `DicomSlice::pixel_data` end to end.
+    #[test]
+    fn jpeg_ls_lossless_end_to_end() {
+        let pixels: Vec<u16> = vec![100, 4095, 0, 2048];
+        let (w, h) = (2u32, 2u32);
+        let mut frame = Vec::new();
+        jpegls::encode(&pixels, w, h, &mut frame).expect("encodes");
+
+        let mut dataset = Vec::new();
+        dataset.extend_from_slice(&explicit_us(ROWS, h as u16));
+        dataset.extend_from_slice(&explicit_us(COLUMNS, w as u16));
+        dataset.extend_from_slice(&explicit_us(BITS_ALLOCATED, 16));
+        dataset.extend_from_slice(&explicit_us(PIXEL_REPRESENTATION, 0));
+        dataset.extend_from_slice(&encapsulated_pixel_data(&frame));
+
+        let buf = part10(b"1.2.840.10008.1.2.4.80 ", &dataset);
+        let slice = DicomParser::parse_bytes(&buf).expect("parses");
+        assert_eq!(slice.rows, 2);
+        assert_eq!(slice.columns, 2);
+        assert_eq!(
+            slice.pixel_data,
+            pixels.iter().map(|&v| v as i32).collect::<Vec<_>>()
+        );
     }
 }

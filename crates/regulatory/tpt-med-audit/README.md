@@ -59,7 +59,9 @@ audit trail should not drag in a crypto crate with a heavy dependency tree.
 - Zero dependencies, no `unsafe`, compiles to `wasm32-unknown-unknown`, and
   the same code path is covered by native `cargo test`.
 
-## Conventions and Limits — read this
+## Conventions
+
+Read this before using the crate.
 
 - **This crate is not an audit trail.** It provides the cryptographic
   primitives. The trail itself, the record schema, signatures with *meaning*,

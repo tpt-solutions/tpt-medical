@@ -14,6 +14,12 @@ here only if it affects the workspace as a whole.
 ## [Unreleased]
 
 ### Added
+- **CI: `tpt-med-dicom` compressed-pixel-data feature coverage.** Its `rle`,
+  `jpeg`, `jpeg-ls` and `jpeg2000` cargo features are all off by default, so
+  `cargo clippy --workspace` and `cargo test --workspace` never compile them.
+  The `clippy` and `test` jobs now run a dedicated
+  `-p tpt-med-dicom --features rle,jpeg,jpeg-ls,jpeg2000` pass so those code
+  paths are actually checked, not just locally.
 - **Per-crate documentation set.** Every one of the 23 workspace members now
   ships a comprehensive `README.md` and a `CHANGELOG.md`:
   - `README.md` — overview, why the crate exists, features, conventions and
@@ -46,6 +52,17 @@ here only if it affects the workspace as a whole.
   documented as a fallback for any new crate; all 23 existing members override
   them.
 
+### Fixed
+- `deny.toml` used four `[licenses]` keys (`copyleft`, `allow-osi-fsf-free`,
+  `default`, `unlicensed`) that current `cargo-deny` (0.16+) removed —
+  `cargo deny check` failed outright with a config-validation error rather
+  than checking anything. Removed; `version = 2` already denies by default
+  anything not in the `allow` list, so this is a syntax fix, not a policy
+  change. Found while adding `tpt-med-dicom`'s new JPEG-family optional
+  dependencies and wanting to verify their licenses against the gate; CI's
+  `cargo-deny-action` would have hit the same failure on the next push
+  regardless of those dependencies.
+
 ### Phase 9: platform review follow-ups
 Tracked in `todo.md`. Summary of the user-visible change here:
 
@@ -65,6 +82,14 @@ Tracked in `todo.md`. Summary of the user-visible change here:
 - Seven per-crate READMEs had their sections out of order, and one had lost a
   chunk of its Features list. `scripts/check-crate-docs.sh` now asserts
   section *order*, not just presence, and all 23 are repaired.
+- `scripts/check-crate-docs.sh` reported all ten required sections of five
+  crates as "has no content" on a CRLF working tree. The "section has a body"
+  check compared the heading with awk's `$0 == sec`, which never matches when
+  the line carries a trailing `\r`; the repo pins only `*.sh` to LF, so any
+  `core.autocrlf=true` checkout (the default on Windows) hit this. The awk now
+  strips the carriage return before matching. The failure was a false positive
+  in the section-body check only — the section-presence, order, and code-fence
+  checks were already CRLF-safe — and CI on Linux checkouts was unaffected.
 
 #### Added
 - **`tpt-med-fda`: reproducibility manifest** — `ReproducibilityManifest`
@@ -103,6 +128,21 @@ Tracked in `todo.md`. Summary of the user-visible change here:
   maintainer committing the accepted RFC. `.github/PULL_REQUEST_TEMPLATE.md`
   and the RFC/feature issue templates were updated to match, and the root
   README's Contributing section now says so.
+
+### Post-Phase 9 roadmap
+Tracked in `todo.md`. Summary of the user-visible change here:
+
+#### Added
+- **Per-crate versions in the reproducibility manifest.** `examples/build.rs`
+  line-scans the workspace `Cargo.lock` into a generated
+  `tpt_med_examples::crate_versions::CRATE_VERSIONS` table (no new
+  dependency); the `fda-package` milestone now looks up each participating
+  crate's real resolved version there, instead of stamping every crate with
+  the calling binary's own `CARGO_PKG_VERSION`. `ReproducibilityManifest`
+  already had a `crates` map for this (`with_crates`); the gap was only in how
+  the example populated it. Every crate still resolves to the same `0.1.0`
+  workspace version today, so this is invisible in output until crates start
+  releasing independently — see `tpt-med-fda`'s README "Known Limitations".
 
 ### Added — Phase 0: Scaffolding
 - Workspace root manifest, `MIT OR Apache-2.0` dual licensing

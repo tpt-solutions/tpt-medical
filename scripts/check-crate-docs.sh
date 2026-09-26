@@ -218,7 +218,14 @@ while IFS= read -r manifest; do
     # separately: every required section needs at least one content line
     # before the next heading.
     for section in "${REQUIRED_SECTIONS[@]}"; do
+      # A CRLF checkout would make every `$0 == sec` comparison fail, since
+      # the line carries a trailing \r. The repo does not pin .md to LF (only
+      # *.sh), so core.autocrlf=true working trees are the normal case on
+      # Windows. Normalise the record before matching, and normalise $0 for
+      # the heading test too -- `/^## /` matches regardless, but a heading
+      # line is the one that must be compared exactly.
       body="$(awk -v sec="$section" '
+        { sub(/\r$/, "") }
         $0 == sec { inside = 1; next }
         /^## /      { inside = 0 }
         inside && NF { print; found = 1; exit }

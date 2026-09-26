@@ -221,15 +221,64 @@ pub enum TransferSyntax {
     ImplicitVrLittleEndian,
     /// Explicit VR little endian (`1.2.840.10008.1.2.1`).
     ExplicitVrLittleEndian,
+    /// RLE Lossless (`1.2.840.10008.1.2.5`). Encapsulated, so the dataset is
+    /// explicit VR little endian and pixel data arrives as fragments; decoding
+    /// is behind the `rle` feature.
+    RleLossless,
+    /// JPEG Baseline, Process 1 (`1.2.840.10008.1.2.4.50`). Lossy 8-bit DCT.
+    /// Decoding is behind the `jpeg` feature.
+    JpegBaseline,
+    /// JPEG Extended, Process 2 & 4 (`1.2.840.10008.1.2.4.51`). Lossy DCT,
+    /// up to 12-bit. Decoding is behind the `jpeg` feature.
+    JpegExtended,
+    /// JPEG Lossless, Non-Hierarchical, Process 14
+    /// (`1.2.840.10008.1.2.4.57`). Exact reconstruction; any of the seven
+    /// T.81 Annex H predictors. Decoding is behind the `jpeg` feature.
+    JpegLossless,
+    /// JPEG Lossless, Non-Hierarchical, First-Order Prediction, Process 14
+    /// Selection Value 1 (`1.2.840.10008.1.2.4.70`) — the "default lossless
+    /// JPEG" transfer syntax. Exact reconstruction. Decoding is behind the
+    /// `jpeg` feature.
+    JpegLosslessSv1,
+    /// JPEG-LS Lossless (`1.2.840.10008.1.2.4.80`). Exact reconstruction.
+    /// Decoding is behind the `jpeg-ls` feature.
+    JpegLsLossless,
+    /// JPEG-LS Near-Lossless (`1.2.840.10008.1.2.4.81`). Bounded per-sample
+    /// error, not exact. Decoding is behind the `jpeg-ls` feature.
+    JpegLsNearLossless,
+    /// JPEG 2000 Lossless Only (`1.2.840.10008.1.2.4.90`). Exact
+    /// reconstruction. Decoding is behind the `jpeg2000` feature.
+    Jpeg2000Lossless,
+    /// JPEG 2000 (`1.2.840.10008.1.2.4.91`) — lossless or lossy depending on
+    /// how the codestream was encoded; this crate cannot tell which from the
+    /// transfer syntax alone. Decoding is behind the `jpeg2000` feature.
+    Jpeg2000,
 }
 
 impl TransferSyntax {
-    /// UID → transfer syntax, rejecting compressed/headerless syntaxes with
-    /// actionable errors.
+    /// UID → transfer syntax.
+    ///
+    /// Every compressed syntax this crate can decode (behind its cargo
+    /// feature) is recognised unconditionally, whether or not that feature
+    /// is enabled — the dataset itself still parses either way, since all of
+    /// them carry an explicit-VR-LE dataset; only the pixel data element
+    /// decode is feature-gated (`series::SliceBuilder::decode_pixel_data`).
+    /// The remaining compressed syntaxes (retired Processes, JPEG 2000 Part
+    /// 2 multi-component, JPIP) are rejected with an actionable message
+    /// rather than being mis-parsed.
     pub fn from_uid(uid: &str) -> Result<Self, String> {
         match uid.trim_end_matches('\0') {
             "1.2.840.10008.1.2" => Ok(Self::ImplicitVrLittleEndian),
             "1.2.840.10008.1.2.1" => Ok(Self::ExplicitVrLittleEndian),
+            "1.2.840.10008.1.2.5" => Ok(Self::RleLossless),
+            "1.2.840.10008.1.2.4.50" => Ok(Self::JpegBaseline),
+            "1.2.840.10008.1.2.4.51" => Ok(Self::JpegExtended),
+            "1.2.840.10008.1.2.4.57" => Ok(Self::JpegLossless),
+            "1.2.840.10008.1.2.4.70" => Ok(Self::JpegLosslessSv1),
+            "1.2.840.10008.1.2.4.80" => Ok(Self::JpegLsLossless),
+            "1.2.840.10008.1.2.4.81" => Ok(Self::JpegLsNearLossless),
+            "1.2.840.10008.1.2.4.90" => Ok(Self::Jpeg2000Lossless),
+            "1.2.840.10008.1.2.4.91" => Ok(Self::Jpeg2000),
             other
                 if other.starts_with("1.2.840.10008.1.2.4.")
                     || other.starts_with("1.2.840.10008.1.2.5.") =>
@@ -241,6 +290,24 @@ impl TransferSyntax {
             }
             other => Err(format!("unknown transfer syntax {other}")),
         }
+    }
+
+    /// Whether the dataset is encoded in explicit VR little endian. True for
+    /// the uncompressed explicit syntax and for every encapsulated one.
+    pub fn dataset_encoding(self) -> Self {
+        match self {
+            Self::ImplicitVrLittleEndian => Self::ImplicitVrLittleEndian,
+            _ => Self::ExplicitVrLittleEndian,
+        }
+    }
+
+    /// Whether pixel data arrives encapsulated as fragments rather than as a
+    /// native little-endian value.
+    pub fn is_encapsulated(self) -> bool {
+        !matches!(
+            self,
+            Self::ImplicitVrLittleEndian | Self::ExplicitVrLittleEndian
+        )
     }
 }
 

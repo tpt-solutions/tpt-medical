@@ -28,9 +28,14 @@ route for three reasons:
 1. **Zero-cloud privacy.** A WASM build of a C-binding parser is not a thing.
 2. **WASM footprint.** The whole imaging → mesh → solve stack has to fit in a
    ~190 KB `.wasm`; a DICOM library dominates that budget instantly.
-3. **Honesty about failure.** Compressed transfer syntaxes are *rejected with a
-   typed error*, never silently mis-parsed. A wrong stress field that looks
-   plausible is worse than a failed load.
+3. **Honesty about failure.** A compressed transfer syntax this crate cannot
+   decode with confidence is *rejected with a typed error*, never silently
+   mis-parsed. A wrong stress field that looks plausible is worse than a
+   failed load — see the `jpeg2000` feature's signed-component handling below
+   for what that looks like in practice: a real bug in the underlying codec
+   crate is worked around where it safely can be, and the one case that
+   genuinely cannot be resolved (a non-conformant file) is refused rather
+   than guessed at.
 
 ## Features
 
@@ -48,12 +53,40 @@ route for three reasons:
   real, parseable DICOM files, so the whole test suite runs without PHI.
 - **Element encoder** (`encode_element_explicit`) so tests and the synthetic
   generator produce byte-accurate output.
+- **`rle` feature: RLE Lossless (`1.2.840.10008.1.2.5`) pixel data.** Off by
+  default. With it enabled, encapsulated PackBits-compressed pixel data (PS3.5
+  Annex G) is decoded directly, single-frame only. Needs no new dependency.
+- **`jpeg` feature: classic JPEG family, via [`jpeg-decoder`](https://crates.io/crates/jpeg-decoder)
+  (image-rs).** Off by default. Covers Baseline/Extended DCT
+  (`1.2.840.10008.1.2.4.50`/`.51`, lossy — decoded pixel values are only an
+  approximation of the originals, DCT quantization is lossy by design) and
+  JPEG Lossless, Process 14 and Process 14 SV1 (`.57`/`.70`, exact — DPCM +
+  Huffman, the same codec's other coding process). Single-component
+  (grayscale) frames only.
+- **`jpeg-ls` feature: JPEG-LS, via [`pure_jpegls`](https://crates.io/crates/pure_jpegls).**
+  Off by default. Covers JPEG-LS Lossless (`.80`, exact) and Near-Lossless
+  (`.81`, bounded per-sample error, not exact). Single-component only.
+- **`jpeg2000` feature: JPEG 2000, via [`pdfluent-jpeg2000`](https://crates.io/crates/pdfluent-jpeg2000)
+  (`hayro-jpeg2000`).** Off by default. Covers JPEG 2000 Lossless Only (`.90`)
+  and JPEG 2000 (`.91`, lossless *or* lossy — the UID alone does not say
+  which). Built with its `image`/`simd` extras disabled, so it pulls in no
+  further dependencies. **Works around a real bug in the underlying crate:**
+  it applies JPEG 2000's unsigned DC level shift to every component
+  unconditionally, regardless of whether the codestream declares it signed.
+  `decode_frame` re-reads that bit directly from the SIZ marker bytes (the
+  crate discards it) and undoes the shift itself when the component really
+  is signed. A file where the codestream's signed bit and the dataset's
+  `PixelRepresentation` disagree is non-conformant and is rejected outright,
+  since there is no safe way to resolve that disagreement — see `jpeg2000.rs`.
 
 ## Explicit Non-Features
 
-Compressed/encapsulated pixel data (JPEG, JPEG-LS, JPEG 2000, RLE) is **not
-decoded**. You get `DicomError::CompressedPixelData`, not garbage. Decompress
-at the archive boundary — that is a deliberate architectural line, not an
+The transfer syntaxes above are opt-in and behind their own cargo feature; the
+default build still decodes only the two uncompressed syntaxes, and every
+compressed syntax this crate does *not* implement (JPEG 2000 Part 2
+multi-component, JPIP, and any retired Process not listed above) still
+returns `DicomError::CompressedPixelData`, not garbage — decompress those at
+the archive boundary. That is a deliberate architectural line, not an
 oversight. Multi-frame objects, private tags with odd VRs, and DICOM
 networking (C-STORE, DICOMweb) are likewise out of scope for v0.
 
@@ -158,17 +191,51 @@ fn main() -> std::io::Result<()> {
 - The synthetic generator round-trips: `write_to_dir` then `load_from_dir`
   reproduces the HU volume exactly, which is what makes the rest of the
   workspace testable without real patient data.
-- `CompressedPixelData` is asserted to be returned, never swallowed.
+- `CompressedPixelData` is asserted to be returned, never swallowed, for the
+  syntaxes still rejected.
+- The `rle` feature has dedicated unit tests: literal and repeat PackBits
+  runs, 8-bit and 16-bit (signed and unsigned), a run capped to the declared
+  geometry, and truncated/malformed frames rejected rather than padded.
+- The `jpeg` feature's Lossless (Process 14 SV1) path is checked against a
+  hand-built, hand-verified bitstream (not a round-trip through the same
+  encoder the decoder is tested against), covering a zero DPCM difference and
+  both signs of a nonzero one.
+- The `jpeg-ls` and `jpeg2000` features are checked with round-trip tests
+  (encode via the same crate, decode via `decode_frame`) across 8-bit, 16-bit,
+  and signed pixel representations where applicable, plus dimension-mismatch
+  and malformed-input rejection.
+- `series::encapsulated_pixel_data_tests::jpeg_ls_lossless_end_to_end` proves
+  the whole path, not just the codec module in isolation: a real Part-10 byte
+  stream with a `TransferSyntaxUID` of `1.2.840.10008.1.2.4.80` and PS3.5
+  Annex A.4-shaped encapsulated fragments, parsed by `DicomParser::parse_bytes`
+  and decoded into `DicomSlice::pixel_data`.
 
 ## Known Limitations
 
 - **Two transfer syntaxes.** Implicit and explicit VR little endian only. Big
   endian (`1.2.840.10008.1.2.2`) is a real syntax still emitted by some
   archive exports and is not implemented.
-- **No compressed pixel data.** JPEG, JPEG-LS, JPEG 2000 and RLE are rejected
-  with `DicomError::CompressedPixelData`. This is the single biggest practical
-  limitation: many clinical archives store CT as JPEG 2000, so a real PACS will
-  usually need a decompression step at the archive boundary first.
+- **Compressed pixel data decoders are all opt-in cargo features**, off by
+  default: `rle`, `jpeg` (Baseline/Extended lossy, Lossless Process 14/SV1
+  exact), `jpeg-ls` (Lossless exact, Near-Lossless bounded-error), `jpeg2000`
+  (Lossless Only exact, `.91` either). Without the matching feature, an object
+  using that transfer syntax still yields `DicomError::CompressedPixelData`.
+  JPEG 2000 Part 2 multi-component and JPIP-referenced pixel data have no
+  decoder at all yet.
+- **The `jpeg2000` feature only trusts a *conformant* signed
+  `PixelRepresentation`.** `pdfluent-jpeg2000` applies the unsigned DC
+  level-shift to every component regardless of whether the codestream
+  declared it signed (its own source says so); `jpeg2000::decode_frame`
+  compensates for this correctly by re-reading the codestream's own SIZ
+  signed bit and undoing the shift when needed. What it cannot do is resolve
+  a file where that bit and the dataset's `PixelRepresentation` disagree —
+  such a file is non-conformant, and `decode_frame` rejects it rather than
+  guess which one to believe.
+- **Lossy transfer syntaxes decode approximate pixel values, not exact stored
+  values**, by construction (`jpeg`'s Baseline/Extended DCT, `jpeg-ls`'s
+  Near-Lossless, and whichever encoder wrote a `.91` JPEG 2000 stream lossily).
+  A HU value derived from one of these is not the exact number the scanner
+  produced. Treat it the same way you would treat any other lossy source.
 - **Single-frame only.** Enhanced multi-frame CT (a common Siemens/GE
   representation) and MR object hierarchies are not supported.
 - **Incomplete tag coverage.** Only the tags needed for geometry and HU

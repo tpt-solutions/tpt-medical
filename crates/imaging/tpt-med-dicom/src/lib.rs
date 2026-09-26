@@ -31,7 +31,15 @@
 
 pub mod error;
 pub mod hounsfield;
+#[cfg(feature = "jpeg")]
+pub mod jpeg;
+#[cfg(feature = "jpeg2000")]
+pub mod jpeg2000;
+#[cfg(feature = "jpeg-ls")]
+pub mod jpeg_ls;
 pub mod parser;
+#[cfg(feature = "rle")]
+pub mod rle;
 pub mod series;
 pub mod synthetic;
 pub mod tags;

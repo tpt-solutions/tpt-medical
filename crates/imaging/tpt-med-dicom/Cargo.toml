@@ -12,10 +12,38 @@ documentation = "https://docs.rs/tpt-med-dicom"
 keywords = ["dicom", "ct-scan", "hounsfield-units", "medical-imaging", "parser"]
 categories = ["science", "parser-implementations", "encoding"]
 
+[features]
+# Decode RLE Lossless (1.2.840.10008.1.2.5) encapsulated pixel data. Off by
+# default: without it an RLE object yields DicomError::CompressedPixelData, as
+# before. Needs no dependencies (PackBits, PS3.5 Annex G), so there is nothing
+# new for `cargo deny` to approve.
+rle = []
+# Decode the classic ITU-T T.81 JPEG family via `jpeg-decoder` (image-rs):
+# Baseline/Extended DCT (1.2.840.10008.1.2.4.50/.51, lossy) and JPEG
+# Lossless, Process 14 and Process 14 SV1 (.57/.70, exact). One dependency
+# covers both because the underlying codec (and this crate) handles both
+# coding processes. Baseline/Extended pixel values are only an approximation
+# of the originals once decoded — DCT quantization is lossy by design.
+jpeg = ["dep:jpeg-decoder"]
+# Decode JPEG-LS lossless and near-lossless (1.2.840.10008.1.2.4.80 / .81).
+# Lossless is exact; near-lossless bounds the per-sample error but is not
+# exact.
+jpeg-ls = ["dep:pure_jpegls"]
+# Decode JPEG 2000 lossless and lossy (1.2.840.10008.1.2.4.90 / .91), via
+# `pdfluent-jpeg2000` with its `image`/`simd` extras off (raw component
+# samples are read directly; no need for its 8-bit image/color-management
+# path). See `jpeg2000.rs` for a real limitation this pulls in: the codec
+# cannot decode a component the codestream declares signed, so a signed
+# PixelRepresentation object is rejected rather than risked.
+jpeg2000 = ["dep:pdfluent-jpeg2000"]
+
 [dependencies]
 tpt-med-core = { path = "../../core/tpt-med-core", version = "0.1.0" }
 tpt-med-geometry = { path = "../../core/tpt-med-geometry", version = "0.1.0" }
 tpt-med-units = { path = "../../core/tpt-med-units", version = "0.1.0" }
+jpeg-decoder = { version = "0.3", optional = true, default-features = false }
+pure_jpegls = { version = "2", optional = true }
+pdfluent-jpeg2000 = { version = "0.4", optional = true, default-features = false, features = ["std"] }
 
 [lints]
 workspace = true
