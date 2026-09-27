@@ -25,6 +25,19 @@ changes for consumers of this crate.
   (`tpt-fem-hyperelastic`, `tpt-fem-mesh`, both pinned `=0.1.0` in the root
   workspace manifest) and one test module; no production API, no change to
   the default build.
+- **`TissueModel::volumetric_first_piola`** — the volumetric part of the first
+  Piola, `d/dF [(J-1)^2/d1] = 2J(J-1)/d1 * F^-T`, split out from
+  `first_piola`. Additive: `first_piola` is unchanged and still returns the
+  fused deviatoric-plus-volumetric stress.
+  - Added for `tpt-med-fem-adapter`'s selective reduced integration, which
+    needs the deviatoric and volumetric responses integrated on different rules.
+    The split is not recoverable from a single `Mat3` in general, so the law has
+    to expose it.
+  - One closed form serves all five variants, because they share the identical
+    `(J-1)^2/d1` penalty. Returns zero for `J <= 0`, matching the guard in
+    `first_piola`.
+  - This is also the prerequisite for a mixed `u`-`p` formulation, where the
+    pressure unknown is exactly this term.
 
 ### Planned
 - Second-order tangent moduli per model, which the nonlinear `tpt-fem` upgrade

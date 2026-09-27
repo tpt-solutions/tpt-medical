@@ -304,6 +304,10 @@ than an orphan.
   `pdfluent-jpeg2000` rejects markers it does not recognise rather than skipping
   them, and this crate has no `SamplesPerPixel`/`PlanarConfiguration` handling
   anywhere. A genuine gap, uncommon for this crate's CT/MR HU scope.
+  **Spiked 2026-09-27** (`rfcs/0010-jpeg2000-part2-spike.md`): the rejection is
+  verified at source, no pure-Rust route exists today, and the gating input is
+  a purchase of ISO/IEC 15444-2 rather than engineering time. Recommend
+  deferring; the spike records the decision order if it is ever revived.
 - [ ] **JPIP-referenced pixel data** — still rejected with
   `DicomError::CompressedPixelData`; no decoder exists, and that is the correct
   outcome. JPIP is a network reference to pixel data held elsewhere, not a local
@@ -450,5 +454,155 @@ than an orphan.
   inverted element produces a `NaN` from the model's `J^-2/3` that the linear
   solver then reports as an unrelated "singular matrix", so inversion is now an
   explicit error.
-  Still open, tracked in the new crate's CHANGELOG: friction, a mixed `u`-`p`
-  formulation to remove the locking, load stepping, and curved elements.
+  Still open, tracked in the new crate's CHANGELOG: a mixed `u`-`p` formulation to
+  the locking. Friction, load stepping and curved (`Hex20`/`Hex27`/`Tet10`)
+  elements have since landed there, so that CHANGELOG is the authority on what
+  is still missing.
+
+## Aspirational backlog (per-crate `Planned` sections)
+
+The phased roadmap above is complete, but each crate also carries a
+`### Planned` section in its own CHANGELOG recording work that is
+scoped-but-unstarted. Those lived only in twenty separate files, which
+made "what is left?" a question needing twenty file reads to answer.
+They are consolidated here as one checkbox each, and the CHANGELOGs stay
+authoritative — this section is the tracker, not the source of truth.
+
+None of these block the roadmap. They are listed so they are tracked
+rather than forgotten, and so the size of what remains is visible rather
+than inferred from a clean-looking list of completed phases.
+
+### `tpt-med-dicom`
+
+The ingestion roadmap's own open items — Part 2 multi-component
+codestream decoding and JPIP — are tracked above rather than repeated
+here, so there is one checkbox per piece of work. Part 2 was spiked in
+`rfcs/0010-jpeg2000-part2-spike.md`, which recommends deferring it: the
+gating input is a purchase of ISO/IEC 15444-2, not engineering time.
+
+- [ ] **Automatic rotation detection and a small built-in library of named, cited `PhantomModel`s for common commercial phantoms — explicitly out of scope for `rfcs/0008-phantom-rod-sampling.md`'s v0 mechanism; see that RFC's Unresolved Questions.**
+
+### `tpt-med-audit`
+
+- [ ] **A `verify_chain_detailed` returning per-index status, so a forensic tool can report the first broken link rather than only that the chain fails.**
+- [ ] **Asymmetric signatures (Ed25519) for non-repudiation, behind a clearly named feature, alongside the existing symmetric HMAC path.**
+- [ ] **External anchoring helpers for RFC 3161 timestamping or a transparency log, which RFC 0003 identifies as the way to close the non-repudiation gap.**
+
+### `tpt-med-biomechanics`
+
+- [ ] **Nonlinear capability behind a cargo feature via `tpt-fem` / `tpt-fem-hyperelastic` / `tpt-fem-contact`, per RFC 0002. The linear core stays the default so the WASM footprint is unchanged.**
+- [ ] **Multi-constraint boundary conditions (symmetry planes, roller constraints) as a convenience over the current all-3-DOFs `fix_nodes`.**
+- [ ] **Direct `tpt-med-tissue` material support, so a single model can mix linear bone and hyperelastic soft tissue.**
+- [ ] **Grid and time convergence reporting (`CalculationVerification` evidence) as a first-class result rather than an off-script exercise.**
+
+### `tpt-med-bone`
+
+- [ ] **Spatial remodeling: drive per-element density from a solved strain energy density field rather than the current single lumped value per call.**
+- [ ] **A disuse/resorption-deadline model, and temperature- or load-rate-dependent remodeling.**
+- [ ] **QCT phantom calibration hooks, so a study can supply a calibrated density→modulus relation instead of the default power law.**
+
+### `tpt-med-cardiovascular`
+
+- [ ] **Four-element and non-linear pressure–flow relations for systemic circulation modelling.**
+- [ ] **Waveform-based instantaneous-hyperbolic FFR, alongside the pressure-ratio definition implemented here.**
+- [ ] **Patient-specific waveform fitting, rather than the fixed analytic shapes.**
+- [ ] **A direct coupling helper so a `tpt-med-hemodynamics` solve can step the Windkessel state in lockstep with the CFD time step.**
+
+### `tpt-med-cartilage`
+
+- [ ] **Additional boundary conditions: unconfined compression and shear.**
+- [ ] **Nonlinear biphasic theory, and a coupling between permeability and strain.**
+- [ ] **A lubrication/repulsion term for the contact interface, so the model can be driven by a contact solver rather than a prescribed step load.**
+- [ ] **Fibrous-cartilage support (a fibre-reinforced solid matrix).**
+
+### `tpt-med-electrophysiology`
+
+- [ ] **Stage 2 (ECG/EGM forward problem via pseudo-bidomain lead-field projection) and Stage 3 (ablation screening), both kept at roadmap depth in `rfcs/0005-cardiac-electrophysiology.md` pending Stage 1 usage and, for Stage 3, clinical-data validation.**
+- [ ] **Anisotropic (fiber-direction) conductivity — needs a fiber-field source (atlas or DTI derivation) this crate has no source for yet.**
+- [ ] **Promotion path to `tpt-science`'s electrophysiology crate for ionic-model breadth beyond Mitchell-Schaeffer, once a real workflow needs it.**
+
+### `tpt-med-fda`
+
+- [ ] **Enforce "sign after the final edit": today signing, appending and exporting is permitted and the export records the ordering, so a workflow requiring the stricter discipline must enforce it itself.**
+- [ ] **An append-only persistence layer with WORM semantics, so the trail survives a process restart without a caller-supplied store.**
+- [ ] **External anchoring of the detached tag (HSM, transparency log, RFC 3161) to close the non-repudiation gap identified in RFC 0003.**
+- [ ] **Reason-field policy enforcement, so a site can require a structured reason code rather than free text.**
+
+### `tpt-med-fem-adapter`
+
+- [ ] **A mixed `u`-`p` formulation for exact incompressibility. The deviatoric/volumetric split it requires now exists** (added for selective reduced integration, `tpt-med-tissue::TissueModel::volumetric_first_piola`), **so this is "add a pressure unknown" rather than "redesign the trait". The remaining decision is the inf-sup-stable element pairing — `Hex8`/constant pressure, or the `Hex20`/`Hex8` pairing RFC 0009 named — a numerical-methods call, not a mechanical one.**
+
+### `tpt-med-hemodynamics`
+
+- [ ] **Conjugate-gradient or multigrid pressure solve to replace the Jacobi sweeps, which currently dominate the per-step cost.**
+- [ ] **Conjugate heat transfer and wall compliance, enabling a coupled fluid–structure boundary.**
+- [ ] **Optional local wall refinement, so peak WSS at a geometric corner stops being resolution dependent.**
+- [ ] **Coupling to `tpt-med-cardiovascular` for a driven, rather than prescribed, boundary condition.**
+
+### `tpt-med-implant-sizing`
+
+- [ ] **Automatic landmark detection from a CT, which is the hard part of the problem and is not attempted here.**
+- [ ] **Multi-measurement charts, so a femoral decision can weigh TEA, AP depth and posterior condylar offset jointly, with a vendor-specific precedence rule.**
+- [ ] **Soft-tissue and ligament balance assessment, and a check that the selected size leaves acceptable gap balancing. Sizing is necessary for a good plan and not sufficient.**
+- [ ] **Hip, shoulder and ankle sizing beyond the knee-specific `KneeLandmarks`.**
+- [ ] **Schema validation and reporting for a caller-supplied chart, so a mis-transcribed chart is caught rather than silently producing a recommendation.**
+
+### `tpt-med-meshing`
+
+- [ ] **Per-voxel material overrides, so a caller can supply a QCT-calibrated or region-specific modulus instead of the default HU correlation.**
+- [ ] **Optional node deduplication across disconnected components.**
+
+### `tpt-med-nifti`
+
+- [ ] **NIfTI-2 (the 2011 540-byte header with 64-bit dimensions) — still out of scope per RFC 0006; revisit if a workspace dataset needs it.**
+
+### `tpt-med-orthopedics`
+
+- [ ] **Cyclic loading: micromotion accumulated over a gait cycle rather than evaluated at a single static load.**
+- [ ] **A migration model, so the time-dependent consequence of micromotion can be followed rather than classified at a threshold.**
+- [ ] **Built-in zone definitions (Gruen, Paprosky) so callers are not left to invent one.**
+- [ ] **Continuum coupling, so an implant with realistic compliance can be evaluated rather than modelled as a rigid punch.**
+
+### `tpt-med-stents`
+
+- [ ] ****Level 2** — tapered ring groups, which would give `dogboning` a real value instead of the structural `0.0` it reports today.**
+- [ ] ****Level 3** — 3D superelastic FEM with frictional contact via `tpt-fem-hyperelastic` / `tpt-fem-contact`.**
+- [ ] **Foreshortening, and per-crown stiffness variation for a non-uniform ring.**
+- [ ] **Cyclic degradation of `ε_L` over 10⁶ cycles, to support fatigue and accelerated-dilation life claims.**
+- [ ] **Direct coupling to a `tpt-med-hemodynamics` solution in the same solve, rather than a prescribed vessel law.**
+
+### `tpt-med-surgical-planning`
+
+- [ ] **Per-fragment addressing, so a `PlanStep::Move` can target a single named fragment rather than the whole assembled model. This is the largest known gap and needs an RFC.**
+- [ ] **Curved and freeform resections, saw-kerf width, and multi-plane wedges.**
+- [ ] **Implant component placement with a bone–implant interface, and bone graft or defect reconstruction.**
+- [ ] **Soft-tissue structures, so a plan can be checked for collateral damage to ligaments, capsules and neurovascular bundles.**
+- [ ] **Measurement reporting: resection volumes, cut depths and achieved alignment errors, recorded alongside the steps in the audit log.**
+
+### `tpt-med-tissue`
+
+- [ ] **Second-order tangent moduli per model, which the nonlinear `tpt-fem` upgrade path needs for Newton convergence.**
+- [ ] **Plane-stress and reduced-order wrappers over the full 3×3 `F` interface.**
+- [ ] **Fiber-family rotation in HGO (collagen crimp), and the two-family elastin/collagen parameterisation used in some literature.**
+
+### `tpt-med-viscoelastic`
+
+- [ ] **Temperature shifting of relaxation times (WLF and Arrhenius relations), so `τᵢ` values can be generated rather than supplied.**
+- [ ] **Non-linear hyperviscoelastic formulations, applying the Prony series to the hyperelastic energy in finite strain rather than in the linear-viscoelastic regime.**
+- [ ] **A time-integration helper, so callers driving a finite-element inner loop do not each reimplement the recurrence.**
+
+### `tpt-med-vv40`
+
+- [ ] **Per-component credibility rollup, so a large model assembled from small verified parts has a defined composite credibility.**
+- [ ] **Structured evidence: attach numeric metrics with acceptance criteria to a `VerificationActivity` or `ValidationActivity`, so adequacy can be checked mechanically rather than by reading `results` as prose.**
+- [ ] **Multi-question assessments with an explicit aggregation rule, for models used for several questions of interest.**
+- [ ] **Optional serialisation of an assessment to JSON, so it can live inside a submission bundle next to the `tpt-med-fda` package.**
+
+### `tpt-med-wear`
+
+- [ ] **Wear-debris-induced damage feedback, so wear changes the contact geometry and pressures — without which the runaway that ends real implant life is not captured.**
+- [ ] **A coupling helper to a contact solver, so pressures and sliding distances can be solved rather than supplied.**
+- [ ] **Uncertainty propagation over the wear coefficient, which scatters over orders of magnitude between studies and which a defensible screening study should quantify.**
+- [ ] **A run-in period and activity-level variation, so gait extrapolation is not strictly linear in cycle count.**
+
+**67 items across 20 crates.**

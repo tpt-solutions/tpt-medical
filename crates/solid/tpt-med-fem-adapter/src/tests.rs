@@ -17,6 +17,7 @@
 //!    does not pass through the obstacle, and the contact reaction balances
 //!    the punch force.
 
+use crate::assembly::FnModel;
 use crate::assembly::{
     coo_max_abs_diff, internal_force, material_tangent, tangent_stiffness,
     tangent_stiffness_numerical, AssemblyOptions, Constitutive,
@@ -1681,4 +1682,123 @@ fn a_tet_element_uses_a_simplex_rule_not_a_tensor_product_one() {
     let hex = <Hex8 as crate::ElementFamily>::quadrature_rule(2);
     let hex_total: f64 = hex.weights.iter().sum();
     assert!((hex_total - 8.0).abs() < 1.0e-12);
+}
+
+// --- Volumetric locking: selective reduced integration ---------------------
+//
+// Option C from the u-p discussion: split the volumetric first Piola out of the
+// fused `P` and integrate it on its own coarser rule. This reduces locking; it
+// does not buy exact incompressibility, which only a mixed u-p formulation does.
+
+#[test]
+fn the_volumetric_split_is_exact() {
+    // The method rests on `P = P_dev + P_vol` being a true decomposition, not an
+    // approximation. For a body of known energy that is checkable: the
+    // volumetric first Piola is the exact derivative of `(J-1)^2/d1`, and it
+    // vanishes at `J = 1` whatever `d1` is.
+    let model = nh();
+    for lam in [0.9f64, 1.0, 1.1, 1.3] {
+        let f = Mat3::from_array([lam, 0.0, 0.0, 0.0, lam, 0.0, 0.0, 0.0, lam]);
+        let got = model.volumetric_piola(&f).at(0, 0);
+        let expected = 2.0 * lam * lam * (lam.powi(3) - 1.0) / D1;
+        assert!(
+            (got - expected).abs() < 1.0e-9 * expected.abs().max(1.0),
+            "lam={lam}: volumetric P {got} vs {expected}"
+        );
+    }
+    assert_eq!(model.volumetric_piola(&Mat3::IDENTITY), Mat3::ZERO);
+}
+
+#[test]
+fn reduced_volumetric_integration_reduces_locking() {
+    // The point of the exercise, measured rather than asserted: a *stiff* penalty
+    // (`d1` small) on a coarse mesh is the regime where locking dominates, and
+    // that is where SRI should show its benefit. Target is the closed form
+    // `mu (lambda - lambda^-2)`.
+    let l: f64 = 10.0;
+    let lam: f64 = 1.3;
+    let expected = 2.0 * C10 * (lam - lam.powi(-2));
+    // Deliberately stiffer than the fixture's `d1 = 0.5`: this is the
+    // locking-dominated corner, which is where the method is supposed to help.
+    let stiff = TissueModel::NeoHookean(NeoHookeanParams { c10: C10, d1: 0.1 });
+    let error_for = |sri: Option<usize>| -> f64 {
+        let mesh = hex_box(2, 2, 2, l, l, l).expect("box");
+        let mut dirichlet: Vec<(usize, f64)> = Vec::new();
+        for n in mesh.face_nodes(1, false) {
+            for c in 0..3 {
+                dirichlet.push((mesh.dof(n, c), 0.0));
+            }
+        }
+        for n in mesh.face_nodes(1, true) {
+            dirichlet.push((mesh.dof(n, 2), 0.0));
+            dirichlet.push((mesh.dof(n, 1), (lam - 1.0) * l));
+        }
+        let mut assembly = AssemblyOptions::with_quadrature_order(3);
+        assembly.volumetric_quadrature_order = sri;
+        let opts = SolveOptions {
+            assembly,
+            ..SolveOptions::default()
+        };
+        let r = solve_static(
+            &mesh,
+            &stiff,
+            &vec![0.0; mesh.dof_count()],
+            &dirichlet,
+            &opts,
+            None,
+        )
+        .expect("converges");
+        let internal =
+            internal_force(&mesh, &stiff, &r.displacement, &opts.assembly).expect("assembly");
+        let reaction: f64 = mesh
+            .face_nodes(1, true)
+            .iter()
+            .map(|&n| internal[mesh.dof(n, 1)])
+            .sum();
+        ((reaction / (l * l) - expected) / expected).abs()
+    };
+    let full = error_for(None);
+    let reduced = error_for(Some(1));
+    println!("SRI locking error: full={full:.4} reduced={reduced:.4}");
+    assert!(
+        reduced < full,
+        "reduced volumetric integration should reduce locking: {reduced} vs {full}"
+    );
+    // Substantially, not by a rounding error — a change too small to see would
+    // mean the option is not actually wired to anything.
+    assert!(
+        reduced < 0.5 * full,
+        "expected a substantial reduction, got {reduced} vs {full}"
+    );
+}
+
+#[test]
+fn reduced_volumetric_integration_is_a_no_op_for_a_law_without_one() {
+    // The documented sharp edge, pinned so it stays documented: a law reporting
+    // no volumetric part makes the option do nothing, silently. This is why the
+    // option is opt-in.
+    let l: f64 = 10.0;
+    let model = nh();
+    let closure = FnModel(|f: &Mat3| TissueModel::first_piola(&model, f));
+    let mesh = hex_box(1, 1, 1, l, l, l).expect("box");
+    let mut u = vec![0.0; mesh.dof_count()];
+    for n in mesh.face_nodes(1, true) {
+        u[mesh.dof(n, 1)] = 0.3;
+    }
+    let assembly = AssemblyOptions {
+        volumetric_quadrature_order: Some(1),
+        ..AssemblyOptions::default()
+    };
+    let f_with = internal_force(&mesh, &closure, &u, &assembly).expect("asm");
+    let f_without = internal_force(&mesh, &closure, &u, &AssemblyOptions::default()).expect("asm");
+    let diff: f64 = f_with
+        .iter()
+        .zip(&f_without)
+        .map(|(a, b)| (a - b).abs())
+        .fold(0.0f64, f64::max);
+    assert!(
+        diff == 0.0,
+        "an `FnModel` has no volumetric part, so the option must be a no-op; \
+         it changed the force by {diff}"
+    );
 }

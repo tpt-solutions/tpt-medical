@@ -12,6 +12,40 @@ changes for consumers of this crate.
 ## [Unreleased]
 
 ### Added
+- **Selective reduced integration of the volumetric penalty** (option C of the
+  u-p discussion) — a cheap, opt-in mitigation for volumetric locking.
+  `AssemblyOptions::volumetric_quadrature_order: Option<usize>`; `None` (the
+  default) is the current, fully-verified behaviour, so the existing
+  verification suite is unaffected. Measured on a coarse mesh with a stiff
+  penalty (`d1 = 0.1`, 2x2x2 elements): locking error **0.5593 -> 0.1218**,
+  a 4.6x reduction. This *reduces* locking; it is **not** exact
+  incompressibility, which only a mixed `u`-`p` formulation buys.
+  - **This required a trait change, which is the part worth knowing.**
+    `Constitutive::first_piola` returns one fused `Mat3`, and the
+    deviatoric/volumetric split cannot be recovered from it in general —
+    under-integrating "all of `P`" would damage the deviatoric response too.
+    `Constitutive` therefore gains `volumetric_piola`, and
+    `TissueModel::volumetric_first_piola` in `tpt-med-tissue` supplies it
+    (`2J(J-1)/d1 * F^-T`; all five model variants share the same penalty, so it
+    is one closed form rather than five).
+  - **The same split is the first third of a mixed `u`-`p` formulation**, which
+    cannot exist until the split does — the pressure unknown *is* the
+    volumetric part. This is the concrete reason the cheaper option was taken
+    first: its architectural work is not throwaway.
+  - **The tangent is split to match.** `internal_force` and `tangent_stiffness`
+    both use the deviatoric/volumetric split, via a `VolumetricOnly` view that
+    lets the existing finite-difference `material_tangent` difference the
+    volumetric law alone. A force that split with a tangent that did not would
+    silently degrade Newton to a first-order crawl.
+  - **Known sharp edge, documented and tested:** the trait's default
+    `volumetric_piola` returns zero, so a bare `FnModel` closure gets a
+    **silent no-op** from this option. That is why it is opt-in;
+    `reduced_volumetric_integration_is_a_no_op_for_a_law_without_one` pins the
+    behaviour so it cannot drift into a surprise.
+  - Four new tests: the split is exact against the closed form, SRI measurably
+    reduces locking, the no-op case above, and the split tangent is still the
+    derivative of the split residual.
+
 - **Regularized Coulomb friction on contact** (`friction` module) — the
   in-house answer to RFC 0009's second unresolved question. `tpt-fem-contact` at
   0.1.0 has no friction model and this workspace does not own that crate, so
@@ -129,8 +163,12 @@ changes for consumers of this crate.
     drift apart. `solve_static`'s own signature and behaviour are unchanged.
 
 ### Planned
-- A mixed `u`-`p` formulation to replace the penalty volumetric term, which is
-  what currently causes volumetric locking on coarse meshes.
+- A mixed `u`-`p` formulation for **exact** incompressibility. The
+  deviatoric/volumetric split it requires now exists (see Added), so this is
+  "add a pressure unknown" rather than "redesign the trait". The remaining
+  decision is the inf-sup-stable element pairing — `Hex8`/constant pressure, or
+  the `Hex20`/`Hex8` pairing RFC 0009 named — which is a numerical-methods
+  call, not a mechanical one.
 
 ## [0.1.0] - 2026-09-27
 

@@ -150,6 +150,39 @@ impl TissueModel {
         }
     }
 
+    /// Volumetric part of the first Piola–Kirchhoff stress:
+    /// `d/dF [(J - 1)^2 / d1] = 2J(J - 1)/d1 * F^{-T}`.
+    ///
+    /// Split out from [`TissueModel::first_piola`] so a caller can integrate the
+    /// volumetric response on its own — which is what selective reduced
+    /// integration needs, and what makes the penalty visible as a separable term
+    /// rather than fused into `P`.
+    ///
+    /// All five variants share the identical `(J - 1)^2 / d1` penalty, so the
+    /// volumetric first Piola is the same closed form for every one of them. That
+    /// is a convenience, not an accident of the derivation: it is what lets this
+    /// be one method rather than five.
+    ///
+    /// Returns zero for `J <= 0`, matching the guard in
+    /// [`TissueModel::first_piola`]. An inverted configuration has no valid
+    /// volumetric response, and the adapter rejects inversion before asking.
+    pub fn volumetric_first_piola(&self, f: &Mat3) -> Mat3 {
+        let f = *f;
+        let j = f.det();
+        if j <= EPS_F64 {
+            return Mat3::ZERO;
+        }
+        let d1 = match self {
+            TissueModel::NeoHookean(p) => p.d1,
+            TissueModel::MooneyRivlin(p) => p.d1,
+            TissueModel::Yeoh(p) => p.d1,
+            TissueModel::Ogden(p) => p.d1,
+            TissueModel::HolzapfelGasserOgden(p) => p.d1,
+        };
+        let f_inv_t = f.inverse().map(|i| i.transpose()).unwrap_or(Mat3::ZERO);
+        2.0 * j * (j - 1.0) / d1 * f_inv_t
+    }
+
     /// Central-difference reference for `∂W/∂F` (used for Ogden/HGO and to
     /// verify all analytic derivatives).
     pub fn first_piola_numerical(&self, f: &Mat3) -> Mat3 {

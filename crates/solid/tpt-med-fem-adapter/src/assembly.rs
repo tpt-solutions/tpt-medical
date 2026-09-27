@@ -64,11 +64,47 @@ pub type Tensor4 = [[[[f64; 3]; 3]; 3]; 3];
 pub trait Constitutive {
     /// First Piola-Kirchhoff stress `P = dW/dF`.
     fn first_piola(&self, f: &Mat3) -> Mat3;
+    /// The **volumetric part** of `P`, so a caller can integrate it separately
+    /// from the deviatoric part.
+    ///
+    /// # Why this exists
+    ///
+    /// Selective reduced integration — the cheap mitigation for volumetric
+    /// locking — works by integrating the volumetric response on a lower-order
+    /// rule than the deviatoric one. That is only possible if the two can be
+    /// told apart. `first_piola` returns them fused, and the split cannot be
+    /// recovered from a single `Mat3` in general: under-integrating "all of `P`"
+    /// would damage the deviatoric response, not just the volumetric one.
+    ///
+    /// It is also the first third of a mixed `u`-`p` formulation, which cannot
+    /// exist until the split does — the pressure unknown *is* the volumetric
+    /// part.
+    ///
+    /// # The default is a sharp edge, and it is left visible
+    ///
+    /// The default is zero, meaning "this law has no separable volumetric part".
+    /// That is right for a genuinely incompressible-by-construction law and
+    /// silently wrong for a bare closure that happens to include a penalty, so
+    /// `FnModel` keeps this default: a user who wraps a penalty-incompressible
+    /// closure in `FnModel` and switches on reduced volumetric integration gets
+    /// **no effect and no warning**, because the trait cannot distinguish that
+    /// closure from one with genuinely no volumetric term.
+    ///
+    /// That is why [`AssemblyOptions::volumetric_quadrature_order`] is opt-in and
+    /// says so in its own docs. A `FnModel` user who wants the behaviour
+    /// implements `Constitutive` directly and supplies the split.
+    fn volumetric_piola(&self, _f: &Mat3) -> Mat3 {
+        Mat3::ZERO
+    }
 }
 
 impl Constitutive for TissueModel {
     fn first_piola(&self, f: &Mat3) -> Mat3 {
         TissueModel::first_piola(self, f)
+    }
+
+    fn volumetric_piola(&self, f: &Mat3) -> Mat3 {
+        TissueModel::volumetric_first_piola(self, f)
     }
 }
 
@@ -92,6 +128,34 @@ pub struct AssemblyOptions {
     pub quadrature_order: usize,
     /// Central-difference step for the material tangent.
     pub fd_step: f64,
+    /// Quadrature order for the **volumetric part alone**, or `None` to
+    /// integrate it on the same rule as everything else.
+    ///
+    /// `Some(order)` selects *selective reduced integration* (SRI), the cheap
+    /// mitigation for volumetric locking: the deviatoric response keeps full
+    /// order while the volumetric penalty is integrated on a coarser rule, which
+    /// removes most of the spurious compressive stiffness a stiff penalty
+    /// produces under full integration. It reduces locking; it does not eliminate
+    /// it, and it is **not** exact incompressibility. A mixed `u`-`p`
+    /// formulation is the only thing that is.
+    ///
+    /// # It only does something if the law reports a volumetric part
+    ///
+    /// See [`Constitutive::volumetric_piola`]. A law that returns the default
+    /// zero here — notably a bare [`FnModel`] closure — makes this option a
+    /// silent no-op. `None` (the default) is the current, fully-verified
+    /// behaviour, so reduced integration is opt-in and the existing verification
+    /// suite is unaffected by it.
+    ///
+    /// # The patch-test interaction
+    ///
+    /// The constant-stress patch identity is exact for the *deviatoric*
+    /// response. Under SRI the volumetric part is deliberately under-integrated,
+    /// so any test asserting an exact patch identity on a state with non-uniform
+    /// volume change will see a small deviation. That is the point of the
+    /// method, not a defect in it — the volumetric response is no longer
+    /// integrated consistently, which is the entire mechanism.
+    pub volumetric_quadrature_order: Option<usize>,
 }
 
 impl Default for AssemblyOptions {
@@ -99,6 +163,7 @@ impl Default for AssemblyOptions {
         Self {
             quadrature_order: 3,
             fd_step: 1.0e-7,
+            volumetric_quadrature_order: None,
         }
     }
 }
@@ -108,6 +173,17 @@ impl AssemblyOptions {
     pub fn with_quadrature_order(quadrature_order: usize) -> Self {
         Self {
             quadrature_order,
+            ..Self::default()
+        }
+    }
+
+    /// Options with selective reduced integration of the volumetric part.
+    ///
+    /// See [`AssemblyOptions::volumetric_quadrature_order`] — including the
+    /// caveat that it is a no-op for a law reporting no volumetric part.
+    pub fn with_volumetric_quadrature_order(order: usize) -> Self {
+        Self {
+            volumetric_quadrature_order: Some(order),
             ..Self::default()
         }
     }
@@ -223,7 +299,16 @@ pub fn internal_force<E: ReferenceElement + crate::mesh::ElementFamily>(
                     deformation_determinant: j,
                 });
             }
-            let p = model.first_piola(&f);
+            // Selective reduced integration: the deviatoric part keeps the full
+            // rule, the volumetric part is integrated on its own coarser rule.
+            // With `None` both halves share one rule and this reduces to the
+            // original single `P` integration, exactly.
+            let p_full = model.first_piola(&f);
+            let p_vol = match opts.volumetric_quadrature_order {
+                Some(_) => model.volumetric_piola(&f),
+                None => Mat3::ZERO,
+            };
+            let p = p_full - p_vol;
             for (local, &node) in mesh.elements()[e].iter().enumerate() {
                 for k in 0..3 {
                     let mut acc = 0.0;
@@ -231,6 +316,34 @@ pub fn internal_force<E: ReferenceElement + crate::mesh::ElementFamily>(
                         acc += p.at(k, l) * grad[local][l];
                     }
                     force[3 * node + k] += dv * acc;
+                }
+            }
+        }
+        if let Some(order) = opts.volumetric_quadrature_order {
+            let vrule = E::quadrature_rule(order);
+            for (xi, w) in vrule.points.iter().zip(&vrule.weights) {
+                let Some(grad) = mesh.physical_gradients(e, xi) else {
+                    return Err(MeshError::DegenerateElement {
+                        element: e,
+                        jacobian_determinant: mesh.jacobian(e, xi).det(),
+                    });
+                };
+                let dv = w * mesh.jacobian(e, xi).det();
+                let f = element_deformation_gradient(mesh, e, u, xi).ok_or(
+                    MeshError::DegenerateElement {
+                        element: e,
+                        jacobian_determinant: mesh.jacobian(e, xi).det(),
+                    },
+                )?;
+                let p_vol = model.volumetric_piola(&f);
+                for (local, &node) in mesh.elements()[e].iter().enumerate() {
+                    for k in 0..3 {
+                        let mut acc = 0.0;
+                        for l in 0..3 {
+                            acc += p_vol.at(k, l) * grad[local][l];
+                        }
+                        force[3 * node + k] += dv * acc;
+                    }
                 }
             }
         }
@@ -280,7 +393,19 @@ pub fn tangent_stiffness<E: ReferenceElement + crate::mesh::ElementFamily>(
                     jacobian_determinant: mesh.jacobian(e, xi).det(),
                 },
             )?;
-            let a = material_tangent(model, &f, opts.fd_step);
+            // The tangent must be split the same way the force is, or the
+            // Jacobian stops being the derivative of the residual and Newton
+            // degrades to a first-order crawl with no error. `a_vol` is
+            // differenced from the volumetric law alone for the same reason the
+            // force splits.
+            let a = match opts.volumetric_quadrature_order {
+                Some(_) => {
+                    let full = material_tangent(model, &f, opts.fd_step);
+                    let vol = material_tangent(&VolumetricOnly(model), &f, opts.fd_step);
+                    sub4(&full, &vol)
+                }
+                None => material_tangent(model, &f, opts.fd_step),
+            };
             for (i, &ni) in mesh.elements()[e].iter().enumerate() {
                 for (j, &nj) in mesh.elements()[e].iter().enumerate() {
                     for k in 0..3 {
@@ -302,8 +427,67 @@ pub fn tangent_stiffness<E: ReferenceElement + crate::mesh::ElementFamily>(
                 }
             }
         }
+        if let Some(order) = opts.volumetric_quadrature_order {
+            let vrule = E::quadrature_rule(order);
+            for (xi, w) in vrule.points.iter().zip(&vrule.weights) {
+                let Some(grad) = mesh.physical_gradients(e, xi) else {
+                    return Err(MeshError::DegenerateElement {
+                        element: e,
+                        jacobian_determinant: mesh.jacobian(e, xi).det(),
+                    });
+                };
+                let dv = w * mesh.jacobian(e, xi).det();
+                let f = element_deformation_gradient(mesh, e, u, xi).ok_or(
+                    MeshError::DegenerateElement {
+                        element: e,
+                        jacobian_determinant: mesh.jacobian(e, xi).det(),
+                    },
+                )?;
+                let a_vol = material_tangent(&VolumetricOnly(model), &f, opts.fd_step);
+                for (i, &ni) in mesh.elements()[e].iter().enumerate() {
+                    for (j, &nj) in mesh.elements()[e].iter().enumerate() {
+                        for k in 0..3 {
+                            for m in 0..3 {
+                                let mut acc = 0.0;
+                                for l in 0..3 {
+                                    for n in 0..3 {
+                                        acc += a_vol[k][l][m][n] * grad[i][l] * grad[j][n];
+                                    }
+                                }
+                                stiffness.push(3 * ni + k, 3 * nj + m, dv * acc);
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
     Ok(stiffness)
+}
+
+/// A [`Constitutive`] view that reports *only* the volumetric first Piola, so
+/// [`material_tangent`] can difference the volumetric law in isolation.
+struct VolumetricOnly<'a>(&'a dyn Constitutive);
+
+impl Constitutive for VolumetricOnly<'_> {
+    fn first_piola(&self, f: &Mat3) -> Mat3 {
+        self.0.volumetric_piola(f)
+    }
+}
+
+/// Componentwise difference of two fourth-order tensors.
+fn sub4(a: &Tensor4, b: &Tensor4) -> Tensor4 {
+    let mut out = [[[[0.0f64; 3]; 3]; 3]; 3];
+    for i in 0..3 {
+        for j in 0..3 {
+            for k in 0..3 {
+                for l in 0..3 {
+                    out[i][j][k][l] = a[i][j][k][l] - b[i][j][k][l];
+                }
+            }
+        }
+    }
+    out
 }
 
 /// Assembles the tangent stiffness by central-differencing the *whole residual*

@@ -225,6 +225,14 @@ solve is `O(n^3)` in DOFs.
   in-house linear-elastic core; it upgrades the material law and the element
   machinery. The fixture's `d1 = 0.5` is a measured compromise, documented in
   `src/tests.rs`.
+  **Selective reduced integration is available and helps a lot**
+  (`AssemblyOptions::volumetric_quadrature_order`): it splits the volumetric
+  penalty out of the fused first Piola and integrates it on a coarser rule,
+  cutting locking error on a stiff-penalty coarse mesh from 0.5593 to 0.1218
+  (4.6x). It is **opt-in** and off by default, and it *reduces* locking rather
+  than removing it — exact incompressibility still needs a mixed `u`-`p`
+  formulation, which is Planned. Note it is a silent no-op for a bare
+  `FnModel`, which reports no volumetric part; see `Constitutive::volumetric_piola`.
 - **Friction is regularized, not an exact return map.** A genuinely stuck node
   carries `k_t * s` rather than a saturated `mu * f_n`, so the result is
   regularization-length dependent: `k_t` must be large enough that

@@ -133,6 +133,10 @@ changes for consumers of this crate.
     transform is still refused, and multi-sample-per-pixel data is still out
     of scope for this crate. (RLE/JPEG/JPEG-LS/JPEG 2000 Part 1 are done —
     see Added above, including correct signed-component handling.)
+    **Spiked 2026-09-27** (`rfcs/0010-jpeg2000-part2-spike.md`): the
+    rejection is verified at source, no pure-Rust route exists today, and the
+    gating input is a purchase of ISO/IEC 15444-2 rather than engineering
+    time. Recommend deferring.
   - JPIP-referenced pixel data — no decoder, and none should be written here:
     it is a network reference to pixel data held elsewhere, so it needs a
     transport story (resolved at the archive boundary) before decoding is even
