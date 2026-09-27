@@ -293,12 +293,22 @@ than an orphan.
   objects outright. A file where the codestream's own signed bit and the
   dataset's `PixelRepresentation` disagree is non-conformant and still
   rejected, since there is no safe way to resolve that disagreement.
-- **JPEG 2000 Part 2 multi-component and JPIP-referenced pixel data** — still
-  rejected with `DicomError::CompressedPixelData`; no decoder exists for
-  either. Multi-component is a real but uncommon gap (multi-channel or
-  wavelet-transformed color JPEG 2000); JPIP is a network reference to pixel
-  data elsewhere, not pixel data itself, and would need its own transport
-  story before decoding matters.
+- [x] **JPEG 2000 Part 2 multi-component transfer syntaxes** (`.92`/`.93`) —
+  routed through the same `jpeg2000::decode_frame` path as `.90`/`.91`, closed
+  below. What remains open is the codestream work, split out into the two
+  follow-ups immediately after.
+- [ ] **JPEG 2000 Part 2 multi-component codestream decoding** — the transfer
+  syntaxes decode, but "multi-component" in their name is not a decode
+  capability. A codestream using a real Part 2 extended multi-component
+  transform (multi-channel or wavelet-transformed color) is still refused —
+  `pdfluent-jpeg2000` rejects markers it does not recognise rather than skipping
+  them, and this crate has no `SamplesPerPixel`/`PlanarConfiguration` handling
+  anywhere. A genuine gap, uncommon for this crate's CT/MR HU scope.
+- [ ] **JPIP-referenced pixel data** — still rejected with
+  `DicomError::CompressedPixelData`; no decoder exists, and that is the correct
+  outcome. JPIP is a network reference to pixel data held elsewhere, not a local
+  format, so this needs a transport story (a JPIP client, resolved at the
+  archive boundary) before any decoding question is even in scope.
 - [x] **Quantitative CT calibration (fit)** — `QctCalibration::fit` in
   `tpt-med-dicom` fits a real HU→density line by ordinary least squares from
   a calibration phantom's measured `(HU, known_value)` rod points, replacing

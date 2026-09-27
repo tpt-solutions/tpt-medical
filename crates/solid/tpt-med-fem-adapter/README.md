@@ -55,6 +55,12 @@ as an open question.
   `tpt-fem-contact`'s node pairing and penalty, with the active set recomputed
   from the current geometry at every residual and Jacobian evaluation, so a
   body that separates from the obstacle stops being pushed by it.
+- **Regularized Coulomb friction** (`friction` module) on top of that contact,
+  since the substrate has none: `f = min(mu * f_n, k_t |s|) s/|s|` against
+  tangential slip, with the bound from the same normal penalty. Stateless, so it
+  stays correct under the re-evaluated active set, and it ships its exact
+  tangent so Newton keeps converging quadratically. See the module docs for why
+  regularization rather than a return map, and how to size `k_t`.
 - **Explicit failure** where a numerical library might return a plausible
   wrong answer: an inverted element is a `MeshError::InvertedDeformation`, not
   a `NaN` that later surfaces as an unrelated "singular matrix".
@@ -134,7 +140,15 @@ let nominal = reaction / (l * l);
 | `solve_static(mesh, model, load, dirichlet, opts, contact)` | Newton solve; returns `SolveResult` |
 | `residual(mesh, model, load, u, opts, contact)` | The residual at a configuration, for independent checking |
 | `ContactPairing::new(axis, slave, master)` | Unilateral pairing of deforming nodes against a rigid obstacle |
-| `ContactConfig { pairing, penalty }` | Which contact to enforce in a solve, and how stiff |
+| `ContactConfig { pairing, penalty, friction }` | Which contact to enforce in a solve, how stiff, and with what friction |
+| `friction_terms(mesh, pairing, u, penalty, cfg)` | Friction force and tangent for the active contacts, plus per-node stick/slip state |
+| `FrictionConfig::new(mu, tangential_stiffness)` | Coulomb coefficient and the regularizing tangential stiffness |
+| `solve_load_path(mesh, model, load, dirichlet, opts, contact, path)` | Walks a load-controlled path, one converged increment at a time, with bisection cutback |
+| `LoadPathOptions { steps, max_cutbacks }` | Increment count and how deep a failed step may be bisected |
+| `hex_box(nx, ny, nz, lx, ly, lz)` | A structured trilinear box; the `Hex8` specialisation of `hex_box_of` |
+| `hex_box_of::<E>(...)` | The same, for any element type — `hex_box_of::<Hex20>` for a quadratic box |
+| `HexMesh::<E>::default_quadrature_order()` | 2 for a linear element, 3 for a quadratic one — prefer this over a hard-coded order |
+| `LoadStep` / `LoadPath` | The converged points, each with its load factor, residual, iteration count and contact summary |
 | `SolveOptions { convergence, assembly }` | Tolerances, iteration cap, quadrature order, FD step |
 
 ## Verification
@@ -160,29 +174,62 @@ in `src/tests.rs`.
 | `contact_changes_the_answer_versus_no_contact` | The contact terms reach the residual, by contrasting with the unconstrained solve |
 | `pulling_away_leaves_the_active_set_empty` | Separation releases the constraint within the same solve |
 | `an_inverted_element_is_reported_not_silently_assembled` | Inversion is an error, never a silent `NaN` |
+| `friction_force_obeys_the_coulomb_bound` | `f = min(mu f_n, k_t \|s\|) s/\|s\|` in both regimes, and the force always opposes slip |
+| `zero_friction_is_exactly_the_frictionless_case` | `mu = 0` or `k_t = 0` gives exactly zero force and tangent |
+| `friction_is_not_applied_to_a_separating_node` | No friction without a normal reaction to bound it |
+| `a_stuck_node_still_resists_a_tangential_perturbation` | Zero slip is zero *force* but not zero tangent, so a held node cannot creep |
+| `friction_tangent_matches_the_finite_differenced_force` | The friction tangent is the exact derivative of the friction force |
+| `friction_changes_the_converged_answer` | End-to-end: a tangentially loaded face drifts less with friction, but is not rigidly pinned |
+| `load_path_ends_at_the_same_answer_as_a_single_solve` | Stepping changes how the path is walked, not where it arrives |
+| `load_path_starts_at_zero_and_advances_monotonically` | The path starts undeformed, load factor only increases, and every point is converged |
+| `load_path_displacement_grows_with_load` | Each increment is actually applied, not silently skipped |
+| `a_single_step_recovers_a_plain_static_solve` | `steps: 1` is the degenerate path, not a special case |
+| `load_path_rejects_a_mis_sized_load_and_an_empty_path` | A bad load length is an error; `steps: 0` is a valid empty path |
+| `a_quadratic_box_has_the_right_volume` | Element volume is exact for Hex8/Hex20/Hex27 alike — catches a uniformly wrong-sized box |
+| `a_quadratic_box_spans_the_requested_box` | Corner-to-corner extent, node count, and that no node is orphaned |
+| `hex20_reproduces_the_uniaxial_closed_form` | A quadratic element's error is mesh-independent and equals the known penalty deviation |
+| `hex20_tangent_is_the_derivative_of_the_hex20_residual` | The cheap and full tangents agree on a non-affine deformation |
+| `a_wrong_node_count_is_rejected_per_element_type` | An 8-node element in a Hex20 mesh is a named error, not a read past the end |
+| `a_quadratic_element_gets_a_higher_default_quadrature_order` | The order floor follows the element type |
 
-Not verified: mixed `u`-`p` incompressibility, curved/quadratic elements,
-friction, dynamic or quasi-static inertia, and any clinical or ex-vivo data.
+Not verified: mixed `u`-`p` incompressibility, `Tet10` elements, meshing a
+curved surface from image data, friction at RFC 0004 Level 3 study parameter
+ranges (the friction checks above are single-fixture mechanism tests, not a
+sensitivity study), dynamic or quasi-static inertia, and any clinical or
+ex-vivo data.
 `tpt-fem-sparse`'s dense backend makes this a small-problem tool: the linear
 solve is `O(n^3)` in DOFs.
 
 ## Known Limitations
 
-- **Hex8 only**, and only structured boxes are built here. Curved elements
-  (`Hex20`/`Hex27`) and quadratic tets exist in `tpt-fem-element` but are not
-  wired up.
+- **`Hex8`, `Hex20` and `Hex27`** (`mesh::HexMesh<E>`): the assembly is generic
+  over the reference element, so a quadratic element is a type parameter, not a
+  second implementation. `hex_box_of::<Hex20>` builds one, with the node list
+  compacted to the nodes elements actually reference and a quadrature floor
+  raised to order 3. `Hex8Mesh` is a type alias for `HexMesh<Hex8>`, so nothing
+  existing changes. `Tet10` is not done — a different reference domain, not just
+  another `E`.
 - **Penalty incompressibility, not exact.** The volumetric term lives in the
   tissue model, so a stiff penalty plus full integration *volumetrically locks*
   on a coarse mesh. This crate does not buy exact incompressibility over the
   in-house linear-elastic core; it upgrades the material law and the element
   machinery. The fixture's `d1 = 0.5` is a measured compromise, documented in
   `src/tests.rs`.
-- **Frictionless normal contact only.** `tpt-fem-contact` at 0.1.0 has no
-  friction model (RFC 0009's second open question), contact is resolved along a
-  single coordinate axis, and the obstacle must be rigid and fixed.
-- **No load stepping.** `solve_static` starts from zero displacement; a
-  large-deflection *load* path needs continuation this crate does not provide
-  (prescribe displacement instead, or call it repeatedly).
+- **Friction is regularized, not an exact return map.** A genuinely stuck node
+  carries `k_t * s` rather than a saturated `mu * f_n`, so the result is
+  regularization-length dependent: `k_t` must be large enough that
+  `mu * f_n / k_t` is far below the displacement accuracy you care about, and
+  large `k_t` stiffens the tangential block and costs conditioning. The
+  verification fixture uses one `(mu, k_t)` pair; a friction *sensitivity study*
+  (RFC 0004 Level 3) is not in this crate. Contact is still resolved along a
+  single axis against a rigid, fixed obstacle.
+- **No arc-length control, so no limit points.** `solve_load_path` steps the
+  load proportionally with bisection cutback, which walks a path that has no
+  limit point and stops at one that does. Passing a limit point — the snap-back
+  and the softening branch beyond it — needs an arc-length or
+  dynamic-relaxation formulation with a load-factor sign convention, which this
+  crate does not have. For displacement control, prescribe the displacement and
+  call `solve_static` directly.
 - **The Newton driver is this crate's, not the substrate's.** See the module
   docs in `src/solver.rs`: `tpt-fem-solve::newton` tests the full residual
   against an absolute tolerance, which a displacement-controlled problem with a

@@ -201,7 +201,9 @@ pub fn solve_hyperelastic_3d(
   Level 3's acceptance criteria include "a friction sensitivity study,"
   which cannot be attempted at all until either the substrate gains one or
   this workspace writes its own — a second, currently entirely unscoped
-  gap this RFC surfaces but does not resolve.
+  gap this RFC surfaces but does not resolve. **Partially resolved (2026-09-27):**
+  the in-house frictional layer now exists (`tpt-med-fem-adapter::friction`);
+  the sensitivity study itself is still out of scope here.
 
 ## Verification strategy
 
@@ -233,6 +235,12 @@ merge**, matching every other numerical RFC in this project.
 - **Friction.** Needs either a substrate-side feature request (this
   workspace does not own `tpt-fem-contact`) or an in-house frictional layer
   on top of the normal-contact primitives that exist. Not scoped here.
+  **Partially resolved (2026-09-27):** the in-house option is now taken, in
+  `tpt-med-fem-adapter`'s `friction` module — a regularized Coulomb law rather
+  than an exact return map, chosen so it stays stateless under the
+  re-evaluated active set this crate already uses. What remains open is
+  validation at study parameter ranges (RFC 0004 Level 3's friction
+  sensitivity study), not the mechanism.
 - **Crate name.** `tpt-med-fem-adapter` is a placeholder; naming follows
   whatever convention feels least awkward once the crate's actual shape is
   clearer from a prototype (compare how `tpt-med-nifti` and

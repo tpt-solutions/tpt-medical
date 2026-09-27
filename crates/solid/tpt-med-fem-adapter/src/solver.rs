@@ -35,12 +35,21 @@
 //! Because the active set is recomputed from the current geometry inside both
 //! closures, a node that separates from the obstacle simply stops being
 //! constrained on the next iteration; nothing has to be told to "release" it.
+//!
+//! # Friction
+//!
+//! Friction is a separate layer ([`crate::friction`]) and a separate field on
+//! [`ContactConfig`], not a change to the loop above. The normal problem stays
+//! exactly as it was, so a caller who leaves `friction: None` gets the
+//! frictionless behaviour this module was verified against, unchanged.
 
 use crate::assembly::{internal_force, tangent_stiffness, AssemblyOptions, Constitutive};
 use crate::contact::ContactPairing;
-use crate::mesh::{Hex8Mesh, MeshError};
+use crate::friction::{friction_terms, FrictionConfig};
+use crate::mesh::{HexMesh, MeshError};
 use std::cell::Cell;
 use std::collections::HashSet;
+use tpt_fem_element::ReferenceElement;
 use tpt_fem_sparse::{solve, Coo};
 
 /// Maximum number of step halvings the line search will try.
@@ -157,6 +166,9 @@ pub struct ContactConfig<'a> {
     /// several orders of magnitude above the structural stiffness, and large
     /// enough that the resulting penetration is below the caller's tolerance.
     pub penalty: f64,
+    /// Optional Coulomb friction on the active contacts. `None` is exactly the
+    /// previous frictionless behaviour, and costs nothing at solve time.
+    pub friction: Option<FrictionConfig>,
 }
 
 /// Contact outcome of a solve, for reporting and verification.
@@ -168,6 +180,9 @@ pub struct ContactSummary {
     pub max_penetration: f64,
     /// Total contact reaction magnitude at the converged configuration.
     pub total_reaction: f64,
+    /// How many active nodes had saturated at the Coulomb bound, or `None` when
+    /// the solve ran without friction.
+    pub slipping_nodes: Option<usize>,
 }
 
 /// The converged result of a static solve.
@@ -190,8 +205,8 @@ pub struct SolveResult {
 /// stiffness of `kappa` per active DOF, and a load of `kappa * lower` per active
 /// DOF — so the active-set bookkeeping is the substrate's, not a
 /// re-derivation of it here.
-fn contact_terms(
-    mesh: &Hex8Mesh,
+fn contact_terms<E: ReferenceElement>(
+    mesh: &HexMesh<E>,
     pairing: &ContactPairing,
     u: &[f64],
     penalty: f64,
@@ -204,8 +219,8 @@ fn contact_terms(
 }
 
 /// Assembles the residual `f_int(u) - f_ext + r_contact(u)` for a configuration.
-fn residual_vector(
-    mesh: &Hex8Mesh,
+fn residual_vector<E: ReferenceElement>(
+    mesh: &HexMesh<E>,
     model: &dyn Constitutive,
     load: &[f64],
     contact: Option<ContactConfig<'_>>,
@@ -231,13 +246,23 @@ fn residual_vector(
         for i in 0..k_c.len() {
             r[k_c.rows[i]] += k_c.vals[i] * u[k_c.cols[i]];
         }
+        // Friction enters as a plain external force on the slave nodes, so it
+        // is subtracted from the residual like any other applied load — it is
+        // not a stiffness acting on `u`. Its own linearisation goes into the
+        // Jacobian separately, below.
+        if let Some(fcfg) = cfg.friction {
+            let friction = friction_terms(mesh, cfg.pairing, u, cfg.penalty, fcfg)?;
+            for (i, v) in friction.force.iter().enumerate() {
+                r[i] -= v;
+            }
+        }
     }
     Ok(r)
 }
 
 /// Assembles `df_int/du` plus the active contact stiffness.
-fn jacobian_matrix(
-    mesh: &Hex8Mesh,
+fn jacobian_matrix<E: ReferenceElement>(
+    mesh: &HexMesh<E>,
     model: &dyn Constitutive,
     contact: Option<ContactConfig<'_>>,
     assembly: &AssemblyOptions,
@@ -249,6 +274,16 @@ fn jacobian_matrix(
         for i in 0..k_c.len() {
             k.push(k_c.rows[i], k_c.cols[i], k_c.vals[i]);
         }
+        if let Some(fcfg) = cfg.friction {
+            let friction = friction_terms(mesh, cfg.pairing, u, cfg.penalty, fcfg)?;
+            for i in 0..friction.tangent.len() {
+                k.push(
+                    friction.tangent.rows[i],
+                    friction.tangent.cols[i],
+                    friction.tangent.vals[i],
+                );
+            }
+        }
     }
     Ok(k)
 }
@@ -257,9 +292,10 @@ fn jacobian_matrix(
 ///
 /// `dirichlet` is a list of `(dof, value)` essential conditions, condensed out
 /// of every linear solve and held fixed across iterations. The initial guess is
-/// zero — there is no load-stepping driver here yet (see the crate's Known
-/// Limitations), so a large-deflection load path should be approached by
-/// prescribing displacement rather than by following a load ramp.
+/// zero — for a large-deflection *load*-controlled path use
+/// [`crate::solve_load_path`] instead, which seeds each increment from the last
+/// and bisects a step that will not converge. For displacement control this
+/// function is exact as it stands.
 ///
 /// # Errors
 ///
@@ -268,13 +304,39 @@ fn jacobian_matrix(
 /// evaluation fails, [`SolveError::Singular`] if the condensed system is
 /// singular, and [`SolveError::NotConverged`] if the free-DOF residual does not
 /// reach `opts.convergence`.
-pub fn solve_static(
-    mesh: &Hex8Mesh,
+pub fn solve_static<E: ReferenceElement>(
+    mesh: &HexMesh<E>,
     model: &dyn Constitutive,
     load: &[f64],
     dirichlet: &[(usize, f64)],
     opts: &SolveOptions,
     contact: Option<ContactConfig<'_>>,
+) -> Result<SolveResult, SolveError> {
+    newton_from(mesh, model, load, dirichlet, opts, contact, None)
+}
+
+/// The Newton loop itself, starting from `initial` when given.
+///
+/// `solve_static` is this with no initial guess, which is why it is defined
+/// separately rather than inlined: the load-path driver in [`solve_load_path`]
+/// needs the identical iteration seeded from the previous converged increment,
+/// and duplicating the loop to get that would be a way for the two to drift.
+///
+/// `initial` is validated against the Dirichlet set: any prescribed DOF is
+/// overwritten by its Dirichlet value regardless of what `initial` holds, so a
+/// caller cannot accidentally carry a stale essential condition forward.
+///
+/// `pub(crate)` rather than private because the continuation driver in
+/// [`crate::loadpath`] must reuse this exact loop; a second copy would be free
+/// to drift from the one verified against the closed forms.
+pub(crate) fn newton_from<E: ReferenceElement>(
+    mesh: &HexMesh<E>,
+    model: &dyn Constitutive,
+    load: &[f64],
+    dirichlet: &[(usize, f64)],
+    opts: &SolveOptions,
+    contact: Option<ContactConfig<'_>>,
+    initial: Option<&[f64]>,
 ) -> Result<SolveResult, SolveError> {
     let n = mesh.dof_count();
     if load.len() != n {
@@ -282,6 +344,14 @@ pub fn solve_static(
             expected: n,
             found: load.len(),
         });
+    }
+    if let Some(u0) = initial {
+        if u0.len() != n {
+            return Err(SolveError::LoadSizeMismatch {
+                expected: n,
+                found: u0.len(),
+            });
+        }
     }
     // Validate the pairing once, outside the iteration, so a bad pairing is
     // reported as an error rather than swallowed mid-Newton.
@@ -298,7 +368,10 @@ pub fn solve_static(
     let load_norm = load.iter().map(|x| x * x).sum::<f64>().sqrt();
     let tolerance = opts.convergence.abs_tol + opts.convergence.rel_tol * load_norm;
 
-    let mut u = vec![0.0; n];
+    let mut u = match initial {
+        Some(u0) => u0.to_vec(),
+        None => vec![0.0; n],
+    };
     for (dof, value) in dirichlet {
         u[*dof] = *value;
     }
@@ -416,6 +489,14 @@ pub fn solve_static(
                 .pairing
                 .total_reaction(mesh, &u, cfg.penalty)
                 .map_err(SolveError::Contact)?,
+            slipping_nodes: match cfg.friction {
+                Some(fcfg) => Some(
+                    friction_terms(mesh, cfg.pairing, &u, cfg.penalty, fcfg)
+                        .map_err(SolveError::Contact)?
+                        .slipping_nodes,
+                ),
+                None => None,
+            },
         }),
         None => None,
     };
@@ -436,8 +517,8 @@ pub fn solve_static(
 /// # Errors
 ///
 /// As [`solve_static`]'s assembly and contact evaluation.
-pub fn residual(
-    mesh: &Hex8Mesh,
+pub fn residual<E: ReferenceElement>(
+    mesh: &HexMesh<E>,
     model: &dyn Constitutive,
     load: &[f64],
     u: &[f64],

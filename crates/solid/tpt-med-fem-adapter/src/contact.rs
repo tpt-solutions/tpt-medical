@@ -20,8 +20,10 @@
 //!   pairing only to choose the contact partner, and computes the signed
 //!   normal gap itself as `x_slave[axis] - x_master[axis]`. A constraint is
 //!   active when that signed gap is negative.
-//! - There is **no friction** in the pinned 0.1.0 source (RFC 0009's second
-//!   unresolved question), so this is frictionless normal contact only.
+//! - There is **no friction** in the pinned 0.1.0 substrate source (RFC 0009's
+//!   second unresolved question). Friction is added by this workspace in
+//!   [`crate::friction`], as a regularized Coulomb layer on top of the
+//!   primitives here, rather than upstream.
 //!
 //! # Re-evaluation, not a frozen active set
 //!
@@ -33,8 +35,9 @@
 //! simply wrong once the geometry moves, and freezing it makes a body that
 //! lifts off a wall keep pushing against it.
 
-use crate::mesh::{Hex8Mesh, MeshError};
+use crate::mesh::{HexMesh, MeshError};
 use tpt_fem_contact::ContactConstraint;
+use tpt_fem_element::ReferenceElement;
 use tpt_med_geometry::Vec3;
 
 pub use tpt_fem_contact::ContactConstraint as Constraint;
@@ -78,10 +81,22 @@ pub struct ContactCandidate {
     pub gap: f64,
     /// Index into the obstacle point list of the paired master point.
     pub master_index: usize,
+    /// The slave node this candidate belongs to.
+    ///
+    /// The substrate's `ContactConstraint` names only the DOF, which does not
+    /// identify the node, so it is recorded here for callers that need the
+    /// node's full displacement — the frictional layer needs the tangential
+    /// components, not just the normal one.
+    pub node: usize,
 }
 
 /// A frictionless unilateral contact pairing between deforming slave nodes and
 /// a rigid obstacle, resolved along a single coordinate axis.
+///
+/// The pairing itself is purely geometric — it knows nothing about friction.
+/// Friction is layered on top of it in [`crate::friction`], so that the normal
+/// and tangential problems stay separable and the normal path is unchanged for
+/// callers that do not ask for friction.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ContactPairing {
     axis: usize,
@@ -145,6 +160,15 @@ impl ContactPairing {
     pub fn master_points(&self) -> &[Vec3] {
         &self.master
     }
+
+    /// The gap at or below which a contact counts as active.
+    ///
+    /// Exposed so the frictional layer in [`crate::friction`] applies exactly
+    /// the same activity test as the normal contact, rather than a second
+    /// definition of "in contact" that could drift from it.
+    pub fn activation_tolerance(&self) -> f64 {
+        self.activation_tolerance
+    }
 }
 
 impl std::error::Error for ContactError {}
@@ -157,9 +181,9 @@ impl ContactPairing {
     ///
     /// [`MeshError::DofCountMismatch`] if `u` is not `3 * node_count` long, or
     /// [`MeshError::NodeIndexOutOfRange`] if a slave node is not in the mesh.
-    pub fn candidates(
+    pub fn candidates<E: ReferenceElement>(
         &self,
-        mesh: &Hex8Mesh,
+        mesh: &HexMesh<E>,
         u: &[f64],
     ) -> Result<Vec<ContactCandidate>, MeshError> {
         let x = mesh.positions(u)?;
@@ -201,6 +225,7 @@ impl ContactPairing {
                 },
                 gap: x[*node].to_array()[self.axis] - lower,
                 master_index,
+                node: *node,
             });
         }
         Ok(out)
@@ -211,9 +236,9 @@ impl ContactPairing {
     /// # Errors
     ///
     /// As [`ContactPairing::candidates`].
-    pub fn active_constraints(
+    pub fn active_constraints<E: ReferenceElement>(
         &self,
-        mesh: &Hex8Mesh,
+        mesh: &HexMesh<E>,
         u: &[f64],
     ) -> Result<Vec<ContactConstraint>, MeshError> {
         Ok(self
@@ -229,7 +254,11 @@ impl ContactPairing {
     /// # Errors
     ///
     /// As [`ContactPairing::candidates`].
-    pub fn max_penetration(&self, mesh: &Hex8Mesh, u: &[f64]) -> Result<f64, MeshError> {
+    pub fn max_penetration<E: ReferenceElement>(
+        &self,
+        mesh: &HexMesh<E>,
+        u: &[f64],
+    ) -> Result<f64, MeshError> {
         Ok(self
             .candidates(mesh, u)?
             .iter()
@@ -245,9 +274,9 @@ impl ContactPairing {
     /// # Errors
     ///
     /// As [`ContactPairing::candidates`].
-    pub fn total_reaction(
+    pub fn total_reaction<E: ReferenceElement>(
         &self,
-        mesh: &Hex8Mesh,
+        mesh: &HexMesh<E>,
         u: &[f64],
         penalty: f64,
     ) -> Result<f64, MeshError> {

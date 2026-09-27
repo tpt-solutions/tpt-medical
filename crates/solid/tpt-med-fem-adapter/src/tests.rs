@@ -22,8 +22,11 @@ use crate::assembly::{
     tangent_stiffness_numerical, AssemblyOptions, Constitutive,
 };
 use crate::contact::{ContactError, ContactPairing};
-use crate::mesh::{hex_box, MeshError};
+use crate::friction::{friction_terms, FrictionConfig, FrictionError};
+use crate::loadpath::{solve_load_path, LoadPathError, LoadPathOptions};
+use crate::mesh::{hex_box, hex_box_of, MeshError};
 use crate::solver::{solve_static, ContactConfig, SolveError, SolveOptions};
+use tpt_fem_element::{Hex20, Hex27, Hex8, ReferenceElement};
 use tpt_med_geometry::{Mat3, Vec3};
 use tpt_med_tissue::{NeoHookeanParams, TissueModel};
 
@@ -509,6 +512,7 @@ fn contact_holds_the_body_out_of_the_obstacle() {
         Some(ContactConfig {
             pairing: &s.pairing,
             penalty,
+            friction: None,
         }),
     )
     .expect("contact solve converges");
@@ -568,6 +572,7 @@ fn contact_changes_the_answer_versus_no_contact() {
         Some(ContactConfig {
             pairing: &s.pairing,
             penalty: 1.0e4,
+            friction: None,
         }),
     )
     .expect("contact solve converges");
@@ -593,6 +598,7 @@ fn pulling_away_leaves_the_active_set_empty() {
         Some(ContactConfig {
             pairing: &s.pairing,
             penalty: 1.0e4,
+            friction: None,
         }),
     )
     .expect("solve converges");
@@ -629,6 +635,7 @@ fn contact_jacobian_matches_the_finite_differenced_residual() {
     let cfg = Some(ContactConfig {
         pairing: &s.pairing,
         penalty,
+        friction: None,
     });
     let n = s.mesh.dof_count();
     let mut u = vec![0.0; n];
@@ -676,4 +683,759 @@ fn contact_jacobian_matches_the_finite_differenced_residual() {
             );
         }
     }
+}
+
+// --- Friction -------------------------------------------------------------
+//
+// Verification for the regularized Coulomb layer, in the same shape as the rest
+// of this suite: the law against its closed form, the friction tangent against a
+// differenced force, and a solve-level check that friction changes the
+// converged answer in the physically right direction.
+
+/// A `WallSetup` pressed into the wall with the slave face's tangential `x` DOFs
+/// *released* and a tangential load applied to them.
+///
+/// The releasing matters: a prescribed tangential DOF is condensed out of every
+/// linear solve, so a fixture that pins the shear by Dirichlet conditions
+/// leaves friction nothing to resist and the answer is unchanged by definition.
+/// The tangential drive has to be a load for the test to mean anything.
+fn tangential_wall_setup(punch: f64, tangential_load: f64) -> WallSetup {
+    let s = wall_setup(punch);
+    let dirichlet = s
+        .dirichlet
+        .iter()
+        .copied()
+        .filter(|(dof, _)| !s.slave.iter().any(|&n| s.mesh.dof(n, 0) == *dof))
+        .collect::<Vec<_>>();
+    let mut load = vec![0.0; s.mesh.dof_count()];
+    for &node in &s.slave {
+        load[s.mesh.dof(node, 0)] = tangential_load / s.slave.len() as f64;
+    }
+    WallSetup {
+        dirichlet,
+        load,
+        ..s
+    }
+}
+
+/// A configuration with the slave face penetrating by `penetration` and
+/// displaced tangentially by `slip`.
+fn sheared_configuration(punch: f64, penetration: f64, slip: f64) -> (WallSetup, Vec<f64>) {
+    let s = tangential_wall_setup(punch, 1.0);
+    let n = s.mesh.dof_count();
+    let mut u = vec![0.0; n];
+    for (d, v) in &s.dirichlet {
+        u[*d] = *v;
+    }
+    for &node in &s.slave {
+        u[s.mesh.dof(node, 0)] = slip;
+        u[s.mesh.dof(node, 1)] = -penetration;
+    }
+    (s, u)
+}
+
+#[test]
+fn friction_config_rejects_unphysical_parameters() {
+    // `matches!` rather than `assert_eq!`: a NaN never compares equal to itself,
+    // so the derived `PartialEq` on `FrictionError` cannot assert the NaN case.
+    assert!(matches!(
+        FrictionConfig::new(-0.1, 1.0),
+        Err(FrictionError::InvalidMu(m)) if m == -0.1
+    ));
+    assert!(matches!(
+        FrictionConfig::new(f64::NAN, 1.0),
+        Err(FrictionError::InvalidMu(_))
+    ));
+    assert!(matches!(
+        FrictionConfig::new(0.3, -1.0),
+        Err(FrictionError::InvalidTangentialStiffness(k)) if k == -1.0
+    ));
+    assert!(matches!(
+        FrictionConfig::new(0.3, f64::INFINITY),
+        Err(FrictionError::InvalidTangentialStiffness(_))
+    ));
+    assert!(FrictionConfig::new(0.0, 0.0).is_ok(), "zero is allowed");
+}
+
+#[test]
+fn zero_friction_is_exactly_the_frictionless_case() {
+    let (s, u) = sheared_configuration(-0.3, 0.01, 0.05);
+    for cfg in [
+        FrictionConfig::new(0.0, 1.0e4).expect("valid"),
+        FrictionConfig::new(0.5, 0.0).expect("valid"),
+    ] {
+        let terms = friction_terms(&s.mesh, &s.pairing, &u, 1.0e4, cfg).expect("terms");
+        assert_eq!(terms.slipping_nodes, 0);
+        assert!(
+            terms.force.iter().all(|&f| f == 0.0),
+            "a zero coefficient or stiffness must give exactly zero force"
+        );
+        assert_eq!(terms.tangent.len(), 0, "and a zero tangent");
+    }
+}
+
+#[test]
+fn friction_force_obeys_the_coulomb_bound() {
+    // Both regimes against the closed form `f = min(mu * f_n, k_t |s|) s/|s|`:
+    // slipping saturates at `mu * f_n` and stops growing with slip; sticking is
+    // the linear `k_t |s|`.
+    let penalty = 1.0e4;
+    let mu = 0.5;
+    let kt = 1.0e3;
+    let cfg = FrictionConfig::new(mu, kt).expect("valid");
+    let penetration = 0.01;
+    let bound = mu * penalty * penetration;
+
+    for (slip, expect_slipping) in [(0.001, false), (100.0, true)] {
+        let (s, u) = sheared_configuration(-0.3, penetration, slip);
+        let terms = friction_terms(&s.mesh, &s.pairing, &u, penalty, cfg).expect("terms");
+        assert_eq!(terms.slipping_nodes > 0, expect_slipping, "slip {slip}");
+        assert!(!terms.states.is_empty(), "fixture must be in contact");
+
+        for st in &terms.states {
+            assert!(
+                (st.bound - bound).abs() < 1.0e-6 * bound.max(1.0),
+                "bound {} vs {bound}",
+                st.bound
+            );
+            let magnitude = st.force[0].hypot(st.force[1]);
+            let expected = if expect_slipping {
+                bound
+            } else {
+                (kt * st.slip_norm).min(bound)
+            };
+            assert!(
+                (magnitude - expected).abs() < 1.0e-6 * expected.max(1.0),
+                "slip {}: |f| {magnitude} vs {expected}",
+                st.slip_norm
+            );
+            // The force opposes the slip, never reinforces it.
+            let opposing = st.force[0] * st.slip[0] + st.force[1] * st.slip[1];
+            assert!(
+                opposing <= 0.0,
+                "friction must oppose slip, got dot {opposing}"
+            );
+        }
+    }
+}
+
+#[test]
+fn friction_is_not_applied_to_a_separating_node() {
+    // The Coulomb bound scales with the normal reaction, so a node that has
+    // lifted off must produce no friction at all — otherwise a body retracting
+    // from a wall would be dragged back by a force it is not in contact with.
+    let (s, mut u) = sheared_configuration(0.3, 0.01, 0.05);
+    // Pull the whole slave face clear of the wall.
+    for &node in &s.slave {
+        u[s.mesh.dof(node, 1)] = 0.5;
+    }
+    let terms = friction_terms(
+        &s.mesh,
+        &s.pairing,
+        &u,
+        1.0e4,
+        FrictionConfig::new(0.5, 1.0e3).expect("valid"),
+    )
+    .expect("terms");
+    assert!(
+        terms.states.is_empty(),
+        "no active node should carry friction, got {}",
+        terms.states.len()
+    );
+    assert!(terms.force.iter().all(|&f| f == 0.0));
+}
+
+#[test]
+fn a_stuck_node_still_resists_a_tangential_perturbation() {
+    // Zero slip means zero *force*, but the tangent must not be zero: the node is
+    // held, and a linear solve that let it slide freely would creep. This is the
+    // easiest thing to get wrong in a regularized formulation, and it is
+    // invisible in the converged force — only in the displacement.
+    let (s, mut u) = sheared_configuration(-0.3, 0.01, 0.05);
+    for &node in &s.slave {
+        u[s.mesh.dof(node, 0)] = 0.0;
+    }
+    let kt = 1.0e3;
+    let terms = friction_terms(
+        &s.mesh,
+        &s.pairing,
+        &u,
+        1.0e4,
+        FrictionConfig::new(0.5, kt).expect("valid"),
+    )
+    .expect("terms");
+    assert!(!terms.states.is_empty(), "fixture must be in contact");
+    for st in &terms.states {
+        assert_eq!(st.slip_norm, 0.0);
+        assert_eq!(st.force, [0.0, 0.0], "no slip, no force");
+    }
+    // Each stuck node contributes a +k_t diagonal at each tangential DOF.
+    assert_eq!(
+        terms.tangent.len(),
+        2 * terms.states.len(),
+        "expected a 2x2 diagonal per stuck node"
+    );
+    let sum: f64 = terms.tangent.vals.iter().sum();
+    assert!(
+        (sum - kt * 2.0 * terms.states.len() as f64).abs() < 1.0e-9 * kt,
+        "tangent diagonal should be k_t per tangential DOF, got {sum}"
+    );
+}
+
+#[test]
+fn friction_tangent_matches_the_finite_differenced_force() {
+    // The friction tangent is checked against a differenced *friction force*,
+    // not against the full solver residual.
+    //
+    // Differencing the full residual would also be valid, but it cannot isolate
+    // this layer: `contact_pairs` re-runs a nearest-point search at every
+    // evaluation, so a tangential perturbation of a slave node can re-pair it to
+    // a *different* master point, changing the normal gap and hence the Coulomb
+    // bound discontinuously. That is a pre-existing property of the substrate's
+    // pairing, not of the friction law, and it makes a full-residual difference
+    // disagree at the 1e-2 level for reasons unrelated to the derivative under
+    // test. Differencing the friction force alone holds the pairing fixed and
+    // tests exactly what is claimed.
+    //
+    // Run on the *stick* branch, where the derivative is the unambiguous
+    // `-k_t I`. The slip branch is not differenced here because the `min` kink
+    // makes a central difference straddling the switch meaningless; its
+    // magnitude is covered by the Coulomb bound test.
+    let (s, u) = sheared_configuration(-0.3, 0.01, 0.001);
+    let penalty = 1.0e4;
+    let cfg = FrictionConfig::new(0.5, 1.0e3).expect("valid");
+    let terms = friction_terms(&s.mesh, &s.pairing, &u, penalty, cfg).expect("terms");
+    assert_eq!(
+        terms.slipping_nodes, 0,
+        "fixture must be sticking for this test to mean anything"
+    );
+
+    let n = s.mesh.dof_count();
+    let get = |row: usize, col: usize| -> f64 {
+        terms
+            .tangent
+            .rows
+            .iter()
+            .zip(&terms.tangent.cols)
+            .zip(&terms.tangent.vals)
+            .filter(|((&r, &c), _)| r == row && c == col)
+            .map(|(_, &v)| v)
+            .sum()
+    };
+    let step = 1.0e-7;
+    let mut probe = u.clone();
+    for b in 0..n {
+        probe.copy_from_slice(&u);
+        probe[b] += step;
+        let plus = friction_terms(&s.mesh, &s.pairing, &probe, penalty, cfg).expect("terms");
+        probe[b] = u[b] - step;
+        let minus = friction_terms(&s.mesh, &s.pairing, &probe, penalty, cfg).expect("terms");
+        for a in 0..n {
+            let fd = (plus.force[a] - minus.force[a]) / (2.0 * step);
+            let an = get(a, b);
+            // Only entries the friction force actually reaches are interesting;
+            // everywhere else both sides are exactly zero.
+            if fd == 0.0 && an == 0.0 {
+                continue;
+            }
+            assert!(
+                (fd - an).abs() < 1.0e-4 * fd.abs().max(an.abs()).max(1.0),
+                "df[{a}][{b}]: finite difference {fd}, analytic {an}"
+            );
+        }
+    }
+}
+
+#[test]
+fn friction_changes_the_converged_answer() {
+    // End-to-end: a block pressed into the wall and driven tangentially by a
+    // load must drift *less* with friction than without. This is the physical
+    // statement the layer exists to make, checked on the converged solve rather
+    // than the residual, so it also exercises the wiring in `solver`.
+    let s = tangential_wall_setup(-0.3, 5.0);
+    let penalty = 1.0e4;
+    let opts = SolveOptions::default();
+    let solve_with = |mu: Option<f64>| {
+        solve_static(
+            &s.mesh,
+            &nh(),
+            &s.load,
+            &s.dirichlet,
+            &opts,
+            Some(ContactConfig {
+                pairing: &s.pairing,
+                penalty,
+                friction: mu.map(|m| FrictionConfig::new(m, 1.0e3).expect("valid")),
+            }),
+        )
+        .expect("converges")
+    };
+    let free = solve_with(None);
+    let held = solve_with(Some(0.5));
+
+    // Mean tangential drift of the slave face.
+    let drift = |r: &crate::SolveResult| -> f64 {
+        s.slave
+            .iter()
+            .map(|&node| r.displacement[s.mesh.dof(node, 0)])
+            .sum::<f64>()
+            / s.slave.len() as f64
+    };
+    let (d_free, d_held) = (drift(&free), drift(&held));
+    assert!(
+        d_free > 0.0,
+        "the tangential load must actually drive the face, got {d_free}"
+    );
+    assert!(
+        d_held < d_free,
+        "friction should hold the face back: {d_held} vs frictionless {d_free}"
+    );
+    // Friction is not a rigid clamp: it should reduce the drift without pinning
+    // the face completely, which is what distinguishes a Coulomb law from a
+    // stuck boundary condition.
+    assert!(
+        d_held > 0.0,
+        "friction should not rigidly pin the face, got {d_held}"
+    );
+    let summary = held.contact.expect("contact ran");
+    assert!(summary.slipping_nodes.is_some(), "friction was configured");
+    // Friction acts tangentially, so the normal contact is unaffected by it.
+    assert!(
+        !summary.active_constraints.is_empty(),
+        "the wall should still be holding the block"
+    );
+}
+
+// --- Load path -------------------------------------------------------------
+//
+// Verification for proportional load stepping, on a genuinely load-controlled
+// fixture, since that is the only case the driver exists for.
+
+/// A block clamped at the bottom and pulled upward by a traction load, with
+/// every DOF above the clamp free.
+fn tensile_setup(traction: f64) -> (crate::HexMesh<Hex8>, Vec<f64>, Vec<(usize, f64)>) {
+    let l = 10.0;
+    let mesh = hex_box(2, 2, 2, l, l, l).expect("box");
+    let mut dirichlet = Vec::new();
+    for n in mesh.face_nodes(1, false) {
+        for c in 0..3 {
+            dirichlet.push((mesh.dof(n, c), 0.0));
+        }
+    }
+    let top = mesh.face_nodes(1, true);
+    let area = l * l;
+    let mut load = vec![0.0; mesh.dof_count()];
+    for &n in &top {
+        load[mesh.dof(n, 1)] = traction / area;
+    }
+    (mesh, load, dirichlet)
+}
+
+#[test]
+fn load_path_ends_at_the_same_answer_as_a_single_solve() {
+    // The whole point of stepping is that it must not change where the path
+    // arrives. A converged equilibrium is a converged equilibrium regardless of
+    // how it was reached, so the full-load point of a finely stepped path and a
+    // single full-load solve must agree.
+    let (mesh, load, dirichlet) = tensile_setup(0.05);
+    let opts = SolveOptions::default();
+
+    let one_shot =
+        solve_static(&mesh, &nh(), &load, &dirichlet, &opts, None).expect("single solve converges");
+    let path = solve_load_path(
+        &mesh,
+        &nh(),
+        &load,
+        &dirichlet,
+        &opts,
+        None,
+        LoadPathOptions {
+            steps: 8,
+            max_cutbacks: 4,
+        },
+    )
+    .expect("path converges");
+
+    assert_eq!(path.steps.len(), 9, "8 increments plus the zero point");
+    assert_eq!(path.reached(), 1.0, "the path must reach full load");
+    let last = path.last().expect("a final point");
+    let diff: f64 = last
+        .displacement
+        .iter()
+        .zip(&one_shot.displacement)
+        .map(|(a, b)| (a - b).abs())
+        .fold(0.0f64, f64::max);
+    assert!(
+        diff < 1.0e-6,
+        "stepped and single-shot answers differ by {diff}"
+    );
+}
+
+#[test]
+fn load_path_starts_at_zero_and_advances_monotonically() {
+    let (mesh, load, dirichlet) = tensile_setup(0.05);
+    let path = solve_load_path(
+        &mesh,
+        &nh(),
+        &load,
+        &dirichlet,
+        &SolveOptions::default(),
+        None,
+        LoadPathOptions::default(),
+    )
+    .expect("path converges");
+
+    assert_eq!(path.steps[0].load_factor, 0.0);
+    assert_eq!(path.steps[0].residual_norm, 0.0);
+    assert!(
+        path.steps[0].displacement.iter().all(|&d| d == 0.0),
+        "the path must start undeformed"
+    );
+    for w in path.steps.windows(2) {
+        assert!(
+            w[1].load_factor > w[0].load_factor,
+            "load factor must increase: {} then {}",
+            w[0].load_factor,
+            w[1].load_factor
+        );
+    }
+    // Every returned point is a converged equilibrium, which is the property
+    // that makes a point on the path safe to use.
+    for s in &path.steps {
+        assert!(
+            s.residual_norm < 1.0e-6,
+            "point at factor {} is not converged: {}",
+            s.load_factor,
+            s.residual_norm
+        );
+    }
+}
+
+#[test]
+fn load_path_displacement_grows_with_load() {
+    // A path that reached full load but moved *less* than a single solve would
+    // mean the increments were not actually being applied.
+    let (mesh, load, dirichlet) = tensile_setup(0.05);
+    let opts = SolveOptions::default();
+    let path = solve_load_path(
+        &mesh,
+        &nh(),
+        &load,
+        &dirichlet,
+        &opts,
+        None,
+        LoadPathOptions::default(),
+    )
+    .expect("path converges");
+    let top = mesh.face_nodes(1, true);
+    let top_y = |u: &[f64]| -> f64 {
+        top.iter().map(|&n| u[mesh.dof(n, 1)]).sum::<f64>() / top.len() as f64
+    };
+    for w in path.steps.windows(2) {
+        assert!(
+            top_y(&w[1].displacement) > top_y(&w[0].displacement),
+            "the block should stretch further at each step"
+        );
+    }
+    assert!(top_y(&path.last().expect("last").displacement) > 0.0);
+}
+
+#[test]
+fn a_single_step_recovers_a_plain_static_solve() {
+    // `steps: 1` is the degenerate path, and it must not be a special case: it
+    // has to be the same solve `solve_static` performs.
+    let (mesh, load, dirichlet) = tensile_setup(0.02);
+    let opts = SolveOptions::default();
+    let path = solve_load_path(
+        &mesh,
+        &nh(),
+        &load,
+        &dirichlet,
+        &opts,
+        None,
+        LoadPathOptions {
+            steps: 1,
+            max_cutbacks: 0,
+        },
+    )
+    .expect("converges");
+    assert_eq!(path.steps.len(), 2, "the zero point plus one step");
+    let direct = solve_static(&mesh, &nh(), &load, &dirichlet, &opts, None).expect("converges");
+    let diff: f64 = path.steps[1]
+        .displacement
+        .iter()
+        .zip(&direct.displacement)
+        .map(|(a, b)| (a - b).abs())
+        .fold(0.0f64, f64::max);
+    assert!(
+        diff < 1.0e-9,
+        "steps: 1 diverged from solve_static by {diff}"
+    );
+}
+
+#[test]
+fn load_path_rejects_a_mis_sized_load_and_an_empty_path() {
+    let (mesh, _, dirichlet) = tensile_setup(0.01);
+    let opts = SolveOptions::default();
+    let err = solve_load_path(
+        &mesh,
+        &nh(),
+        &[0.0; 5],
+        &dirichlet,
+        &opts,
+        None,
+        LoadPathOptions::default(),
+    )
+    .expect_err("a bad load length is an error, not a panic");
+    assert!(matches!(err, LoadPathError::LoadSizeMismatch { .. }));
+    // Zero steps is a legitimate request for an empty path, not an error.
+    let empty = solve_load_path(
+        &mesh,
+        &nh(),
+        &vec![0.0; mesh.dof_count()],
+        &dirichlet,
+        &opts,
+        None,
+        LoadPathOptions {
+            steps: 0,
+            max_cutbacks: 0,
+        },
+    )
+    .expect("zero steps is valid");
+    assert!(empty.steps.is_empty());
+    assert_eq!(empty.reached(), 0.0);
+    assert!(empty.last().is_none());
+}
+
+// --- Higher-order elements -------------------------------------------------
+//
+// Hex20/Hex27 support rests on one claim: the assembly was never Hex8-specific,
+// it was only *typed* as Hex8. These tests make that claim checkable — a
+// quadratic element must produce the same box geometry, reproduce the same
+// closed form, and pass the same tangent checks a Hex8 element does. A generic
+// refactor that quietly mis-assembled would show up here and nowhere else.
+
+/// A structured box of element type `E`, with the same argument meaning as
+/// [`hex_box`]: element counts, not grid cells.
+fn box_of<E: ReferenceElement>(n: usize, l: f64) -> crate::HexMesh<E> {
+    hex_box_of::<E>(n, n, n, l, l, l).expect("box")
+}
+
+#[test]
+fn a_quadratic_box_has_the_right_volume() {
+    // The regression this guards is subtle and was real during this work: the
+    // node spacing has to be `l / (n * s)` so the last node lands exactly on `l`.
+    // Getting it wrong yields a box that is still rectangular, still positively
+    // oriented, and uniformly the wrong size. Volume is the invariant that
+    // catches that, so it is checked directly rather than through a solve.
+    let l = 10.0;
+    for (name, v) in [
+        (
+            "Hex8",
+            box_of::<Hex8>(2, l).element_volume(0).expect("Hex8"),
+        ),
+        (
+            "Hex20",
+            box_of::<Hex20>(2, l).element_volume(0).expect("Hex20"),
+        ),
+        (
+            "Hex27",
+            box_of::<Hex27>(2, l).element_volume(0).expect("Hex27"),
+        ),
+    ] {
+        let expected = (l / 2.0f64).powi(3);
+        assert!(
+            (v - expected).abs() < 1.0e-9 * expected,
+            "{name} element volume {v} vs {expected}"
+        );
+    }
+}
+
+#[test]
+fn a_quadratic_box_spans_the_requested_box() {
+    // Corner-to-corner extent, which is what a caller actually asked for, plus
+    // the node count a twice-refined grid implies.
+    let l = 10.0;
+    let m = box_of::<Hex20>(2, l);
+    let (lo, hi) = m
+        .nodes()
+        .iter()
+        .fold((f64::INFINITY, f64::NEG_INFINITY), |(a, b), n| {
+            (a.min(n.x), b.max(n.x))
+        });
+    assert!(lo.abs() < 1.0e-12, "min x {lo}");
+    assert!((hi - l).abs() < 1.0e-12, "max x {hi}");
+    // A 2x2x2 box of serendipity elements: 8 elements x 20 nodes = 160 slots,
+    // 79 of which are shared between neighbouring elements, leaving 81 distinct
+    // nodes. A raw twice-refined grid would hold 125 positions, but the
+    // face-centre and body-centre ones are referenced by no `Hex20` element, and
+    // an orphan node has an exactly zero stiffness row — which would make the
+    // condensed system singular. The builder compacts them away, and this count
+    // is what proves it did.
+    assert_eq!(m.node_count(), 81, "Hex20 2x2x2 node count");
+    assert_eq!(m.element_count(), 8);
+    assert_eq!(m.dof_count(), 243);
+    // Every node must belong to at least one element.
+    let referenced: std::collections::HashSet<usize> =
+        m.elements().iter().flatten().copied().collect();
+    assert_eq!(
+        referenced.len(),
+        m.node_count(),
+        "every node must be referenced by some element"
+    );
+}
+
+#[test]
+fn hex20_reproduces_the_uniaxial_closed_form() {
+    // The load-bearing check. If the assembly were wrong for a quadratic element
+    // — a dropped mid-edge term, a mis-ordered connectivity — the answer would be
+    // wrong in a mesh-dependent way.
+    //
+    // What the measurement actually shows, and why the assertion is
+    // mesh-*independence* rather than convergence: a uniform bar in uniaxial
+    // tension has an affine deformation and a uniform stress, so full
+    // integration is exact at any mesh. The error against the incompressible
+    // closed form is therefore constant, and equal to this crate's known
+    // penalty-incompressibility deviation (the `d1 = 0.5` compromise the Hex8
+    // suite also documents). Measured 0.0920 at 2x2x2, 3x3x3 and 4x4x4 alike.
+    //
+    // A *changing* error is the failure signal: it would mean locking (which a
+    // quadratic element does not fix — that needs the mixed u-p formulation) or
+    // a mis-assembly. Constant-and-known is the passing case.
+    let l: f64 = 10.0;
+    let lam: f64 = 1.3;
+    let model = nh();
+    let expected = 2.0 * C10 * (lam - lam.powi(-2));
+    let mut errors: Vec<(usize, f64)> = Vec::new();
+    for n in [2usize, 3] {
+        let mesh = box_of::<Hex20>(n, l);
+        // Constraints are placed by *coordinate*, not by "the nodes of this
+        // face". A Hex20 box has mid-edge nodes on the side faces that lie on
+        // neither the top nor the bottom, and leaving them free is an
+        // unrestrained rigid-body mode.
+        let mut dirichlet: Vec<(usize, f64)> = Vec::new();
+        let tol = 1.0e-9;
+        for node in 0..mesh.node_count() {
+            let p = mesh.nodes()[node];
+            for c in 0..3 {
+                if p.to_array()[c].abs() < tol {
+                    dirichlet.push((mesh.dof(node, c), 0.0));
+                }
+            }
+            if (p.y - l).abs() < tol {
+                dirichlet.push((mesh.dof(node, 1), (lam - 1.0) * l));
+            }
+        }
+        let opts = SolveOptions {
+            assembly: AssemblyOptions::with_quadrature_order(
+                crate::HexMesh::<Hex20>::default_quadrature_order(),
+            ),
+            ..SolveOptions::default()
+        };
+        let result = solve_static(
+            &mesh,
+            &model,
+            &vec![0.0; mesh.dof_count()],
+            &dirichlet,
+            &opts,
+            None,
+        )
+        .expect("Hex20 solve converges");
+        let internal =
+            internal_force(&mesh, &model, &result.displacement, &opts.assembly).expect("assembly");
+        let top = mesh.face_nodes(1, true);
+        let reaction: f64 = top.iter().map(|&node| internal[mesh.dof(node, 1)]).sum();
+        let nominal = reaction / (l * l);
+        errors.push((n, (nominal - expected).abs() / expected));
+    }
+    for (n, e) in &errors {
+        println!("Hex20 {n}x{n}x{n} relative error {e:.4}");
+    }
+    for w in errors.windows(2) {
+        assert!(
+            (w[1].1 - w[0].1).abs() < 1.0e-6,
+            "error must be mesh-independent for a uniform state (a changing \
+             error means locking or a mis-assembly): {} then {}",
+            w[0].1,
+            w[1].1
+        );
+    }
+    // And it must be the known penalty-incompressibility deviation, not an
+    // arbitrary number. The Hex8 suite carries the same `d1 = 0.5` compromise.
+    assert!(
+        errors.first().expect("a mesh").1 < 0.12,
+        "Hex20 deviates from the incompressible closed form by {}",
+        errors.first().expect("a mesh").1
+    );
+}
+
+#[test]
+fn hex20_tangent_is_the_derivative_of_the_hex20_residual() {
+    // The strongest available check that the quadratic assembly is right, and the
+    // one that needs no energy identity: the cheap `B^T A B` tangent against a
+    // tangent obtained by differencing the *whole residual* w.r.t. every DOF. This
+    // additionally pins a non-affine deformation, which a straight-box uniaxial
+    // test never exercises.
+    //
+    // Deliberately *not* a patch-test energy check. The tempting identity
+    // `E = int P : (F - I)` is exact only for a material whose energy is linear
+    // in `F`; for a general hyperelastic `W` with `P = dW/dF` the missing term is
+    // `int W`, so differencing it disagrees with the assembled force by a
+    // constant. Differencing the residual avoids inventing a subtly wrong energy.
+    let l = 4.0;
+    let mesh = box_of::<Hex20>(1, l);
+    let opts =
+        AssemblyOptions::with_quadrature_order(crate::HexMesh::<Hex20>::default_quadrature_order());
+    let n = mesh.dof_count();
+    let mut u = vec![0.0; n];
+    for node in 0..mesh.node_count() {
+        let p = mesh.nodes()[node];
+        u[mesh.dof(node, 0)] = 0.1 * p.x + 0.02 * p.y * p.z;
+        u[mesh.dof(node, 1)] = 0.05 * p.y - 0.01 * p.x * p.z;
+        u[mesh.dof(node, 2)] = 0.03 * p.z + 0.015 * p.x * p.y;
+    }
+    let cheap = tangent_stiffness(&mesh, &nh(), &u, &opts).expect("tangent");
+    let full = tangent_stiffness_numerical(&mesh, &nh(), &u, &opts).expect("numerical tangent");
+    let diff = coo_max_abs_diff(&cheap, &full);
+    // Scaled by the magnitude of the two matrices rather than absolute: a
+    // quadratic element's entries span a wider range than Hex8's, so a fixed
+    // threshold would be either vacuous or flaky.
+    let scale = cheap
+        .vals
+        .iter()
+        .chain(full.vals.iter())
+        .map(|v| v.abs())
+        .fold(0.0f64, f64::max)
+        .max(1.0);
+    assert!(
+        diff < 1.0e-5 * scale,
+        "Hex20 tangent strategies differ by {diff} (scale {scale})"
+    );
+}
+
+#[test]
+fn a_wrong_node_count_is_rejected_per_element_type() {
+    let m = box_of::<Hex20>(1, 1.0);
+    let mut elements = m.elements().to_vec();
+    elements[0].truncate(8);
+    let err = crate::HexMesh::<Hex20>::from_parts(m.nodes().to_vec(), elements)
+        .expect_err("an 8-node element in a Hex20 mesh must be rejected");
+    assert!(matches!(
+        err,
+        MeshError::WrongElementNodeCount {
+            element: 0,
+            found: 8,
+            expected: 20
+        }
+    ));
+}
+
+#[test]
+fn a_quadratic_element_gets_a_higher_default_quadrature_order() {
+    // Under-integrating a curved element's Jacobian is a silent accuracy loss,
+    // so the floor is attached to the element type rather than left to the
+    // caller to remember.
+    assert_eq!(crate::HexMesh::<Hex8>::default_quadrature_order(), 2);
+    assert_eq!(crate::HexMesh::<Hex20>::default_quadrature_order(), 3);
+    assert_eq!(crate::HexMesh::<Hex27>::default_quadrature_order(), 3);
 }

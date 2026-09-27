@@ -127,10 +127,16 @@ changes for consumers of this crate.
 
 ### Planned
 - Follow the ingestion roadmap in `rfcs/0001-dicom-ingestion.md`:
-  - JPEG 2000 Part 2 multi-component and JPIP-referenced pixel data — no
-    decoder yet, still rejected with `DicomError::CompressedPixelData`.
-    (RLE/JPEG/JPEG-LS/JPEG 2000 Part 1 are done — see Added above, including
-    correct signed-component handling for JPEG 2000.)
+  - JPEG 2000 Part 2 multi-component *codestream* decoding — the `.92`/`.93`
+    transfer syntaxes decode, but "multi-component" is not a decode
+    capability (see Added above): a real Part 2 extended multi-component
+    transform is still refused, and multi-sample-per-pixel data is still out
+    of scope for this crate. (RLE/JPEG/JPEG-LS/JPEG 2000 Part 1 are done —
+    see Added above, including correct signed-component handling.)
+  - JPIP-referenced pixel data — no decoder, and none should be written here:
+    it is a network reference to pixel data held elsewhere, so it needs a
+    transport story (resolved at the archive boundary) before decoding is even
+    in scope. Still `DicomError::CompressedPixelData`.
   - Multi-frame objects and DICOM networking (C-STORE, DICOMweb).
 - Automatic rotation detection and a small built-in library of named,
   cited `PhantomModel`s for common commercial phantoms — explicitly out of

@@ -10,14 +10,16 @@
 //!
 //! | Piece | Provided by | This crate |
 //! |---|---|---|
-//! | `Hex8` shape functions, gradients, `J^-T` | `tpt-fem-element` | used as-is |
+//! | `Hex8`/`Hex20`/`Hex27` shape functions, gradients, `J^-T` | `tpt-fem-element` | used as-is, via `mesh::HexMesh<E>` |
 //! | `2x2x2` / `3x3x3` tensor-product rules | `tpt-fem-quadrature` (via `tpt-fem-element`) | used as-is |
 //! | `P = dW/dF` per quadrature point | `tpt-med-tissue` | used as-is |
 //! | Internal force `int B^T P dV` | — | [`assembly::internal_force`] |
 //! | Tangent stiffness `int B^T A B dV` | — | [`assembly::tangent_stiffness`] |
 //! | Newton driver, Dirichlet condensation | `tpt-fem-solve` | wired in [`solver::solve_static`] |
+//! | Load path (proportional stepping + cutback) | — | [`loadpath::solve_load_path`] |
 //! | Global sparse assembly + solve | `tpt-fem-sparse` | wired in |
 //! | Unilateral penalty, node pairing | `tpt-fem-contact` | extended to the nonlinear case in [`contact`] |
+//! | Friction | — (substrate has none at 0.1.0) | regularized Coulomb layer in [`friction`] |
 //!
 //! Units follow the workspace convention: lengths in mm, stresses in MPa, so
 //! the assembled stiffness is in MPa and a penalty in the same units is a
@@ -96,6 +98,8 @@
 
 pub mod assembly;
 pub mod contact;
+pub mod friction;
+pub mod loadpath;
 pub mod mesh;
 pub mod solver;
 
@@ -107,7 +111,9 @@ pub use assembly::{
 pub use contact::{
     Constraint as ContactConstraint, ContactCandidate, ContactError, ContactPairing,
 };
-pub use mesh::{hex_box, Hex8Mesh, MeshError};
+pub use friction::{friction_terms, FrictionConfig, FrictionError, FrictionState, FrictionTerms};
+pub use loadpath::{solve_load_path, LoadPath, LoadPathError, LoadPathOptions, LoadStep};
+pub use mesh::{hex_box, hex_box_of, Hex8Mesh, HexMesh, MeshError};
 pub use solver::{
     residual, solve_static, ContactConfig, ContactSummary, SolveError, SolveOptions, SolveResult,
 };

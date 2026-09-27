@@ -46,8 +46,9 @@
 //! The crate's verification suite checks the two against each other (and
 //! against minor symmetry) rather than asserting one in the abstract.
 
-use crate::mesh::{Hex8Mesh, MeshError};
+use crate::mesh::{HexMesh, MeshError};
 use tpt_fem_element::hex_rule;
+use tpt_fem_element::ReferenceElement;
 use tpt_fem_sparse::Coo;
 use tpt_med_geometry::Mat3;
 use tpt_med_tissue::TissueModel;
@@ -117,16 +118,15 @@ impl AssemblyOptions {
 ///
 /// Returns `None` when the element is inverted or degenerate there (the same
 /// condition under which the physical gradients are undefined).
-pub fn element_deformation_gradient(
-    mesh: &Hex8Mesh,
+pub fn element_deformation_gradient<E: ReferenceElement>(
+    mesh: &HexMesh<E>,
     element: usize,
     u: &[f64],
     xi: &[f64; 3],
 ) -> Option<Mat3> {
     let grad = mesh.physical_gradients(element, xi)?;
     let mut f = Mat3::IDENTITY;
-    for local in 0..8 {
-        let node = mesh.elements()[element][local];
+    for (local, &node) in mesh.elements()[element].iter().enumerate() {
         for k in 0..3 {
             for l in 0..3 {
                 let v = f.at(k, l) + u[3 * node + k] * grad[local][l];
@@ -180,8 +180,8 @@ pub fn material_tangent(model: &dyn Constitutive, f: &Mat3, h: f64) -> Tensor4 {
 /// # Errors
 ///
 /// [`MeshError::DofCountMismatch`] if `u` is not `3 * node_count` long.
-pub fn internal_force(
-    mesh: &Hex8Mesh,
+pub fn internal_force<E: ReferenceElement>(
+    mesh: &HexMesh<E>,
     model: &dyn Constitutive,
     u: &[f64],
     opts: &AssemblyOptions,
@@ -221,8 +221,7 @@ pub fn internal_force(
                 });
             }
             let p = model.first_piola(&f);
-            for local in 0..8 {
-                let node = mesh.elements()[e][local];
+            for (local, &node) in mesh.elements()[e].iter().enumerate() {
                 for k in 0..3 {
                     let mut acc = 0.0;
                     for l in 0..3 {
@@ -245,8 +244,8 @@ pub fn internal_force(
 /// # Errors
 ///
 /// [`MeshError::DofCountMismatch`] if `u` is not `3 * node_count` long.
-pub fn tangent_stiffness(
-    mesh: &Hex8Mesh,
+pub fn tangent_stiffness<E: ReferenceElement>(
+    mesh: &HexMesh<E>,
     model: &dyn Constitutive,
     u: &[f64],
     opts: &AssemblyOptions,
@@ -275,9 +274,8 @@ pub fn tangent_stiffness(
                 },
             )?;
             let a = material_tangent(model, &f, opts.fd_step);
-            for i in 0..8 {
-                for j in 0..8 {
-                    let (ni, nj) = (mesh.elements()[e][i], mesh.elements()[e][j]);
+            for (i, &ni) in mesh.elements()[e].iter().enumerate() {
+                for (j, &nj) in mesh.elements()[e].iter().enumerate() {
                     for k in 0..3 {
                         for m in 0..3 {
                             // No Kronecker delta here: the material tangent of a
@@ -314,8 +312,8 @@ pub fn tangent_stiffness(
 /// # Errors
 ///
 /// [`MeshError::DofCountMismatch`] if `u` is not `3 * node_count` long.
-pub fn tangent_stiffness_numerical(
-    mesh: &Hex8Mesh,
+pub fn tangent_stiffness_numerical<E: ReferenceElement>(
+    mesh: &HexMesh<E>,
     model: &dyn Constitutive,
     u: &[f64],
     opts: &AssemblyOptions,
