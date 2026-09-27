@@ -1,0 +1,25 @@
+[package]
+name = "tpt-med-fem-adapter"
+description = "3D hex nonlinear hyperelastic FEM assembly and contact coupling on TPT substrate primitives"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+readme = "README.md"
+documentation = "https://docs.rs/tpt-med-fem-adapter"
+keywords = ["fem", "hyperelastic", "contact", "biomechanics", "hex8"]
+categories = ["science", "mathematics", "simulation"]
+
+[dependencies]
+tpt-med-geometry = { path = "../../core/tpt-med-geometry", version = "0.1.0" }
+tpt-med-tissue = { path = "../tpt-med-tissue", version = "0.1.0" }
+tpt-fem-contact = { version = "=0.1.0" }
+tpt-fem-element = { version = "=0.1.0" }
+tpt-fem-quadrature = { version = "=0.1.0" }
+tpt-fem-solve = { version = "=0.1.0" }
+tpt-fem-sparse = { version = "=0.1.0" }
+
+[lints]
+workspace = true

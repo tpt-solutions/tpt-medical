@@ -280,6 +280,12 @@ fn main() -> std::io::Result<()> {
   stream with a `TransferSyntaxUID` of `1.2.840.10008.1.2.4.80` and PS3.5
   Annex A.4-shaped encapsulated fragments, parsed by `DicomParser::parse_bytes`
   and decoded into `DicomSlice::pixel_data`.
+- `series::jpeg2000_encapsulated_pixel_data_tests` gives JPEG 2000 the same
+  end-to-end coverage, for all four transfer syntaxes this crate routes to
+  the codec (`.90`/`.91`/`.92`/`.93`), so the transfer-syntax routing, the
+  parser's fragment collection and the signed-bit level-shift correction are
+  all exercised on a real Part-10 stream rather than only in `decode_frame`'s
+  own unit tests.
 
 ## Known Limitations
 

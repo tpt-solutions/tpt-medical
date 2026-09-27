@@ -14,6 +14,18 @@ here only if it affects the workspace as a whole.
 ## [Unreleased]
 
 ### Added
+- **`tpt-med-fem-adapter`** (new crate, `solid` layer) — the 3-D nonlinear
+  hyperelastic `Hex8` assembly and unilateral contact coupling that
+  `rfcs/0009-nonlinear-fem-substrate-adapter.md` scoped and the substrate at
+  0.1.0 does not ship. Total-Lagrangian internal force, a `B^T A B` tangent
+  (settling RFC 0009's open analytic-vs-numerical question with a checked
+  comparison), a damped Newton solve over `tpt-fem-sparse`, and frictionless
+  contact whose active set is recomputed from the current geometry at every
+  iteration. 17 tests: uniaxial closed form, mesh refinement, the exact
+  constant-stress patch identity, the exact analytic volumetric branch, both
+  tangent strategies, and four contact scenarios. The RFC's placeholder
+  verification obligation is discharged; friction, a mixed `u`-`p`
+  formulation, load stepping and curved elements remain open.
 - **New crate: `tpt-med-nifti`** (`rfcs/0006-nifti-ingestion.md`) — pure-Rust
   parsing of NIfTI-1 volumes, so a research-space CT/MR export
   (`dcm2niix`, FSL, FreeSurfer, ANTs, most public imaging datasets) can

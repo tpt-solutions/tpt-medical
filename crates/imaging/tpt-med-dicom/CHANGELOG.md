@@ -26,6 +26,16 @@ changes for consumers of this crate.
   transform is rejected by the underlying crate's own unrecognised-marker
   check (verified by reading `pdfluent-jpeg2000`'s marker-parsing loop),
   never silently mis-decoded.
+- **Series-level integration tests for every JPEG 2000 transfer syntax**
+  (`series::jpeg2000_encapsulated_pixel_data_tests`), closing the parity gap
+  where only `jpeg-ls` had a Part-10-byte-stream-to-`DicomSlice` test. A real
+  Part-10 stream with PS3.5 Annex A.4-shaped encapsulated fragments is built
+  for `.90`/`.91`/`.92`/`.93` and parsed by `DicomParser::parse_bytes`, proving
+  the transfer-syntax routing and the parser's own fragment collection rather
+  than a pre-assembled frame. The signed-bit level-shift correction and its
+  non-conformant-mismatch rejection are pinned on that path too, not only in
+  `decode_frame`'s unit tests. The 2x2 J2C fixture is now a single
+  `pub(crate)` constant in `jpeg2000.rs` shared by both test sites.
 - **`rle` cargo feature: RLE Lossless (`1.2.840.10008.1.2.5`) pixel data.**
   Off by default — without it an RLE object still yields
   `DicomError::CompressedPixelData`, unchanged from before. With it,

@@ -12,6 +12,7 @@ members = [
     # Solid biomechanics
     "crates/solid/tpt-med-biomechanics",
     "crates/solid/tpt-med-tissue",
+    "crates/solid/tpt-med-fem-adapter",
     "crates/solid/tpt-med-bone",
     "crates/solid/tpt-med-cartilage",
     "crates/solid/tpt-med-viscoelastic",
@@ -86,6 +87,15 @@ tpt-fem-contact = { version = "=0.1.0", package = "tpt-fem-contact" }
 # rfcs/0009-nonlinear-fem-substrate-adapter.md) needs `MeshBuilder` and
 # nothing else from the umbrella crate.
 tpt-fem-mesh = { version = "=0.1.0", package = "tpt-fem-mesh" }
+# The 3-D nonlinear hyperelastic adapter (`tpt-med-fem-adapter`, see
+# rfcs/0009-nonlinear-fem-substrate-adapter.md) needs the element shape
+# functions, the quadrature rules, the sparse assembly and the Newton driver on
+# top of the contact crate. Each is the substrate's own 0.1.0 crate, pinned the
+# same way as the ones above.
+tpt-fem-element = { version = "=0.1.0", package = "tpt-fem-element" }
+tpt-fem-quadrature = { version = "=0.1.0", package = "tpt-fem-quadrature" }
+tpt-fem-sparse = { version = "=0.1.0", package = "tpt-fem-sparse" }
+tpt-fem-solve = { version = "=0.1.0", package = "tpt-fem-solve" }
 
 # Internal workspace crates (path + version pinned for consumers)
 tpt-med-core = { path = "crates/core/tpt-med-core", version = "0.1.0" }
@@ -96,6 +106,7 @@ tpt-med-nifti = { path = "crates/imaging/tpt-med-nifti", version = "0.1.0" }
 tpt-med-meshing = { path = "crates/imaging/tpt-med-meshing", version = "0.1.0" }
 tpt-med-biomechanics = { path = "crates/solid/tpt-med-biomechanics", version = "0.1.0" }
 tpt-med-tissue = { path = "crates/solid/tpt-med-tissue", version = "0.1.0" }
+tpt-med-fem-adapter = { path = "crates/solid/tpt-med-fem-adapter", version = "0.1.0" }
 tpt-med-bone = { path = "crates/solid/tpt-med-bone", version = "0.1.0" }
 tpt-med-cartilage = { path = "crates/solid/tpt-med-cartilage", version = "0.1.0" }
 tpt-med-viscoelastic = { path = "crates/solid/tpt-med-viscoelastic", version = "0.1.0" }

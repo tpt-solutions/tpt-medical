@@ -1,0 +1,218 @@
+# tpt-med-fem-adapter
+
+3-D nonlinear hyperelastic FEM assembly and unilateral contact, built from the
+TPT substrate's `tpt-fem` primitives: trilinear hexahedra, a `B^T A B` tangent,
+a damped Newton solve, and frictionless contact whose active set is
+re-evaluated at every iteration.
+
+[![Crates.io](https://img.shields.io/badge/crates.io-tpt--med--fem--adapter-orange)](https://crates.io/crates/tpt-med-fem-adapter)
+[![Docs.rs](https://img.shields.io/badge/docs.rs-tpt--med--fem--adapter-blue)](https://docs.rs/tpt-med-fem-adapter)
+
+| | |
+|---|---|
+| **Layer** | `solid` (grouped with `tpt-med-tissue`, the constitutive models it assembles) |
+| **Status** | Alpha, `0.1.0` |
+| **Scope** | RFC 0009 — the 3-D assembly and contact coupling the substrate does not ship |
+| **License** | MIT OR Apache-2.0 |
+| **MSRV** | 1.82 |
+| **Dependencies** | [`tpt-med-tissue`](../../solid/tpt-med-tissue), `tpt-fem-element`, `tpt-fem-quadrature`, `tpt-fem-sparse`, `tpt-fem-solve`, `tpt-fem-contact` |
+| **Changelog** | [CHANGELOG.md](CHANGELOG.md) |
+
+---
+
+## Why
+
+`rfcs/0002-hyperelastic-tissue.md` and `rfcs/0004-nitinol-superelasticity.md`
+both said nonlinear hyperelasticity and contact would "land as an adapter
+crate", without saying how. `rfcs/0009-nonlinear-fem-substrate-adapter.md` then
+read the pinned substrate's actual 0.1.0 source and found the real gap: the
+substrate ships `Hex8` shape functions, a hex mesh, hyperelastic *stress
+functions*, a generic Newton driver and a COO/CSR assembly — but **no 3-D
+hyperelastic assembly**, which is exactly what a 3-D stent or
+joint-replacement simulation needs first.
+
+This crate is that assembly, plus the contact coupling RFC 0009 scoped but left
+as an open question.
+
+## Features
+
+- **Total-Lagrangian `Hex8` internal force** — `f = int B^T P dV` with `P` from
+  `tpt-med-tissue`'s `TissueModel` (every variant, including the Ogden and HGO
+  models whose own `P` is a finite difference). Written in index form, with no
+  Voigt matrix, so there is no engineering-shear weighting to get wrong.
+- **Tangent stiffness `B^T A B`** as the true Hessian of the discrete energy
+  (`d2E/du2`), assembled as a `tpt-fem-sparse::Coo`. The material tangent
+  `A = dP/dF` is a central difference, so every model — including ones with no
+  analytic tangent — is supported without special cases.
+- **A second, independent tangent** (`tangent_stiffness_numerical`) that
+  differentiates the whole residual, so RFC 0009's "analytic vs. numerical
+  tangent" open question is answered by a checked comparison rather than an
+  assumption.
+- **Damped Newton** with Dirichlet condensation, diagonal equilibration before
+  the linear solve, and a convergence measure on the **free**-DOF residual
+  (`solve_static`, `residual`).
+- **Unilateral contact** (`ContactPairing`) layered onto the nonlinear solve:
+  `tpt-fem-contact`'s node pairing and penalty, with the active set recomputed
+  from the current geometry at every residual and Jacobian evaluation, so a
+  body that separates from the obstacle stops being pushed by it.
+- **Explicit failure** where a numerical library might return a plausible
+  wrong answer: an inverted element is a `MeshError::InvertedDeformation`, not
+  a `NaN` that later surfaces as an unrelated "singular matrix".
+
+## Conventions
+
+- **Units**: lengths in mm, stresses in MPa (the workspace convention). A
+  stiffness is therefore MPa and a contact penalty is a stiffness in the same
+  units.
+- **Volumetric penalty direction**: the in-house convention is
+  `W_vol = (J - 1)^2 / d1`, so a **small `d1` is a stiff** penalty. This trips
+  up anyone arriving from the usual `1/D1` reading; the verification fixtures
+  use `d1 = 0.5` and the crate's own docs say why.
+- **Connectivity order**: elements follow `tpt-fem-element`'s `Hex8` reference
+  node ordering. `hex_box` emits it; a hand-built mesh must too.
+- **Quadrature**: `2` is `2x2x2` (the in-house voxel core's order), `3` is the
+  default because a finite-difference material tangent is not a low-order
+  polynomial in `xi`.
+- **Contact normal**: resolved along a single coordinate axis (`0`/`1`/`2`),
+  which is the form `tpt-fem-contact`'s `ContactConstraint` takes.
+
+## Usage
+
+```rust
+use tpt_med_fem_adapter::{hex_box, internal_force, solve_static, AssemblyOptions, SolveOptions};
+use tpt_med_tissue::{NeoHookeanParams, TissueModel};
+
+let l = 10.0;
+let lam = 1.3;
+let mesh = hex_box(4, 4, 4, l, l, l)?;
+let model = TissueModel::NeoHookean(NeoHookeanParams { c10: 0.49, d1: 0.5 });
+
+// Fixed base, symmetry plane at z = 0, prescribed axial stretch on the top.
+let mut dirichlet: Vec<(usize, f64)> = Vec::new();
+for n in mesh.face_nodes(1, false) {
+    for c in 0..3 {
+        dirichlet.push((mesh.dof(n, c), 0.0));
+    }
+}
+for n in mesh.face_nodes(2, false) {
+    dirichlet.push((mesh.dof(n, 2), 0.0));
+}
+for n in mesh.face_nodes(1, true) {
+    dirichlet.push((mesh.dof(n, 1), (lam - 1.0) * l));
+}
+
+let opts = SolveOptions {
+    assembly: AssemblyOptions::with_quadrature_order(3),
+    ..SolveOptions::default()
+};
+let result = solve_static(
+    &mesh, &model, &vec![0.0; mesh.dof_count()], &dirichlet, &opts, None,
+)?;
+
+// Reaction on the prescribed top face, reduced to a nominal stress.
+let internal = internal_force(&mesh, &model, &result.displacement, &opts.assembly)?;
+let reaction: f64 = mesh
+    .face_nodes(1, true)
+    .iter()
+    .map(|&n| internal[mesh.dof(n, 1)])
+    .sum();
+let nominal = reaction / (l * l);
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+## API Overview
+
+| Item | Purpose |
+|---|---|
+| `hex_box(nx, ny, nz, lx, ly, lz)` | Structured `Hex8` box, connectivity in `Hex8` reference order |
+| `Hex8Mesh` | Node/element storage, isoparametric Jacobian, `physical_gradients`, `inverted_elements`, `face_nodes` |
+| `Constitutive` / `FnModel` | `P = dW/dF`; implemented for `TissueModel` and for any `Fn(&Mat3) -> Mat3` |
+| `internal_force(mesh, model, u, opts)` | Global internal force `int B^T P dV` |
+| `tangent_stiffness(mesh, model, u, opts)` | Global tangent `B^T A B` as a `Coo` |
+| `tangent_stiffness_numerical(...)` | The same, by differencing the whole residual (verification reference) |
+| `material_tangent(model, f, h)` | `A = dP/dF` by central differences |
+| `solve_static(mesh, model, load, dirichlet, opts, contact)` | Newton solve; returns `SolveResult` |
+| `residual(mesh, model, load, u, opts, contact)` | The residual at a configuration, for independent checking |
+| `ContactPairing::new(axis, slave, master)` | Unilateral pairing of deforming nodes against a rigid obstacle |
+| `ContactConfig { pairing, penalty }` | Which contact to enforce in a solve, and how stiff |
+| `SolveOptions { convergence, assembly }` | Tolerances, iteration cap, quadrature order, FD step |
+
+## Verification
+
+ASME V&V 40 **code verification** (the right answer is known independently of
+this code) and **calculation verification** (the error is shown to fall under
+refinement). The obligations RFC 0009 recorded as a placeholder are discharged
+in `src/tests.rs`.
+
+| Check | What it pins |
+|---|---|
+| `uniaxial_tension_matches_closed_form` | Nominal stress against `mu (lambda - lambda^-2)`, the same closed form `tpt-med-tissue` and `tpt-fem-hyperelastic` both reproduce; within 3% at 4x4x4 |
+| `uniaxial_tension_converges_under_mesh_refinement` | Monotone error decrease over 1x1x1 .. 4x4x4 (measured ratios 1.233, 1.058, 1.019, 1.003) |
+| `uniform_deformation_satisfies_patch_identity` | The constant-stress patch identity `f[k,I] = V sum_L G[I,L] P[k,L]`, exact to 1e-9 |
+| `uniform_dilatation_matches_the_analytic_volumetric_branch` | The in-house analytic volumetric branch `2J(J-1)/d1 J^-1/3`, exact to 1e-9 |
+| `zero_deformation_gives_zero_internal_force` | `F = I` gives an exactly zero internal force |
+| `analytic_tangent_matches_numerical_tangent` | The cheap tangent against a differenced one, on a deformed configuration (RFC 0009's open tangent question) |
+| `tangent_is_minor_symmetric` | The tangent is the Hessian of a scalar energy, hence symmetric |
+| `material_tangent_is_step_size_independent` | `dP/dF` index order and step scaling |
+| `contact_jacobian_matches_the_finite_differenced_residual` | The contact-augmented Jacobian is the derivative of the contact-augmented residual |
+| `contact_active_set_follows_the_moving_geometry` | The active set is a function of the current geometry (RFC 0009's open contact question) |
+| `contact_holds_the_body_out_of_the_obstacle` | A punched block stops at the wall and the reaction balances the punch force |
+| `contact_changes_the_answer_versus_no_contact` | The contact terms reach the residual, by contrasting with the unconstrained solve |
+| `pulling_away_leaves_the_active_set_empty` | Separation releases the constraint within the same solve |
+| `an_inverted_element_is_reported_not_silently_assembled` | Inversion is an error, never a silent `NaN` |
+
+Not verified: mixed `u`-`p` incompressibility, curved/quadratic elements,
+friction, dynamic or quasi-static inertia, and any clinical or ex-vivo data.
+`tpt-fem-sparse`'s dense backend makes this a small-problem tool: the linear
+solve is `O(n^3)` in DOFs.
+
+## Known Limitations
+
+- **Hex8 only**, and only structured boxes are built here. Curved elements
+  (`Hex20`/`Hex27`) and quadratic tets exist in `tpt-fem-element` but are not
+  wired up.
+- **Penalty incompressibility, not exact.** The volumetric term lives in the
+  tissue model, so a stiff penalty plus full integration *volumetrically locks*
+  on a coarse mesh. This crate does not buy exact incompressibility over the
+  in-house linear-elastic core; it upgrades the material law and the element
+  machinery. The fixture's `d1 = 0.5` is a measured compromise, documented in
+  `src/tests.rs`.
+- **Frictionless normal contact only.** `tpt-fem-contact` at 0.1.0 has no
+  friction model (RFC 0009's second open question), contact is resolved along a
+  single coordinate axis, and the obstacle must be rigid and fixed.
+- **No load stepping.** `solve_static` starts from zero displacement; a
+  large-deflection *load* path needs continuation this crate does not provide
+  (prescribe displacement instead, or call it repeatedly).
+- **The Newton driver is this crate's, not the substrate's.** See the module
+  docs in `src/solver.rs`: `tpt-fem-solve::newton` tests the full residual
+  against an absolute tolerance, which a displacement-controlled problem with a
+  non-zero reaction can never satisfy.
+- **`tangent_stiffness_numerical` is quadratic in problem size** and exists for
+  verification, not for production solves.
+- **Inverted elements abort the solve.** A line search makes that rare from a
+  sane initial guess, but there is no element-level return mapping.
+
+## Related Crates
+
+- [`tpt-med-tissue`](https://github.com/tpt-solutions/tpt-medical/tree/master/crates/solid/tpt-med-tissue) — the constitutive models this crate assembles, and the source of the closed forms used to verify it.
+- [`tpt-med-biomechanics`](https://github.com/tpt-solutions/tpt-medical/tree/master/crates/solid/tpt-med-biomechanics) — the linear-elastic voxel core this crate's nonlinear assembly is the large-deformation counterpart to.
+- [`rfcs/0009-nonlinear-fem-substrate-adapter.md`](https://github.com/tpt-solutions/tpt-medical/blob/master/rfcs/0009-nonlinear-fem-substrate-adapter.md) — the gap analysis and architecture this crate implements.
+
+## Contributing
+
+See the workspace [CONTRIBUTING.md](../../../CONTRIBUTING.md). Open work this
+crate deliberately leaves: friction, a mixed `u`-`p` formulation to remove the
+locking noted above, load stepping, and curved elements.
+
+## License
+
+Licensed under either of [MIT](../../../LICENSE-MIT) or
+[Apache-2.0](../../../LICENSE-APACHE), at your option.
+
+## Regulatory Disclaimer
+
+Research and development use only. Not cleared or approved by the FDA or any
+other regulatory body for clinical diagnostic or treatment use. Not a
+diagnostic medical device. The verification recorded here is code verification
+against closed forms and mesh refinement — not validation against patient,
+ex-vivo or clinical data, which this crate has none of.

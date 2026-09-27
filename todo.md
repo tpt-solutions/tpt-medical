@@ -373,7 +373,7 @@ than an orphan.
 
 ## In progress / newly tracked (2026-09-27)
 
-- [ ] **Finish verifying the JPEG 2000 Part 2 multi-component change.**
+- [x] **Finish verifying the JPEG 2000 Part 2 multi-component change.**
   Implementation is in: `tpt-med-dicom` gained `TransferSyntax::Jpeg2000Part2MultiComponentLossless`/
   `Jpeg2000Part2MultiComponent` (`1.2.840.10008.1.2.4.92`/`.93`), routed
   through the existing `jpeg2000::decode_frame` path (Part 2 extends Part
@@ -381,47 +381,64 @@ than an orphan.
   `pdfluent-jpeg2000`'s marker-parsing loop, which rejects any marker code
   it does not recognise rather than skipping it, so a genuine Part 2
   extended multi-component transform is refused, not mis-decoded). Adds
-  tests in `tags.rs` and updates `jpeg2000.rs`/README/CHANGELOG docs. **Not
-  yet re-confirmed after the last doc edits**: rerun
-  `cargo test -p tpt-med-dicom --features jpeg2000`,
-  `cargo clippy -p tpt-med-dicom --all-targets --features jpeg2000 -- -D warnings`,
-  `cargo fmt -p tpt-med-dicom -- --check`, and `bash scripts/check-crate-docs.sh`
-  end-to-end before considering this closed. Known asymmetry to weigh:
-  unlike `jpeg-ls`'s `jpeg_ls_lossless_end_to_end` in `series.rs`, there is
-  still no series-level (Part-10-byte-stream-to-`DicomSlice`) integration
-  test for any JPEG 2000 transfer syntax (`.90`/`.91` included, not just the
-  new `.92`/`.93`) — only `jpeg2000.rs`'s unit-level `decode_frame` tests
-  exist. Consider whether to add one for parity.
-- [ ] **Implement RFC 0009's full nonlinear FEM adapter, including contact
-  coupling** (user-selected scope, 2026-09-27 — see the FEM-adapter-scope
-  decision this pass; supersedes the narrower "first slice" already shipped
-  as `tpt-med-tissue`'s `substrate-cross-check` feature). Per
-  `rfcs/0009-nonlinear-fem-substrate-adapter.md`'s gap analysis, this means
-  building, from the substrate's actual 0.1.0 primitives (no ready-made 3D
-  solver exists):
-  1. A 3D `Hex8` nonlinear hyperelastic assembly — `tpt-fem-element::Hex8`
-     shape functions/gradients + `tpt-fem-quadrature` (2×2×2, matching the
-     in-house core's own scheme), `tpt-med-tissue::TissueModel::first_piola`
-     for the per-quadrature-point stress (penalty formulation recommended
-     for this first increment — see the RFC's "actual gap" item 2 for why
-     a mixed `u`-`p` formulation is deferred).
-  2. A tangent stiffness (analytic-per-model vs. numerical-differentiation
-     — the RFC leaves this an open benchmark-first decision, not resolved).
-  3. `tpt-fem-solve::newton` + `tpt-fem-sparse::Coo`/`solve` wiring the
-     assembly into an actual nonlinear equilibrium iteration.
-  4. Contact coupling: `tpt-fem-contact`'s `ContactConstraint`/`contact_pairs`
-     (DOF-level unilateral, penalty or augmented-Lagrangian; **no built-in
-     friction** as read from the pinned 0.1.0 source) layered onto the
-     nonlinear tangent from steps 1-3, with constraints re-evaluated each
-     Newton iteration as geometry moves — this specific coupling design is
-     an explicit Unresolved Question in RFC 0009, not yet designed, let
-     alone implemented.
-  New crate (name pending — `tpt-med-fem-adapter` is RFC 0009's placeholder).
-  **Needs a real verification strategy before merge** (RFC 0009 explicitly
-  defers this as a placeholder obligation): code verification against the
-  in-house core's own uniaxial/patch tests at matching parameters, plus mesh
-  refinement once a real 3D assembly exists. This is the "multi-month
-  validation project" scale of work RFC 0004 Level 3 already named — budget
-  accordingly rather than treating it as a quick follow-on to the narrow
-  slice already shipped.
-
+  tests in `tags.rs` and updates `jpeg2000.rs`/README/CHANGELOG docs.
+  **Closed 2026-09-27:** all four commands rerun clean
+  (`cargo test -p tpt-med-dicom --features jpeg2000` 56 passed,
+  `cargo clippy --all-targets --features jpeg2000 -- -D warnings`,
+  `cargo fmt -- --check`, `scripts/check-crate-docs.sh` 25/25), and the
+  default-feature build still passes (46 tests) with the new
+  `#[cfg(test)]`-gated fixture. The noted asymmetry is closed too:
+  `series::jpeg2000_encapsulated_pixel_data_tests` gives JPEG 2000 the
+  same Part-10-byte-stream-to-`DicomSlice` coverage `jpeg-ls` already had,
+  for `.90`/`.91`/`.92`/`.93` alike — including the signed-bit level-shift
+  correction and the non-conformant-mismatch rejection on the real parse
+  path, not just `decode_frame`'s unit tests. The 2x2 J2C fixture is now
+  one `pub(crate)` constant in `jpeg2000.rs` shared by both test sites
+  rather than a near-identical hand-rolled copy per site.
+- [x] **Implement RFC 0009's nonlinear FEM adapter, including contact
+  coupling** (user-selected scope, 2026-09-27). New crate
+  `crates/solid/tpt-med-fem-adapter` (RFC 0009's placeholder name kept; the
+  crate's shape now matches the name), 17 tests, `cargo test`/`clippy`/`fmt`
+  clean, `scripts/check-crate-docs.sh` 26/26. What shipped, against RFC 0009's
+  four items:
+  1. **3-D `Hex8` nonlinear hyperelastic assembly** (item 1) —
+     `tpt-fem-element` shape functions and `hex_rule` quadrature, with
+     `tpt-med-tissue::TissueModel::first_piola` per quadrature point. Total
+     Lagrangian, penalty incompressibility as the RFC recommended.
+  2. **Tangent stiffness** (item 2) — the RFC's open "analytic vs. numerical"
+     question is settled *with numbers*: `tangent_stiffness` differentiates the
+     constitutive law only (`A = dP/dF` by central differences) and
+     `tangent_stiffness_numerical` differentiates the whole residual; the
+     suite checks them against each other on a deformed configuration and checks
+     minor symmetry. The cheap one is what the solver uses.
+  3. **`tpt-fem-sparse::Coo`/`solve` wiring into a nonlinear equilibrium
+     iteration** (item 3) — with one documented deviation: the loop is this
+     crate's, not `tpt-fem-solve::newton`'s. Read from the pinned source, that
+     driver tests the *full* residual against an *absolute* tolerance, which a
+     displacement-controlled problem can never satisfy (the residual at a
+     prescribed DOF is the reaction, non-zero by definition), so it always
+     reports `MaxIterations` at a perfectly converged solution. Same structure
+     (condense the essential DOFs, solve, update), free-DOF convergence measure,
+     plus a line search and diagonal equilibration before the solve.
+  4. **Contact coupling** (item 4) — `tpt-fem-contact`'s `contact_pairs` selects
+     the contact partner and `penalty_contact` supplies the linearised penalty,
+     with the active set recomputed from the current geometry at every residual
+     and Jacobian evaluation. The RFC's open coupling design is thereby settled:
+     a frozen active set is wrong, and separation must release the constraint
+     within the same solve (both are tested).
+  **Verification, the RFC's other placeholder obligation, is discharged**: code
+  verification against the same closed form `tpt-med-tissue` and
+  `tpt-fem-hyperelastic` both reproduce (`mu (lambda - lambda^-2)`), the
+  exact constant-stress patch identity, the exact analytic volumetric branch,
+  and calculation verification by mesh refinement (measured ratios 1.233, 1.058,
+  1.019, 1.003 for 1x1x1 .. 4x4x4).
+  **Three findings worth keeping** (all now in the crate's README/CHANGELOG):
+  the in-house volumetric convention is `W_vol = (J-1)^2/d1`, so a *small* `d1`
+  is a *stiff* penalty — the large `d1` used by `substrate-cross-check` would be
+  nearly compressible; a stiff penalty plus full integration locks volumetrically,
+  which is why the fixture's `d1 = 0.5` is a measured compromise; and an
+  inverted element produces a `NaN` from the model's `J^-2/3` that the linear
+  solver then reports as an unrelated "singular matrix", so inversion is now an
+  explicit error.
+  Still open, tracked in the new crate's CHANGELOG: friction, a mixed `u`-`p`
+  formulation to remove the locking, load stepping, and curved elements.
