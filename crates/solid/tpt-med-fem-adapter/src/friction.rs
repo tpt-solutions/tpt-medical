@@ -9,7 +9,7 @@
 //! construction.
 
 use crate::contact::ContactPairing;
-use crate::mesh::{HexMesh, MeshError};
+use crate::mesh::{Mesh, MeshError};
 use tpt_fem_element::ReferenceElement;
 use tpt_fem_sparse::Coo;
 
@@ -129,8 +129,8 @@ pub struct FrictionTerms {
 ///
 /// As [`ContactPairing::candidates`]: a DOF-count mismatch, or a slave node
 /// outside the mesh.
-pub fn friction_terms<E: ReferenceElement>(
-    mesh: &HexMesh<E>,
+pub fn friction_terms<E: ReferenceElement + crate::mesh::ElementFamily>(
+    mesh: &Mesh<E>,
     pairing: &ContactPairing,
     u: &[f64],
     penalty: f64,

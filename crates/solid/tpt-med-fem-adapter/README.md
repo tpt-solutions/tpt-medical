@@ -146,8 +146,10 @@ let nominal = reaction / (l * l);
 | `solve_load_path(mesh, model, load, dirichlet, opts, contact, path)` | Walks a load-controlled path, one converged increment at a time, with bisection cutback |
 | `LoadPathOptions { steps, max_cutbacks }` | Increment count and how deep a failed step may be bisected |
 | `hex_box(nx, ny, nz, lx, ly, lz)` | A structured trilinear box; the `Hex8` specialisation of `hex_box_of` |
-| `hex_box_of::<E>(...)` | The same, for any element type — `hex_box_of::<Hex20>` for a quadratic box |
-| `HexMesh::<E>::default_quadrature_order()` | 2 for a linear element, 3 for a quadratic one — prefer this over a hard-coded order |
+| `hex_box_of::<E>(...)` | The same, for any hexahedral element — `hex_box_of::<Hex20>` for a quadratic box |
+| `tet_box_of::<E>(...)` | A structured tetrahedral box, 6 tets per cell — `tet_box_of::<Tet10>` for quadratic tets |
+| `ElementFamily::quadrature_rule(order)` | The rule for an element's reference domain; what the assembly integrates with |
+| `Mesh::<E>::default_quadrature_order()` | 2 for a linear hex, 3 for a quadratic one — prefer this over a hard-coded order |
 | `LoadStep` / `LoadPath` | The converged points, each with its load factor, residual, iteration count and contact summary |
 | `SolveOptions { convergence, assembly }` | Tolerances, iteration cap, quadrature order, FD step |
 
@@ -191,24 +193,32 @@ in `src/tests.rs`.
 | `hex20_tangent_is_the_derivative_of_the_hex20_residual` | The cheap and full tangents agree on a non-affine deformation |
 | `a_wrong_node_count_is_rejected_per_element_type` | An 8-node element in a Hex20 mesh is a named error, not a read past the end |
 | `a_quadratic_element_gets_a_higher_default_quadrature_order` | The order floor follows the element type |
+| `a_tet_box_fills_its_volume` | Six Kuhn tets per cell, each a sixth of it, summing exactly |
+| `a_quadratic_tet_box_also_fills_its_volume` | Same for `Tet10`, which pins the mid-edge nodes |
+| `a_tet_box_is_conforming_and_has_no_orphans` | Every node belongs to an element — an orphan would make the system singular |
+| `a_tet_box_shares_its_interface_nodes` | Corners shared across cells, mid-edges shared across the tets using them |
+| `tet_box_rejects_a_hexahedral_element` | A hex element asked of `tet_box_of` is a named error |
+| `a_tet_box_reproduces_the_uniaxial_closed_form` | A tet's error is mesh-independent and equals the known penalty deviation |
+| `a_tet_tangent_is_the_derivative_of_the_tet_residual` | The two tangent strategies agree on a non-affine tet deformation |
+| `a_tet_element_uses_a_simplex_rule_not_a_tensor_product_one` | Every selectable tet rule is valid on the reference simplex |
+| `the_substrate_keast4_tet_rule_is_defective` | Regression pin on an upstream bug — fails intentionally once fixed |
 
-Not verified: mixed `u`-`p` incompressibility, `Tet10` elements, meshing a
-curved surface from image data, friction at RFC 0004 Level 3 study parameter
-ranges (the friction checks above are single-fixture mechanism tests, not a
-sensitivity study), dynamic or quasi-static inertia, and any clinical or
-ex-vivo data.
+Not verified: mixed `u`-`p` incompressibility, meshing a curved surface from
+image data, friction at RFC 0004 Level 3 study parameter ranges (the friction
+checks above are single-fixture mechanism tests, not a sensitivity study),
+dynamic or quasi-static inertia, and any clinical or ex-vivo data.
 `tpt-fem-sparse`'s dense backend makes this a small-problem tool: the linear
 solve is `O(n^3)` in DOFs.
 
 ## Known Limitations
 
-- **`Hex8`, `Hex20` and `Hex27`** (`mesh::HexMesh<E>`): the assembly is generic
-  over the reference element, so a quadratic element is a type parameter, not a
-  second implementation. `hex_box_of::<Hex20>` builds one, with the node list
-  compacted to the nodes elements actually reference and a quadrature floor
-  raised to order 3. `Hex8Mesh` is a type alias for `HexMesh<Hex8>`, so nothing
-  existing changes. `Tet10` is not done — a different reference domain, not just
-  another `E`.
+- **`Hex8`, `Hex20`, `Hex27`, `Tet4`, `Tet10`** (`mesh::Mesh<E>`): the assembly
+  is generic over the reference element *and* its family. `hex_box_of::<Hex20>`
+  builds a quadratic box; `tet_box_of::<Tet10>` builds a tetrahedral one by
+  Freudenthal subdivision. `ElementFamily` is why that works — a tet lives on the
+  simplex and needs a Keast rule, not the cube rule a hex takes, and swapping
+  them gives a plausible but badly wrong answer. `Hex8Mesh` is a type alias for
+  `Mesh<Hex8>`, so nothing existing changes.
 - **Penalty incompressibility, not exact.** The volumetric term lives in the
   tissue model, so a stiff penalty plus full integration *volumetrically locks*
   on a coarse mesh. This crate does not buy exact incompressibility over the

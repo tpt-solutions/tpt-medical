@@ -46,7 +46,7 @@
 use crate::assembly::{internal_force, tangent_stiffness, AssemblyOptions, Constitutive};
 use crate::contact::ContactPairing;
 use crate::friction::{friction_terms, FrictionConfig};
-use crate::mesh::{HexMesh, MeshError};
+use crate::mesh::{Mesh, MeshError};
 use std::cell::Cell;
 use std::collections::HashSet;
 use tpt_fem_element::ReferenceElement;
@@ -205,8 +205,8 @@ pub struct SolveResult {
 /// stiffness of `kappa` per active DOF, and a load of `kappa * lower` per active
 /// DOF — so the active-set bookkeeping is the substrate's, not a
 /// re-derivation of it here.
-fn contact_terms<E: ReferenceElement>(
-    mesh: &HexMesh<E>,
+fn contact_terms<E: ReferenceElement + crate::mesh::ElementFamily>(
+    mesh: &Mesh<E>,
     pairing: &ContactPairing,
     u: &[f64],
     penalty: f64,
@@ -219,8 +219,8 @@ fn contact_terms<E: ReferenceElement>(
 }
 
 /// Assembles the residual `f_int(u) - f_ext + r_contact(u)` for a configuration.
-fn residual_vector<E: ReferenceElement>(
-    mesh: &HexMesh<E>,
+fn residual_vector<E: ReferenceElement + crate::mesh::ElementFamily>(
+    mesh: &Mesh<E>,
     model: &dyn Constitutive,
     load: &[f64],
     contact: Option<ContactConfig<'_>>,
@@ -261,8 +261,8 @@ fn residual_vector<E: ReferenceElement>(
 }
 
 /// Assembles `df_int/du` plus the active contact stiffness.
-fn jacobian_matrix<E: ReferenceElement>(
-    mesh: &HexMesh<E>,
+fn jacobian_matrix<E: ReferenceElement + crate::mesh::ElementFamily>(
+    mesh: &Mesh<E>,
     model: &dyn Constitutive,
     contact: Option<ContactConfig<'_>>,
     assembly: &AssemblyOptions,
@@ -304,8 +304,8 @@ fn jacobian_matrix<E: ReferenceElement>(
 /// evaluation fails, [`SolveError::Singular`] if the condensed system is
 /// singular, and [`SolveError::NotConverged`] if the free-DOF residual does not
 /// reach `opts.convergence`.
-pub fn solve_static<E: ReferenceElement>(
-    mesh: &HexMesh<E>,
+pub fn solve_static<E: ReferenceElement + crate::mesh::ElementFamily>(
+    mesh: &Mesh<E>,
     model: &dyn Constitutive,
     load: &[f64],
     dirichlet: &[(usize, f64)],
@@ -329,8 +329,8 @@ pub fn solve_static<E: ReferenceElement>(
 /// `pub(crate)` rather than private because the continuation driver in
 /// [`crate::loadpath`] must reuse this exact loop; a second copy would be free
 /// to drift from the one verified against the closed forms.
-pub(crate) fn newton_from<E: ReferenceElement>(
-    mesh: &HexMesh<E>,
+pub(crate) fn newton_from<E: ReferenceElement + crate::mesh::ElementFamily>(
+    mesh: &Mesh<E>,
     model: &dyn Constitutive,
     load: &[f64],
     dirichlet: &[(usize, f64)],
@@ -517,8 +517,8 @@ pub(crate) fn newton_from<E: ReferenceElement>(
 /// # Errors
 ///
 /// As [`solve_static`]'s assembly and contact evaluation.
-pub fn residual<E: ReferenceElement>(
-    mesh: &HexMesh<E>,
+pub fn residual<E: ReferenceElement + crate::mesh::ElementFamily>(
+    mesh: &Mesh<E>,
     model: &dyn Constitutive,
     load: &[f64],
     u: &[f64],

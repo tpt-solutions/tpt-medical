@@ -10,7 +10,7 @@
 //!
 //! | Piece | Provided by | This crate |
 //! |---|---|---|
-//! | `Hex8`/`Hex20`/`Hex27` shape functions, gradients, `J^-T` | `tpt-fem-element` | used as-is, via `mesh::HexMesh<E>` |
+//! | `Hex8`/`Hex20`/`Hex27` shape functions, gradients, `J^-T` | `tpt-fem-element` | used as-is, via `mesh::Mesh<E>` |
 //! | `2x2x2` / `3x3x3` tensor-product rules | `tpt-fem-quadrature` (via `tpt-fem-element`) | used as-is |
 //! | `P = dW/dF` per quadrature point | `tpt-med-tissue` | used as-is |
 //! | Internal force `int B^T P dV` | — | [`assembly::internal_force`] |
@@ -113,7 +113,10 @@ pub use contact::{
 };
 pub use friction::{friction_terms, FrictionConfig, FrictionError, FrictionState, FrictionTerms};
 pub use loadpath::{solve_load_path, LoadPath, LoadPathError, LoadPathOptions, LoadStep};
-pub use mesh::{hex_box, hex_box_of, Hex8Mesh, HexMesh, MeshError};
+pub use mesh::{
+    hex_box, hex_box_of, tet_box, tet_box_of, ElementFamily, Hex8Mesh, HexFamily, Mesh, MeshError,
+    TetFamily,
+};
 pub use solver::{
     residual, solve_static, ContactConfig, ContactSummary, SolveError, SolveOptions, SolveResult,
 };

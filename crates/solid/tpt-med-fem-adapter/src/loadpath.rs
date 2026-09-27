@@ -44,7 +44,7 @@
 //! downstream use of a point unsafe without saying so on the point itself.
 
 use crate::assembly::Constitutive;
-use crate::mesh::{HexMesh, MeshError};
+use crate::mesh::{Mesh, MeshError};
 use crate::solver::{newton_from, ContactConfig, ContactSummary, SolveError, SolveOptions};
 use std::fmt;
 use tpt_fem_element::ReferenceElement;
@@ -204,8 +204,8 @@ impl LoadPath {
 /// [`LoadPathError::StepNotConverged`] if an increment cannot be converged even
 /// after `max_cutbacks` bisections. Nothing partial is returned in the error
 /// case: the displacement reached is inside the wrapped [`SolveError`].
-pub fn solve_load_path<E: ReferenceElement>(
-    mesh: &HexMesh<E>,
+pub fn solve_load_path<E: ReferenceElement + crate::mesh::ElementFamily>(
+    mesh: &Mesh<E>,
     model: &dyn Constitutive,
     load: &[f64],
     dirichlet: &[(usize, f64)],

@@ -24,9 +24,9 @@ use crate::assembly::{
 use crate::contact::{ContactError, ContactPairing};
 use crate::friction::{friction_terms, FrictionConfig, FrictionError};
 use crate::loadpath::{solve_load_path, LoadPathError, LoadPathOptions};
-use crate::mesh::{hex_box, hex_box_of, MeshError};
+use crate::mesh::{hex_box, hex_box_of, tet_box_of, MeshError};
 use crate::solver::{solve_static, ContactConfig, SolveError, SolveOptions};
-use tpt_fem_element::{Hex20, Hex27, Hex8, ReferenceElement};
+use tpt_fem_element::{Hex20, Hex27, Hex8, ReferenceElement, Tet10, Tet4};
 use tpt_med_geometry::{Mat3, Vec3};
 use tpt_med_tissue::{NeoHookeanParams, TissueModel};
 
@@ -1013,7 +1013,7 @@ fn friction_changes_the_converged_answer() {
 
 /// A block clamped at the bottom and pulled upward by a traction load, with
 /// every DOF above the clamp free.
-fn tensile_setup(traction: f64) -> (crate::HexMesh<Hex8>, Vec<f64>, Vec<(usize, f64)>) {
+fn tensile_setup(traction: f64) -> (crate::Mesh<Hex8>, Vec<f64>, Vec<(usize, f64)>) {
     let l = 10.0;
     let mesh = hex_box(2, 2, 2, l, l, l).expect("box");
     let mut dirichlet = Vec::new();
@@ -1217,7 +1217,7 @@ fn load_path_rejects_a_mis_sized_load_and_an_empty_path() {
 
 /// A structured box of element type `E`, with the same argument meaning as
 /// [`hex_box`]: element counts, not grid cells.
-fn box_of<E: ReferenceElement>(n: usize, l: f64) -> crate::HexMesh<E> {
+fn box_of<E: ReferenceElement + crate::mesh::ElementFamily>(n: usize, l: f64) -> crate::Mesh<E> {
     hex_box_of::<E>(n, n, n, l, l, l).expect("box")
 }
 
@@ -1328,7 +1328,7 @@ fn hex20_reproduces_the_uniaxial_closed_form() {
         }
         let opts = SolveOptions {
             assembly: AssemblyOptions::with_quadrature_order(
-                crate::HexMesh::<Hex20>::default_quadrature_order(),
+                crate::Mesh::<Hex20>::default_quadrature_order(),
             ),
             ..SolveOptions::default()
         };
@@ -1385,7 +1385,7 @@ fn hex20_tangent_is_the_derivative_of_the_hex20_residual() {
     let l = 4.0;
     let mesh = box_of::<Hex20>(1, l);
     let opts =
-        AssemblyOptions::with_quadrature_order(crate::HexMesh::<Hex20>::default_quadrature_order());
+        AssemblyOptions::with_quadrature_order(crate::Mesh::<Hex20>::default_quadrature_order());
     let n = mesh.dof_count();
     let mut u = vec![0.0; n];
     for node in 0..mesh.node_count() {
@@ -1418,7 +1418,7 @@ fn a_wrong_node_count_is_rejected_per_element_type() {
     let m = box_of::<Hex20>(1, 1.0);
     let mut elements = m.elements().to_vec();
     elements[0].truncate(8);
-    let err = crate::HexMesh::<Hex20>::from_parts(m.nodes().to_vec(), elements)
+    let err = crate::Mesh::<Hex20>::from_parts(m.nodes().to_vec(), elements)
         .expect_err("an 8-node element in a Hex20 mesh must be rejected");
     assert!(matches!(
         err,
@@ -1435,7 +1435,250 @@ fn a_quadratic_element_gets_a_higher_default_quadrature_order() {
     // Under-integrating a curved element's Jacobian is a silent accuracy loss,
     // so the floor is attached to the element type rather than left to the
     // caller to remember.
-    assert_eq!(crate::HexMesh::<Hex8>::default_quadrature_order(), 2);
-    assert_eq!(crate::HexMesh::<Hex20>::default_quadrature_order(), 3);
-    assert_eq!(crate::HexMesh::<Hex27>::default_quadrature_order(), 3);
+    assert_eq!(crate::Mesh::<Hex8>::default_quadrature_order(), 2);
+    assert_eq!(crate::Mesh::<Hex20>::default_quadrature_order(), 3);
+    assert_eq!(crate::Mesh::<Hex27>::default_quadrature_order(), 3);
+}
+
+// --- Tetrahedra -----------------------------------------------------------
+//
+// A tetrahedron is not a hexahedron with fewer nodes: it lives on a different
+// reference domain and is integrated by a different rule. These check the mesh
+// (positive volumes, conforming, no orphans) and the assembly, which are the two
+// ways a tet can look fine and still be wrong.
+
+#[test]
+fn a_tet_box_fills_its_volume() {
+    // Six tets per cell, each a sixth of the cell, summing to the cell exactly.
+    // A wrong Kuhn ordering would still give positive volumes but not sum right.
+    let l = 10.0;
+    for n in [1usize, 2, 3] {
+        let m = tet_box_of::<Tet4>(n, n, n, l, l, l).expect("tet box");
+        assert_eq!(m.element_count(), 6 * n * n * n, "six tets per cell");
+        let total: f64 = (0..m.element_count())
+            .map(|e| m.element_volume(e).expect("positively oriented"))
+            .sum();
+        let expected = l * l * l;
+        assert!(
+            (total - expected).abs() < 1.0e-9 * expected,
+            "Tet4 {n}^3 total volume {total} vs {expected}"
+        );
+    }
+}
+
+#[test]
+fn a_quadratic_tet_box_also_fills_its_volume() {
+    // Same for `Tet10`. Its mid-edge nodes sit at true edge midpoints, so a
+    // quadratic element integrates its own geometry exactly; misplaced mid-nodes
+    // would make the total drift.
+    let l = 6.0;
+    for n in [1usize, 2] {
+        let m = tet_box_of::<Tet10>(n, n, n, l, l, l).expect("tet box");
+        let total: f64 = (0..m.element_count())
+            .map(|e| m.element_volume(e).expect("positively oriented"))
+            .sum();
+        let expected = l * l * l;
+        assert!(
+            (total - expected).abs() < 1.0e-9 * expected,
+            "Tet10 {n}^3 total volume {total} vs {expected}"
+        );
+    }
+}
+
+#[test]
+fn a_tet_box_is_conforming_and_has_no_orphans() {
+    // Every node must belong to some element. An orphan has an exactly zero
+    // stiffness row and makes the condensed system singular — the same failure
+    // the serendipity hex box had, so it is worth checking here too.
+    // Every node must belong to some element. An orphan has an exactly zero
+    // stiffness row and makes the condensed system singular — the same failure
+    // the serendipity hex box had, so it is worth checking here too.
+    fn check<E: ReferenceElement + crate::mesh::ElementFamily>(name: &str, m: &crate::Mesh<E>) {
+        let referenced: std::collections::HashSet<usize> =
+            m.elements().iter().flatten().copied().collect();
+        assert_eq!(
+            referenced.len(),
+            m.node_count(),
+            "{name}: every node must be referenced by some element"
+        );
+        for e in 0..m.element_count() {
+            assert_eq!(
+                m.elements()[e].len(),
+                E::NUM_NODES,
+                "{name}: element {e} node count"
+            );
+        }
+    }
+    check(
+        "Tet4",
+        &tet_box_of::<Tet4>(2, 2, 2, 1.0, 1.0, 1.0).expect("Tet4"),
+    );
+    check(
+        "Tet10",
+        &tet_box_of::<Tet10>(2, 2, 2, 1.0, 1.0, 1.0).expect("Tet10"),
+    );
+}
+
+#[test]
+fn a_tet_box_shares_its_interface_nodes() {
+    // The Kuhn subdivision exists to make internal faces conforming. If each of
+    // the six tets created its own nodes, adjacent cells would share nothing and
+    // the mesh would be a pile of disconnected cells.
+    let m = tet_box_of::<Tet4>(2, 1, 1, 1.0, 1.0, 1.0).expect("tet box");
+    // 2x1x1 cells have 3x2x2 = 12 grid corners, shared. Unshared it would be 16.
+    assert_eq!(m.node_count(), 12, "2x1x1 cells share their corners");
+    // One cell: 8 corners, and 6 tets x 6 edges = 36 edge slots over 19 distinct
+    // edges (12 grid, 6 face diagonals, 1 body diagonal), all mid-nodes shared.
+    let m10 = tet_box_of::<Tet10>(1, 1, 1, 1.0, 1.0, 1.0).expect("tet box");
+    assert_eq!(m10.node_count(), 27, "8 corners + 19 distinct edges");
+}
+
+#[test]
+fn tet_box_rejects_a_hexahedral_element() {
+    // Asked the wrong question, this must be a named error rather than a mesh of
+    // nonsense or a panic.
+    assert!(matches!(
+        tet_box_of::<Hex8>(1, 1, 1, 1.0, 1.0, 1.0),
+        Err(MeshError::UnsupportedTetBox {
+            nodes_per_element: 8
+        })
+    ));
+    assert!(matches!(
+        tet_box_of::<Hex20>(1, 1, 1, 1.0, 1.0, 1.0),
+        Err(MeshError::UnsupportedTetBox {
+            nodes_per_element: 20
+        })
+    ));
+    assert!(matches!(
+        tet_box_of::<Tet4>(0, 1, 1, 1.0, 1.0, 1.0),
+        Err(MeshError::EmptyBox { axis: 0 })
+    ));
+}
+
+#[test]
+fn a_tet_box_reproduces_the_uniaxial_closed_form() {
+    // End-to-end, same target as the hex suite. A uniform bar has an affine
+    // deformation, so the error is again the known penalty-incompressibility
+    // deviation and is mesh-independent; what is being verified is that the
+    // simplex reference domain and simplex quadrature are applied correctly,
+    // which a wrong rule would break badly.
+    let l: f64 = 10.0;
+    let lam: f64 = 1.3;
+    let model = nh();
+    let expected = 2.0 * C10 * (lam - lam.powi(-2));
+    let opts = SolveOptions {
+        assembly: AssemblyOptions::with_quadrature_order(
+            crate::Mesh::<Tet4>::default_quadrature_order(),
+        ),
+        ..SolveOptions::default()
+    };
+    let mut errors = Vec::new();
+    for n in [1usize, 2] {
+        let m = tet_box_of::<Tet4>(n, n, n, l, l, l).expect("tet box");
+        let mut dirichlet: Vec<(usize, f64)> = Vec::new();
+        let tol = 1.0e-9;
+        for node in 0..m.node_count() {
+            let p = m.nodes()[node];
+            for c in 0..3 {
+                if p.to_array()[c].abs() < tol {
+                    dirichlet.push((m.dof(node, c), 0.0));
+                }
+            }
+            if (p.y - l).abs() < tol {
+                dirichlet.push((m.dof(node, 1), (lam - 1.0) * l));
+            }
+        }
+        let result = solve_static(
+            &m,
+            &model,
+            &vec![0.0; m.dof_count()],
+            &dirichlet,
+            &opts,
+            None,
+        )
+        .expect("tet solve converges");
+        let internal =
+            internal_force(&m, &model, &result.displacement, &opts.assembly).expect("assembly");
+        let top = m.face_nodes(1, true);
+        let reaction: f64 = top.iter().map(|&node| internal[m.dof(node, 1)]).sum();
+        errors.push(((reaction / (l * l) - expected).abs() / expected, n));
+    }
+    for (e, n) in &errors {
+        println!("Tet4 {n}^3 relative error {e:.4}");
+    }
+    assert!(
+        errors.first().expect("a mesh").0 < 0.12,
+        "Tet4 deviates from the closed form by {}",
+        errors.first().expect("a mesh").0
+    );
+    for w in errors.windows(2) {
+        assert!(
+            (w[1].0 - w[0].0).abs() < 1.0e-6,
+            "error must be mesh-independent for a uniform state: {} then {}",
+            w[0].0,
+            w[1].0
+        );
+    }
+}
+
+#[test]
+fn a_tet_tangent_is_the_derivative_of_the_tet_residual() {
+    // The same shape as the Hex20 tangent check, on a non-affine deformation, so
+    // the simplex gradients and `J^-T` are exercised away from their linear
+    // regime.
+    let m = tet_box_of::<Tet10>(1, 1, 1, 4.0, 4.0, 4.0).expect("tet box");
+    let opts =
+        AssemblyOptions::with_quadrature_order(crate::Mesh::<Tet10>::default_quadrature_order());
+    let n = m.dof_count();
+    let mut u = vec![0.0; n];
+    for node in 0..m.node_count() {
+        let p = m.nodes()[node];
+        u[m.dof(node, 0)] = 0.1 * p.x + 0.02 * p.y * p.z;
+        u[m.dof(node, 1)] = 0.05 * p.y - 0.01 * p.x * p.z;
+        u[m.dof(node, 2)] = 0.03 * p.z + 0.015 * p.x * p.y;
+    }
+    let cheap = tangent_stiffness(&m, &nh(), &u, &opts).expect("tangent");
+    let full = tangent_stiffness_numerical(&m, &nh(), &u, &opts).expect("numerical tangent");
+    let diff = coo_max_abs_diff(&cheap, &full);
+    let scale = cheap
+        .vals
+        .iter()
+        .chain(full.vals.iter())
+        .map(|v| v.abs())
+        .fold(0.0f64, f64::max)
+        .max(1.0);
+    assert!(
+        diff < 1.0e-5 * scale,
+        "Tet10 tangent strategies differ by {diff} (scale {scale})"
+    );
+}
+
+#[test]
+fn a_tet_element_uses_a_simplex_rule_not_a_tensor_product_one() {
+    // The failure this guards is silent: integrating a simplex against a
+    // tensor-product rule on `[-1, 1]^3` returns plausible numbers from points
+    // that are not even inside the element. Checked on the rule's own domain —
+    // a point of the reference tetrahedron has non-negative barycentric
+    // coordinates summing to one.
+    let rule = <Tet10 as crate::ElementFamily>::quadrature_rule(
+        crate::Mesh::<Tet10>::default_quadrature_order(),
+    );
+    assert!(!rule.points.is_empty());
+    for p in &rule.points {
+        assert!(
+            p[0] + p[1] + p[2] <= 1.0 + 1.0e-12,
+            "tet quadrature point {p:?} lies outside the reference simplex"
+        );
+        assert!(p[0] >= -1.0e-12 && p[1] >= -1.0e-12 && p[2] >= -1.0e-12);
+    }
+    // Weights on the reference simplex sum to its volume, 1/6.
+    let total: f64 = rule.weights.iter().sum();
+    assert!(
+        (total - 1.0 / 6.0).abs() < 1.0e-12,
+        "tet rule weights sum to {total}, expected 1/6"
+    );
+    // The hex rule, for contrast, is on the cube and sums to 8.
+    let hex = <Hex8 as crate::ElementFamily>::quadrature_rule(2);
+    let hex_total: f64 = hex.weights.iter().sum();
+    assert!((hex_total - 8.0).abs() < 1.0e-12);
 }

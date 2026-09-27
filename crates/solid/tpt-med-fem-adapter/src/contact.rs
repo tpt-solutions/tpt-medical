@@ -35,7 +35,7 @@
 //! simply wrong once the geometry moves, and freezing it makes a body that
 //! lifts off a wall keep pushing against it.
 
-use crate::mesh::{HexMesh, MeshError};
+use crate::mesh::{Mesh, MeshError};
 use tpt_fem_contact::ContactConstraint;
 use tpt_fem_element::ReferenceElement;
 use tpt_med_geometry::Vec3;
@@ -181,9 +181,9 @@ impl ContactPairing {
     ///
     /// [`MeshError::DofCountMismatch`] if `u` is not `3 * node_count` long, or
     /// [`MeshError::NodeIndexOutOfRange`] if a slave node is not in the mesh.
-    pub fn candidates<E: ReferenceElement>(
+    pub fn candidates<E: ReferenceElement + crate::mesh::ElementFamily>(
         &self,
-        mesh: &HexMesh<E>,
+        mesh: &Mesh<E>,
         u: &[f64],
     ) -> Result<Vec<ContactCandidate>, MeshError> {
         let x = mesh.positions(u)?;
@@ -236,9 +236,9 @@ impl ContactPairing {
     /// # Errors
     ///
     /// As [`ContactPairing::candidates`].
-    pub fn active_constraints<E: ReferenceElement>(
+    pub fn active_constraints<E: ReferenceElement + crate::mesh::ElementFamily>(
         &self,
-        mesh: &HexMesh<E>,
+        mesh: &Mesh<E>,
         u: &[f64],
     ) -> Result<Vec<ContactConstraint>, MeshError> {
         Ok(self
@@ -254,9 +254,9 @@ impl ContactPairing {
     /// # Errors
     ///
     /// As [`ContactPairing::candidates`].
-    pub fn max_penetration<E: ReferenceElement>(
+    pub fn max_penetration<E: ReferenceElement + crate::mesh::ElementFamily>(
         &self,
-        mesh: &HexMesh<E>,
+        mesh: &Mesh<E>,
         u: &[f64],
     ) -> Result<f64, MeshError> {
         Ok(self
@@ -274,9 +274,9 @@ impl ContactPairing {
     /// # Errors
     ///
     /// As [`ContactPairing::candidates`].
-    pub fn total_reaction<E: ReferenceElement>(
+    pub fn total_reaction<E: ReferenceElement + crate::mesh::ElementFamily>(
         &self,
-        mesh: &HexMesh<E>,
+        mesh: &Mesh<E>,
         u: &[f64],
         penalty: f64,
     ) -> Result<f64, MeshError> {

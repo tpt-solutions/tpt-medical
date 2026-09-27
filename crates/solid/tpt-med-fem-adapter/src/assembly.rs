@@ -46,8 +46,7 @@
 //! The crate's verification suite checks the two against each other (and
 //! against minor symmetry) rather than asserting one in the abstract.
 
-use crate::mesh::{HexMesh, MeshError};
-use tpt_fem_element::hex_rule;
+use crate::mesh::{Mesh, MeshError};
 use tpt_fem_element::ReferenceElement;
 use tpt_fem_sparse::Coo;
 use tpt_med_geometry::Mat3;
@@ -118,8 +117,8 @@ impl AssemblyOptions {
 ///
 /// Returns `None` when the element is inverted or degenerate there (the same
 /// condition under which the physical gradients are undefined).
-pub fn element_deformation_gradient<E: ReferenceElement>(
-    mesh: &HexMesh<E>,
+pub fn element_deformation_gradient<E: ReferenceElement + crate::mesh::ElementFamily>(
+    mesh: &Mesh<E>,
     element: usize,
     u: &[f64],
     xi: &[f64; 3],
@@ -180,8 +179,8 @@ pub fn material_tangent(model: &dyn Constitutive, f: &Mat3, h: f64) -> Tensor4 {
 /// # Errors
 ///
 /// [`MeshError::DofCountMismatch`] if `u` is not `3 * node_count` long.
-pub fn internal_force<E: ReferenceElement>(
-    mesh: &HexMesh<E>,
+pub fn internal_force<E: ReferenceElement + crate::mesh::ElementFamily>(
+    mesh: &Mesh<E>,
     model: &dyn Constitutive,
     u: &[f64],
     opts: &AssemblyOptions,
@@ -193,7 +192,11 @@ pub fn internal_force<E: ReferenceElement>(
         });
     }
     let mut force = vec![0.0; mesh.dof_count()];
-    let rule = hex_rule(opts.quadrature_order);
+    // The rule must come from the element family, not from a hexahedral
+    // default: a tetrahedron lives on a different reference domain and a
+    // tensor-product cube rule would evaluate its shape functions outside the
+    // element, giving a plausible but badly wrong answer rather than an error.
+    let rule = E::quadrature_rule(opts.quadrature_order);
     for e in 0..mesh.element_count() {
         for (xi, w) in rule.points.iter().zip(&rule.weights) {
             let Some(grad) = mesh.physical_gradients(e, xi) else {
@@ -244,8 +247,8 @@ pub fn internal_force<E: ReferenceElement>(
 /// # Errors
 ///
 /// [`MeshError::DofCountMismatch`] if `u` is not `3 * node_count` long.
-pub fn tangent_stiffness<E: ReferenceElement>(
-    mesh: &HexMesh<E>,
+pub fn tangent_stiffness<E: ReferenceElement + crate::mesh::ElementFamily>(
+    mesh: &Mesh<E>,
     model: &dyn Constitutive,
     u: &[f64],
     opts: &AssemblyOptions,
@@ -257,7 +260,11 @@ pub fn tangent_stiffness<E: ReferenceElement>(
         });
     }
     let mut stiffness = Coo::with_capacity(mesh.element_count() * 24 * 24);
-    let rule = hex_rule(opts.quadrature_order);
+    // The rule must come from the element family, not from a hexahedral
+    // default: a tetrahedron lives on a different reference domain and a
+    // tensor-product cube rule would evaluate its shape functions outside the
+    // element, giving a plausible but badly wrong answer rather than an error.
+    let rule = E::quadrature_rule(opts.quadrature_order);
     for e in 0..mesh.element_count() {
         for (xi, w) in rule.points.iter().zip(&rule.weights) {
             let Some(grad) = mesh.physical_gradients(e, xi) else {
@@ -312,8 +319,8 @@ pub fn tangent_stiffness<E: ReferenceElement>(
 /// # Errors
 ///
 /// [`MeshError::DofCountMismatch`] if `u` is not `3 * node_count` long.
-pub fn tangent_stiffness_numerical<E: ReferenceElement>(
-    mesh: &HexMesh<E>,
+pub fn tangent_stiffness_numerical<E: ReferenceElement + crate::mesh::ElementFamily>(
+    mesh: &Mesh<E>,
     model: &dyn Constitutive,
     u: &[f64],
     opts: &AssemblyOptions,

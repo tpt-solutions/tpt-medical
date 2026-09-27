@@ -67,6 +67,43 @@ changes for consumers of this crate.
   - Curved *reference geometry* is supported (a `Hex20` can represent a curved
     face). Meshing curved surfaces from a DICOM/NIfTI boundary is **not** in
     this crate — there is no isosurface extractor here.
+- **`Tet4` / `Tet10` tetrahedra** — a tetrahedron is a different reference
+  domain, not just another `E`, so this needed real work beyond the generic
+  refactor.
+  - **New `ElementFamily` trait** (`mesh`), with `HexFamily` / `TetFamily`
+    markers. `ReferenceElement` alone cannot pick a quadrature rule: a hex lives
+    on `[-1, 1]^3` and takes a tensor-product Gauss rule, a tet lives on the
+    simplex and takes a Keast rule, and substituting one for the other evaluates
+    shape functions *outside* the element. `ElementFamily::quadrature_rule` and
+    `natural_quadrature_order` are the single place a rule is chosen; the
+    assembly, element volume and inversion check all go through it.
+  - **`Mesh<E>` renamed from `HexMesh<E>`**, since it is no longer hex-only.
+    `Hex8Mesh` remains an alias for `Mesh<Hex8>`, so no caller changes.
+  - **`tet_box_of::<E>`** builds a tet mesh by Freudenthal (Kuhn) subdivision:
+    six tets per cell sharing the main diagonal, which is what makes the
+    decomposition conforming. Mid-edge nodes for a quadratic element are keyed on
+    the sorted node pair, so tets sharing an edge — including across internal
+    faces and the body diagonal — share the node.
+  - **New `MeshError::UnsupportedTetBox`**: asking for a hexahedral element from
+    `tet_box_of` is a named error, not a mesh of nonsense.
+  - Two real bugs found by the verification suite, both silent: the Kuhn apex
+    was numbered as corner 7 instead of 6, which made two of the six
+    tetrahedra coplanar (one lying entirely in an `x = 0` face) and gave them
+    zero volume; and the assembly was still calling `hex_rule` directly, so tets
+    were integrated with a cube rule and a `Tet4` uniaxial solve came out **42x**
+    the closed form without erroring.
+  - **`tpt-fem-quadrature` 0.1.0's `Keast4` tet rule is defective** and is not
+    used. Its weights sum correctly to the reference volume 1/6 and all its
+    coordinates are positive, but several of its eleven points fall *outside* the
+    reference tetrahedron (measured maximum barycentric sum 1.2607). A `Tet10`
+    solve using it returned 42x the closed form rather than failing. Keast3 is
+    used instead, which is sufficient: a `Tet10` map is quadratic, so `det J` is
+    cubic and a degree-3 rule integrates it exactly. This is worth reporting
+    upstream, and `the_substrate_keast4_tet_rule_is_defective` is a regression pin
+    that will fail — intentionally — if a future substrate release fixes it.
+  - A `Tet10` box has interior nodes on the face and body diagonals, not only on
+    the grid lines. Inherent to subdividing a hexahedron, but it means a `Tet10`
+    box is not a drop-in replacement for a `Hex20` box of the same dimensions.
 - **Load stepping / continuation** (`loadpath` module) —
   `solve_load_path` walks a load-controlled path from zero to the full load, one
   converged increment at a time, each seeded from the last. `LoadPathOptions`
@@ -94,9 +131,6 @@ changes for consumers of this crate.
 ### Planned
 - A mixed `u`-`p` formulation to replace the penalty volumetric term, which is
   what currently causes volumetric locking on coarse meshes.
-- `Tet10` tetrahedra. `Hex20`/`Hex27` are done (see Added); a tet mesh is a
-  different reference domain (`(0,0,0)..(1,0,0)`, not `[-1,1]^3`) and needs its
-  own quadrature path, so it is not just another `E`.
 
 ## [0.1.0] - 2026-09-27
 
