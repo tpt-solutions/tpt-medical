@@ -57,6 +57,68 @@ pub struct WasmMeshPipeline {
     mean_modulus: f64,
     max_modulus: f64,
     mesh: tpt_med_meshing::VoxelHexMesh,
+    mask: tpt_med_meshing::SegmentationMask,
+}
+
+/// Largest enclosed void at the mid axial slice, via border flood fill:
+/// empty cells reachable from the slice border are outside anatomy; the
+/// remaining empty cells form the lumen/canal. Returns the equivalent
+/// circular diameter (mm) or NaN when no enclosed void exists.
+fn enclosed_void_diameter(mask: &tpt_med_meshing::SegmentationMask) -> f64 {
+    let (nx, ny, nz) = mask.dims;
+    if nx < 3 || ny < 3 || nz == 0 {
+        return f64::NAN;
+    }
+    let z = nz / 2;
+    let idx = |x: usize, y: usize| (z * ny + y) * nx + x;
+    let solid = |x: usize, y: usize| mask.voxels[idx(x, y)];
+
+    // BFS over non-solid cells from every border cell.
+    let mut outside = vec![false; nx * ny];
+    let mut stack = Vec::new();
+    for x in 0..nx {
+        for y in [0usize, ny - 1] {
+            if !solid(x, y) && !outside[y * nx + x] {
+                outside[y * nx + x] = true;
+                stack.push((x, y));
+            }
+        }
+    }
+    for y in 0..ny {
+        for x in [0usize, nx - 1] {
+            if !solid(x, y) && !outside[y * nx + x] {
+                outside[y * nx + x] = true;
+                stack.push((x, y));
+            }
+        }
+    }
+    while let Some((x, y)) = stack.pop() {
+        for (dx, dy) in [(1i64, 0), (-1, 0), (0, 1), (0, -1)] {
+            let nxp = x as i64 + dx;
+            let nyp = y as i64 + dy;
+            if nxp >= 0 && nyp >= 0 && (nxp as usize) < nx && (nyp as usize) < ny {
+                let (u, v) = (nxp as usize, nyp as usize);
+                if !solid(u, v) && !outside[v * nx + u] {
+                    outside[v * nx + u] = true;
+                    stack.push((u, v));
+                }
+            }
+        }
+    }
+
+    // Enclosed void = non-solid, non-outside cells.
+    let mut area_mm2 = 0.0f64;
+    for y in 0..ny {
+        for x in 0..nx {
+            if !solid(x, y) && !outside[y * nx + x] {
+                area_mm2 += mask.spacing.0 * mask.spacing.1;
+            }
+        }
+    }
+    if area_mm2 <= 0.0 {
+        return f64::NAN;
+    }
+    2.0 * (area_mm2 / core::f64::consts::PI).sqrt()
 }
 
 #[wasm_bindgen]
@@ -79,7 +141,50 @@ impl WasmMeshPipeline {
             mean_modulus: mesh.mean_modulus(),
             max_modulus: mesh.max_modulus(),
             mesh,
+            mask,
         })
+    }
+
+    /// Equivalent diameter (mm) of the largest enclosed void (lumen /
+    /// medullary canal) on the mid slice — the patient-specific vessel or
+    /// canal sizing input for deployment.
+    pub fn enclosed_void_diameter(&self) -> f64 {
+        enclosed_void_diameter(&self.mask)
+    }
+
+    /// The full mesh in the tpt-medical CSV v1 format (feeds the viewer).
+    pub fn mesh_csv(&self) -> String {
+        let mut buf = Vec::new();
+        self.mesh
+            .write_csv_to(&mut buf)
+            .expect("CSV write to memory cannot fail");
+        String::from_utf8_lossy(&buf).into_owned()
+    }
+
+    /// Number of elements when solving on a stride-`s` decimated grid
+    /// (real-time preview sizing aid).
+    pub fn decimated_element_count(&self, stride: u32) -> u32 {
+        match decimate_mask(&self.mask, stride as usize) {
+            Some(m) => m.solid_count() as u32,
+            None => 0,
+        }
+    }
+
+    /// Solves the stance load case on a stride-`s` decimated grid — the
+    /// real-time in-browser preview path (full-resolution solves belong in
+    /// native pipelines).
+    pub fn solve_stance_load_decimated(
+        &self,
+        load_newtons: f64,
+        stride: u32,
+    ) -> Result<WasmStressResult, JsValue> {
+        let Some(coarse) = decimate_mask(&self.mask, stride as usize) else {
+            return Err(JsValue::from_str("stride must be >= 1"));
+        };
+        let mesh = tpt_med_meshing::MedicalMesher::default()
+            .voxels_to_hex_mesh(&coarse)
+            .map_err(to_js)?;
+        solve_stance(&mesh, load_newtons)
     }
 
     /// Number of mesh nodes.
@@ -167,17 +272,12 @@ impl WasmStressResult {
     }
 }
 
-/// Runs the linear FEM solve on a pipeline's mesh.
-///
-/// Nodes on the bottom band (`z <= min_z`) are fully fixed; a total
-/// compressive force of `load_newtons` is shared uniformly over the nodes
-/// of the top band (`z >= min_z + 0.85·Δz`).
-#[wasm_bindgen]
-pub fn wasm_solve_stance_load(
-    pipeline: &WasmMeshPipeline,
+/// Shared stance-load solve over a mesh (full and decimated paths).
+fn solve_stance(
+    mesh: &tpt_med_meshing::VoxelHexMesh,
     load_newtons: f64,
 ) -> Result<WasmStressResult, JsValue> {
-    let model = tpt_med_biomechanics::BiomechanicsModel::from_voxel_mesh(&pipeline.mesh);
+    let model = tpt_med_biomechanics::BiomechanicsModel::from_voxel_mesh(mesh);
     let (mut min_z, mut max_z) = (f64::INFINITY, f64::NEG_INFINITY);
     for n in &model.nodes {
         min_z = min_z.min(n.z);
@@ -208,6 +308,81 @@ pub fn wasm_solve_stance_load(
         mean_von_mises: r.mean_von_mises(),
         iterations: r.stats.iterations,
     })
+}
+
+/// Max-pool decimation of a mask by `stride` (anatomy-preserving coarse
+/// grid). Returns `None` for stride 0.
+fn decimate_mask(
+    mask: &tpt_med_meshing::SegmentationMask,
+    stride: usize,
+) -> Option<tpt_med_meshing::SegmentationMask> {
+    if stride == 0 {
+        return None;
+    }
+    if stride == 1 {
+        return Some(mask.clone());
+    }
+    let (nx, ny, nz) = mask.dims;
+    let cnx = nx.div_ceil(stride);
+    let cny = ny.div_ceil(stride);
+    let cnz = nz.div_ceil(stride);
+    let mut voxels = vec![false; cnx * cny * cnz];
+    let mut hu = vec![f64::NAN; cnx * cny * cnz];
+    for cz in 0..cnz {
+        for cy in 0..cny {
+            for cx in 0..cnx {
+                let mut solid = false;
+                let mut peak = f64::NAN;
+                for dz in 0..stride {
+                    for dy in 0..stride {
+                        for dx in 0..stride {
+                            let (x, y, z) = (cx * stride + dx, cy * stride + dy, cz * stride + dz);
+                            if x >= nx || y >= ny || z >= nz {
+                                continue;
+                            }
+                            let i = (z * ny + y) * nx + x;
+                            if mask.voxels[i] {
+                                solid = true;
+                            }
+                            if mask.hu[i].is_finite() && (!peak.is_finite() || mask.hu[i] > peak) {
+                                peak = mask.hu[i];
+                            }
+                        }
+                    }
+                }
+                let ci = (cz * cny + cy) * cnx + cx;
+                voxels[ci] = solid;
+                hu[ci] = peak;
+            }
+        }
+    }
+    Some(tpt_med_meshing::SegmentationMask {
+        dims: (cnx, cny, cnz),
+        origin: mask.origin,
+        row_dir: mask.row_dir,
+        col_dir: mask.col_dir,
+        slice_dir: mask.slice_dir,
+        spacing: (
+            mask.spacing.0 * stride as f64,
+            mask.spacing.1 * stride as f64,
+            mask.spacing.2 * stride as f64,
+        ),
+        voxels,
+        hu,
+    })
+}
+
+/// Runs the linear FEM solve on a pipeline's mesh.
+///
+/// Nodes on the bottom band (`z <= min_z`) are fully fixed; a total
+/// compressive force of `load_newtons` is shared uniformly over the nodes
+/// of the top band (`z >= min_z + 0.85·Δz`).
+#[wasm_bindgen]
+pub fn wasm_solve_stance_load(
+    pipeline: &WasmMeshPipeline,
+    load_newtons: f64,
+) -> Result<WasmStressResult, JsValue> {
+    solve_stance(&pipeline.mesh, load_newtons)
 }
 
 /// In-browser stent deployment screening (radial-force model).

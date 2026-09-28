@@ -274,6 +274,20 @@ Tracked in `todo.md`. Summary of the user-visible change here:
   `WasmMeshPipeline`; uniform traction distribution fix in
   `wasm_solve_stance_load`.
 
+### Added — Phase 8 extension: business wedge
+- `web/stent-sim/` — white-label stent deployment simulator: live
+  deployment metrics (COF, contact pressure, recoil) and a pressure-sweep
+  chart over the `tpt-med-wasm` engine, with vessel compliance and a
+  `WHITE_LABEL` rebranding config block.
+- `web/demo/` — end-to-end in-browser demo: CT upload → WASM
+  segment/mesh → FEM stance solve (×2 decimated real-time preview) →
+  CT-measured canal/lumen diameter (mid-slice enclosed-void analysis) →
+  stent deployment, with WebGL wireframe rendering and viewer hand-off.
+- `tpt-med-wasm` — new APIs: `mesh_csv`, `enclosed_void_diameter`,
+  `solve_stance_load_decimated` (max-pool decimation for real-time preview).
+- `web/build-wasm.sh` — one-command engine build + wasm-bindgen glue
+  generation (version-matched CLI); `web/README.md` run instructions.
+
 ### Added — Cross-cutting
 - Golden reference datasets (`test-data/golden/{solid,fluid,devices,regulatory}`)
   with documented analytical or literature basis.

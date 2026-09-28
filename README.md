@@ -92,6 +92,11 @@ full imaging-to-simulation pipeline inside the browser. Patient DICOM scans
 never leave the hospital network. The repository's test data is **synthetic
 only** — never commit real patient data.
 
+Browser apps under [`web/`](web/README.md): the surgical planning viewer,
+the **white-label `<tpt-stent-simulator>` web component**, and the
+end-to-end **CT → mesh → FEM → stent** in-browser demo
+(`scripts/build-web.sh` builds the engine).
+
 ## Browser Demos
 
 Build the engine glue once, then serve the repository root:

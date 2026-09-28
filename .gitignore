@@ -34,6 +34,9 @@ Thumbs.db
 /docs/api/
 /site/
 
+# Generated WASM bindings (web/build-wasm.sh)
+/web/pkg/
+
 # wasm-bindgen glue output (regenerate with scripts/build-web.ps1|.sh)
 /web/pkg/
 
