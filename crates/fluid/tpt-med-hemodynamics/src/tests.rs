@@ -218,7 +218,7 @@ fn cg_pressure_solve_reproduces_a_manufactured_solution() {
         *v = -*v;
     }
 
-    let (phi_cg, cg_iters) = solver.solve_poisson(&b);
+    let (phi_cg, cg_iters) = solver.solve_poisson(&b, 0.0);
     assert!(cg_iters > 0);
     let scale = phi_exact.iter().cloned().fold(0.0f64, f64::max);
     let max_err = phi_cg
@@ -321,4 +321,128 @@ fn cg_iterations_are_accounted_per_step() {
     assert!(after_one > 0, "CG reported no iterations");
     solver.step();
     assert!(solver.last_pressure_solve_iterations > 0);
+}
+
+#[test]
+fn windkessel_coupling_advances_the_boundary_model_on_the_delivered_flow() {
+    use tpt_med_cardiovascular::{CoupledWindkessel, WindkesselModel};
+    let domain = FluidDomain::cylinder(16, 10, 3.5, 0.5, 0);
+    let config = SolverConfig {
+        dt: 5.0e-4,
+        poisson_iterations: 400,
+        include_convection: false,
+        viscosity_relaxation: 0.2,
+        density: 1.06e-3,
+        pressure_solver: PressureSolver::Sor,
+    };
+    let inlet = 30.0;
+    let dt = config.dt;
+    let mut solver = HemodynamicsSolver::new(
+        domain,
+        BloodModel::Newtonian { viscosity: 0.08 },
+        inlet,
+        config,
+    );
+    // The mask's physical radius is radius_cells · spacing; the delivered
+    // flow (stair-step mask) lands within ~15 % of that analytic area.
+    let area = core::f64::consts::PI * (3.5 * 0.5f64).powi(2);
+    let nominal_flow = inlet * area;
+    let wk_model = WindkesselModel {
+        r_c: 0.0002,
+        r_p: 0.001,
+        c: 1000.0,
+        p_out: 0.001,
+    };
+    let mut wk = CoupledWindkessel::new(wk_model, nominal_flow);
+
+    let steps = 600;
+    let mut flows = Vec::with_capacity(steps);
+    for _ in 0..steps {
+        solver.step_coupled(&mut wk);
+        flows.push(solver.stats(steps).outlet_flow);
+    }
+    let stats = solver.stats(steps);
+
+    // Conservation: what the boundary model was fed is what the domain
+    // delivered (the stair-step outlet artifact stays within the crate's
+    // documented 10 % band).
+    let delivered = flows[flows.len() - 1];
+    assert!(
+        (stats.inlet_flow - delivered).abs() < 0.10 * stats.inlet_flow,
+        "inlet {:.1} vs delivered {:.1}",
+        stats.inlet_flow,
+        delivered
+    );
+
+    // The coupling contract, exactly: replaying the delivered-flow
+    // history through the boundary model's own RK4 must reproduce the
+    // advanced state to machine precision.
+    let mut replay = wk_model.steady_state_pressure(nominal_flow);
+    for &q in &flows {
+        replay = wk_model.step_rk4(replay, q, dt);
+    }
+    assert!(
+        (replay - wk.pressure()).abs() < 1e-12,
+        "replay {replay} vs wk {}",
+        wk.pressure()
+    );
+
+    // Gauge: the stored field is relative to the outlet reference, so the
+    // outlet plane's stored pressure vanishes (converged corrections are
+    // small against the anchor's absolute level).
+    let outlet_mpa = stats.mean_pressure_outlet * solver.config.density / 1.0e6;
+    assert!(
+        outlet_mpa.abs() < 0.05,
+        "gauge-relative outlet {outlet_mpa:.6} MPa"
+    );
+    // And the anchored run still drives a real pressure drop.
+    assert!(stats.mean_pressure_inlet > 0.0);
+}
+
+#[test]
+fn windkessel_pressure_decays_when_the_flow_stops() {
+    use tpt_med_cardiovascular::{CoupledWindkessel, WindkesselModel};
+    let domain = FluidDomain::cylinder(12, 8, 3.0, 0.5, 0);
+    let config = SolverConfig {
+        dt: 5.0e-4,
+        poisson_iterations: 300,
+        include_convection: false,
+        viscosity_relaxation: 0.2,
+        density: 1.06e-3,
+        pressure_solver: PressureSolver::Sor,
+    };
+    let mut solver = HemodynamicsSolver::new(
+        domain,
+        BloodModel::Newtonian { viscosity: 0.08 },
+        30.0,
+        config,
+    );
+    let wk_model = WindkesselModel {
+        r_c: 0.0002,
+        r_p: 0.001,
+        c: 1000.0,
+        p_out: 0.001,
+    };
+    let mut wk = CoupledWindkessel::new(wk_model, 30.0 * 25.0);
+    for _ in 0..100 {
+        solver.step_coupled(&mut wk);
+    }
+    let before = wk.pressure();
+    // Cut the inflow: the WK relaxes toward p_out and the coupled outlet
+    // follows it down.
+    solver.inlet_velocity = 0.0;
+    for _ in 0..200 {
+        solver.step_coupled(&mut wk);
+        let _ = solver.step_coupled(&mut wk);
+    }
+    assert!(
+        wk.pressure() < before,
+        "pressure must decay with no flow: {before} -> {}",
+        wk.pressure()
+    );
+    let decayed_toward = wk_model.p_out;
+    assert!(
+        (wk.pressure() - decayed_toward).abs() < (before - decayed_toward).abs(),
+        "must move toward p_out"
+    );
 }

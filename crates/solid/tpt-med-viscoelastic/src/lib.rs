@@ -255,6 +255,72 @@ impl PronyIntegrator {
     }
 }
 
+/// Fung-type **quasi-linear viscoelasticity (QLV)**: the non-linear
+/// generalisation that applies the Prony series to a *hyperelastic*
+/// stress history. Where [`PronyIntegrator`] superposes in strain
+/// (linear regime), QLV superposes in stress:
+///
+/// ```text
+/// σ(t) = Σ_k g(t − t_k)·Δσ^e_k,   g = G(t)/G0,  Σ_k Δσ^e_k = σ^e(t)
+/// ```
+///
+/// with `σ^e` the **instantaneous elastic** response of a hyperelastic
+/// law evaluated along the (possibly finite-strain) deformation history
+/// — the hereditary integral Fung introduced for soft tissue. The kernel
+/// is the crate's own normalised relaxation modulus, so the linear regime
+/// reduces exactly to the [`PronyIntegrator`] behaviour.
+///
+/// Accuracy note: the discrete form samples the hereditary integral
+/// first-order (rectangle rule on the elastic-stress increments); a step
+/// elastic history is represented *exactly*.
+pub struct QuasiLinearViscoelastic {
+    material: ViscoelasticMaterial,
+}
+
+impl QuasiLinearViscoelastic {
+    /// Builds the QLV wrapper from the material whose normalised
+    /// relaxation modulus supplies the kernel.
+    pub fn new(material: &ViscoelasticMaterial) -> Self {
+        material.validate().expect("valid Prony series");
+        Self {
+            material: material.clone(),
+        }
+    }
+
+    /// Reduced relaxation kernel `g(t) = G(t)/G0 ∈ (g∞, 1]`, `g(0) = 1`.
+    pub fn kernel(&self, time: f64) -> f64 {
+        self.material.relaxation_modulus(time) / self.material.g0
+    }
+
+    /// The QLV stress history at `times`, given the instantaneous elastic
+    /// stress `elastic_stress` sampled at the same instants (both evenly
+    /// or unevenly spaced; `times` must be ascending and start at the
+    /// history's origin). The elastic stress may be any (non-linear)
+    /// function of the deformation — a `tpt-med-tissue` model's stress
+    /// along the strain path, for instance.
+    pub fn stress_history(&self, times: &[f64], elastic_stress: &[f64]) -> Vec<f64> {
+        assert_eq!(times.len(), elastic_stress.len(), "histories must pair");
+        assert!(!times.is_empty(), "empty history");
+        let mut out = Vec::with_capacity(times.len());
+        let mut previous = 0.0f64;
+        for (n, &t) in times.iter().enumerate() {
+            // Rectangle rule on the elastic-stress increments; the jump
+            // 0 → σ^e[0] enters at index 0 with kernel weight g(t − t_0).
+            let mut sigma = 0.0f64;
+            let mut prior_stress = 0.0f64;
+            for k in 0..=n {
+                let increment = elastic_stress[k] - prior_stress;
+                sigma += self.kernel(t - times[k]) * increment;
+                prior_stress = elastic_stress[k];
+            }
+            out.push(sigma);
+            let _ = previous;
+            previous = t;
+        }
+        out
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -272,6 +338,84 @@ mod tests {
                     tau_i: 10.0,
                 },
             ],
+        }
+    }
+
+    #[test]
+    fn qlv_step_history_is_exact() {
+        let material = ViscoelasticMaterial {
+            g0: 10.0,
+            prony: vec![
+                PronyTerm {
+                    g_i: 0.3,
+                    tau_i: 0.5,
+                },
+                PronyTerm {
+                    g_i: 0.2,
+                    tau_i: 5.0,
+                },
+            ],
+        };
+        let q = QuasiLinearViscoelastic::new(&material);
+        // A step elastic stress: QLV is exactly g(t)·σ0.
+        let times = [0.0, 0.1, 0.5, 1.0, 10.0];
+        let sigma_e = [5.0, 5.0, 5.0, 5.0, 5.0];
+        let out = q.stress_history(&times, &sigma_e);
+        for (i, &t) in times.iter().enumerate() {
+            let expected = q.kernel(t) * 5.0;
+            assert!(
+                (out[i] - expected).abs() < 1e-12,
+                "t={t}: {} vs {expected}",
+                out[i]
+            );
+        }
+        // Kernel bounds: g(0) = 1, decaying toward the equilibrium share.
+        assert!((q.kernel(0.0) - 1.0).abs() < 1e-12);
+        assert!(q.kernel(10.0) < 1.0);
+        assert!(q.kernel(10.0) > material.equilibrium_modulus() / material.g0 - 1e-9);
+    }
+
+    #[test]
+    fn qlv_reduces_to_the_prony_integrator_in_the_linear_regime() {
+        let material = ViscoelasticMaterial {
+            g0: 3.0,
+            prony: vec![
+                PronyTerm {
+                    g_i: 0.4,
+                    tau_i: 0.2,
+                },
+                PronyTerm {
+                    g_i: 0.3,
+                    tau_i: 1.5,
+                },
+            ],
+        };
+        // Linear ramp to γ = 0.01 over 1 s, then hold: the elastic stress
+        // is the instantaneous G0·γ, so QLV must reproduce the exact
+        // recurrence of PronyIntegrator to the rectangle rule's accuracy.
+        let dt = 0.001;
+        let mut integrator = PronyIntegrator::new(&material);
+        let mut times = Vec::new();
+        let mut elastic = Vec::new();
+        for k in 0..=2000 {
+            let t = k as f64 * dt;
+            let gamma = 0.01 * (t / 1.0).min(1.0);
+            times.push(t);
+            elastic.push(material.g0 * gamma);
+            integrator.step(gamma, dt);
+            // Compare every 200 steps (skip the exact-recurrence-vs-
+            // quadrature tail where the hold dominates; the two agree to
+            // first order in dt there as well).
+            if k % 200 == 0 && k > 0 {
+                let q = QuasiLinearViscoelastic::new(&material);
+                let qlv = q.stress_history(&times, &elastic);
+                let reference = integrator.stress();
+                assert!(
+                    (qlv[qlv.len() - 1] - reference).abs() < 5e-4,
+                    "k={k}: QLV {} vs integrator {reference}",
+                    qlv[qlv.len() - 1]
+                );
+            }
         }
     }
 

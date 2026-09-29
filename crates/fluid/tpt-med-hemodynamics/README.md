@@ -66,6 +66,12 @@ browser, in seconds, without a licence.
   exposes the centreline profile for direct comparison with theory.
 - `PLASMA` constant (0.0012 Pa·s) for reference.
 
+- **Windkessel-driven outlet** — `step_coupled` imposes a
+  `tpt-med-cardiovascular` `CoupledWindkessel`'s pressure as the outlet
+  reference each step and feeds it the measured outlet flow: a driven,
+  rather than prescribed, boundary. Reported pressures become relative
+  to that reference.
+
 ## Conventions
 
 - Lengths **mm**, velocity **mm/s**, time **s**.

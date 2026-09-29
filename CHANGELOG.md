@@ -288,6 +288,15 @@ Tracked in `todo.md`. Summary of the user-visible change here:
 - `web/build-wasm.sh` — one-command engine build + wasm-bindgen glue
   generation (version-matched CLI); `web/README.md` run instructions.
 
+### Added — Backlog follow-up, continued (2026-10-01)
+`tpt-med-cartilage` (first-order shear: a closed form, the fluid never
+engages), `tpt-med-viscoelastic` (Fung-type quasi-linear viscoelasticity
+over hyperelastic stress histories), and `tpt-med-hemodynamics`
+(`step_coupled`: a Windkessel-driven outlet boundary with exact
+flow-history replay verification; fixes a latent spurious-gradient defect
+that large Poisson anchor values would have caused in both pressure
+solvers).
+
 ### Added — Backlog follow-up sweep (2026-10-01)
 The tractable remainder of the per-crate backlog: `tpt-med-tissue`
 (plane-strain/plane-stress wrappers over the full 3×3 `F`), 

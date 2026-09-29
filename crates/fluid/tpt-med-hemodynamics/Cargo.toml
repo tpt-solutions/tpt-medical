@@ -13,6 +13,7 @@ keywords = ["cfd", "navier-stokes", "blood-flow", "wss", "osi"]
 categories = ["science", "simulation", "mathematics"]
 
 [dependencies]
+tpt-med-cardiovascular = { path = "../tpt-med-cardiovascular", version = "0.1.0" }
 tpt-med-meshing = { path = "../../imaging/tpt-med-meshing", version = "0.1.0" }
 tpt-med-geometry = { path = "../../core/tpt-med-geometry", version = "0.1.0" }
 tpt-med-units = { path = "../../core/tpt-med-units", version = "0.1.0" }

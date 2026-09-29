@@ -106,6 +106,10 @@ pub struct HemodynamicsSolver {
     /// Iterations used by the most recent pressure solve (SOR sweeps or CG
     /// iterations) — the number to watch when cost accounting a run.
     pub last_pressure_solve_iterations: usize,
+    /// Dirichlet value of the projection at the outlet layer, in the
+    /// solver's internal mm²/s² units. Zero (the gauge) unless a
+    /// Windkessel-driven run sets it.
+    pub(crate) outlet_anchor: f64,
 }
 
 impl HemodynamicsSolver {
@@ -134,6 +138,7 @@ impl HemodynamicsSolver {
             config,
             inlet_velocity,
             last_pressure_solve_iterations: 0,
+            outlet_anchor: 0.0,
         }
     }
 
@@ -379,10 +384,10 @@ impl HemodynamicsSolver {
     /// Pressure-Poisson solve for φ with Neumann walls and a Dirichlet
     /// φ = 0 outlet layer, dispatching on
     /// [`SolverConfig::pressure_solver`]. Returns `(φ, iterations_used)`.
-    pub(crate) fn solve_poisson(&self, rhs: &[f64]) -> (Vec<f64>, usize) {
+    pub(crate) fn solve_poisson(&self, rhs: &[f64], outlet_anchor: f64) -> (Vec<f64>, usize) {
         match self.config.pressure_solver {
-            PressureSolver::Sor => self.solve_poisson_sor(rhs),
-            PressureSolver::ConjugateGradient => self.solve_poisson_cg(rhs),
+            PressureSolver::Sor => self.solve_poisson_sor(rhs, outlet_anchor),
+            PressureSolver::ConjugateGradient => self.solve_poisson_cg(rhs, outlet_anchor),
         }
     }
 
@@ -395,24 +400,34 @@ impl HemodynamicsSolver {
     ///
     /// Exits when the ℓ2 residual falls below `1e-6` of the right-hand
     /// side's norm, or at the `poisson_iterations` cap.
-    fn solve_poisson_cg(&self, rhs: &[f64]) -> (Vec<f64>, usize) {
+    fn solve_poisson_cg(&self, rhs: &[f64], outlet_anchor: f64) -> (Vec<f64>, usize) {
         let n = rhs.len();
         // The SOR sweep's fixed point is `denom·φ − Σ w·φ_nb = −rhs`, i.e.
         // A = −∇²; CG must solve the same system, so the right-hand side
         // enters negated.
         let mut b: Vec<f64> = rhs.iter().map(|&v| -v).collect();
         let (nx, _ny, _nz) = self.domain.dims;
-        // The outlet fluid layer is φ = 0: its equation is discarded, as
-        // the SOR path overwrites it each sweep.
+        // The outlet fluid layer is Dirichlet at `outlet_anchor`: its row
+        // is the identity, and a Dirichlet value is NOT part of the
+        // negated-Laplacian convention (only ∇² equations are negated), so
+        // the rhs carries the anchor as-is.
         for idx in 0..n {
             let (i, _j, _k) = self.domain.coords(idx);
             if i + 1 == nx {
-                b[idx] = 0.0;
+                b[idx] = outlet_anchor;
             }
         }
 
-        let mut x = vec![0.0; n];
-        let mut r = b.clone();
+        // Start at the anchor level: the Dirichlet constant is then exact
+        // from iteration zero and CG only solves the (small) gauge-
+        // relative part — starting from zero would spend the whole
+        // iteration budget climbing a huge constant.
+        let mut x = vec![outlet_anchor; n];
+        let mut r = vec![0.0; n];
+        self.laplacian_apply(&x, &mut r);
+        for (ri, &bi) in r.iter_mut().zip(&b) {
+            *ri = bi - *ri;
+        }
         let norm_b = r.iter().map(|&v| v * v).sum::<f64>().sqrt();
         if norm_b == 0.0 {
             return (x, 0);
@@ -549,10 +564,12 @@ impl HemodynamicsSolver {
     /// ω = 1.9 converges an order of magnitude faster than Jacobi on this
     /// grid, which is required to keep the post-projection divergence
     /// near zero. Returns `(φ, sweeps_used)`.
-    fn solve_poisson_sor(&self, rhs: &[f64]) -> (Vec<f64>, usize) {
+    fn solve_poisson_sor(&self, rhs: &[f64], outlet_anchor: f64) -> (Vec<f64>, usize) {
         let (nx, ny, nz) = self.domain.dims;
         let (dx, dy, dz) = self.domain.spacing;
-        let mut phi = vec![0.0; nx * ny * nz];
+        // Start at the anchor level (see solve_poisson_cg): the Dirichlet
+        // constant is exact from sweep zero.
+        let mut phi = vec![outlet_anchor; nx * ny * nz];
         let denom = 2.0 * (1.0 / (dx * dx) + 1.0 / (dy * dy) + 1.0 / (dz * dz));
         let omega = 1.9;
         let rhs_scale = rhs.iter().fold(0.0f64, |m, &v| m.max(v.abs())).max(1e-10);
@@ -572,7 +589,7 @@ impl HemodynamicsSolver {
                             continue;
                         }
                         if i + 1 == nx {
-                            phi[idx] = 0.0; // Dirichlet outlet
+                            phi[idx] = outlet_anchor; // Dirichlet outlet
                             continue;
                         }
                         // Neumann walls: mirror the centre value across
@@ -639,7 +656,7 @@ impl HemodynamicsSolver {
         let div = self.divergence();
         let dt = self.config.dt;
         let rhs: Vec<f64> = div.iter().map(|&d| d / dt).collect();
-        let (phi, iterations) = self.solve_poisson(&rhs);
+        let (phi, iterations) = self.solve_poisson(&rhs, self.outlet_anchor);
         self.last_pressure_solve_iterations = iterations;
 
         let (nx, ny, nz) = self.domain.dims;
@@ -696,9 +713,12 @@ impl HemodynamicsSolver {
             }
         }
 
-        // Pressure accumulation.
+        // Pressure accumulation, gauge-relative: with a Windkessel anchor
+        // the Dirichlet level would otherwise be integrated once per step,
+        // so the stored field carries only the correction relative to the
+        // outlet reference (the absolute level is the boundary model's).
         for (pp, &ph) in self.p.iter_mut().zip(&phi) {
-            *pp += ph;
+            *pp += ph - self.outlet_anchor;
         }
         // Non-Newtonian viscosity update.
         if !matches!(self.blood, BloodModel::Newtonian { .. }) {
@@ -742,6 +762,45 @@ impl HemodynamicsSolver {
                 }
             }
         }
+    }
+
+    /// One full step with a **Windkessel-driven outlet** (`tpt-med-
+    /// cardiovascular`'s `CoupledWindkessel`): the projection's Dirichlet
+    /// anchor is set to the boundary model's current pressure — converted
+    /// to the solver's internal mm²/s² units via `p·10⁶/ρ` — and after
+    /// the step the measured outlet flow advances the 0-D model. Explicit
+    /// staggered coupling: the imposed absolute pressure level acts
+    /// through the pressure field, the flow feedback lags one step (the
+    /// same stability posture as `CoupledWindkessel` itself; check
+    /// `WindkesselModel::time_constant` against `dt` at the call site).
+    ///
+    /// After a coupled run, the reported pressures are **gauge-relative
+    /// to the boundary model's outlet pressure**: the absolute outlet
+    /// pressure *is* `wk.pressure()`, and absolute values elsewhere are
+    /// the reported field plus that reference (converted with
+    /// `p_mpa = Π·ρ/10⁶`).
+    pub fn step_coupled(&mut self, wk: &mut tpt_med_cardiovascular::CoupledWindkessel) -> f64 {
+        self.outlet_anchor = wk.pressure() * 1.0e6 / self.config.density;
+        let change = self.step();
+        let flow = self.outlet_flow();
+        wk.advance(flow, self.config.dt);
+        change
+    }
+
+    /// Face-integrated flow through the outlet plane (mm³/s).
+    fn outlet_flow(&self) -> f64 {
+        let (nx, ny, nz) = self.domain.dims;
+        let (_dx, dy, dz) = self.domain.spacing;
+        let cell_face = dy * dz;
+        let mut outlet = 0.0;
+        for j in 0..ny {
+            for k in 0..nz {
+                if self.domain.is_fluid((nx - 1) as i64, j as i64, k as i64) {
+                    outlet += self.u[self.uid(nx, j, k)] * cell_face;
+                }
+            }
+        }
+        outlet
     }
 
     /// Marches to steady state; stops when the velocity change per step is

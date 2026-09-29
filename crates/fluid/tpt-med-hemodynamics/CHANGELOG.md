@@ -12,6 +12,22 @@ changes for consumers of this crate.
 ## [Unreleased]
 
 ### Added
+- `step_coupled(&mut CoupledWindkessel)`: **coupling to
+  `tpt-med-cardiovascular` for a driven outlet boundary** — the
+  projection's Dirichlet anchor is set to the boundary model's current
+  pressure (converted `p·10⁶/ρ` into the solver's mm²/s² units) and the
+  measured outlet flow advances the 0-D model each step (explicit
+  staggered coupling; the usual `time_constant`-vs-`dt` check applies).
+  Both Poisson solvers now start from the anchor level — the constant
+  mode is exact from iteration zero, which a large anchor otherwise
+  turns into a spurious outlet gradient — and the stored pressure field
+  accumulates only the gauge-relative correction (reported pressures
+  become relative to the boundary model's outlet pressure; the absolute
+  level is `wk.pressure()`). Verified by an exact replay assertion: the
+  flow history pushed through the boundary model's own RK4 reproduces
+  the advanced state to machine precision, plus flow conservation.
+  `tpt-med-cardiovascular` becomes a dependency (acyclic; it depends on
+  nothing here).
 - Crate README stating the screening-grade scope up front — laminar only, no
   body-fitted mesh, no turbulence model — and directing high-fidelity users to
   `tpt-sci-cfd-core` / `tpt-sci-hemodynamics`.
@@ -35,8 +51,7 @@ changes for consumers of this crate.
   fluid–structure boundary.
 - Optional local wall refinement, so peak WSS at a geometric corner stops being
   resolution dependent.
-- Coupling to `tpt-med-cardiovascular` for a driven, rather than prescribed,
-  boundary condition.
+
 - Multigrid pressure solve (a level beyond the new CG option) if CG's
   √-condition-number scaling is ever insufficient on production grids.
 

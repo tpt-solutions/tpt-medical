@@ -527,6 +527,7 @@ gating input is a purchase of ISO/IEC 15444-2, not engineering time.
 ### `tpt-med-cartilage`
 
 - [ ] **Additional boundary conditions: unconfined compression and shear.**
+  **Shear half delivered (2026-10-01): `solid_shear_modulus` — first-order biphasic shear is volumetrically silent, so the fluid never pressurises and the response is a closed form at all times (permeability-independent; verified). Unconfined compression remains open above.**
 - [ ] **Nonlinear biphasic theory, and a coupling between permeability and strain.**
 - [ ] **A lubrication/repulsion term for the contact interface, so the model can be driven by a contact solver rather than a prescribed step load.**
 - [ ] **Fibrous-cartilage support (a fibre-reinforced solid matrix).**
@@ -559,7 +560,8 @@ gating input is a purchase of ISO/IEC 15444-2, not engineering time.
   **Done (2026-09-30): `PressureSolver::ConjugateGradient` — Jacobi-preconditioned, matrix-free on the masked grid, verified against a manufactured solution of the discrete operator (which caught a real sign bug: the SOR fixed point is the SPD negative Laplacian, so CG's rhs enters negated) and by the full Poiseuille march under CG. ~40 iterations vs SOR's 400-sweep cap on the verification tube. Default stays SOR so golden datasets and the bench baseline are unchanged; multigrid remains future work.**
 - [ ] **Conjugate heat transfer and wall compliance, enabling a coupled fluid–structure boundary.**
 - [ ] **Optional local wall refinement, so peak WSS at a geometric corner stops being resolution dependent.**
-- [ ] **Coupling to `tpt-med-cardiovascular` for a driven, rather than prescribed, boundary condition.**
+- [x] **Coupling to `tpt-med-cardiovascular` for a driven, rather than prescribed, boundary condition.**
+  **Done (2026-10-01): `step_coupled` — the Windkessel's pressure is imposed as the projection's Dirichlet anchor (both Poisson solvers start from the anchor level, fixing a real spurious-gradient defect at large anchors) and the measured outlet flow advances the 0-D model; verified by exact replay of the flow history through the boundary model's RK4. Explicit staggered coupling; the reported field is gauge-relative to the boundary reference.**
 
 ### `tpt-med-implant-sizing`
 
@@ -628,6 +630,7 @@ gating input is a purchase of ISO/IEC 15444-2, not engineering time.
 - [x] **Temperature shifting of relaxation times (WLF and Arrhenius relations), so `τᵢ` values can be generated rather than supplied.**
   **Done (2026-09-29): `TemperatureShift::Wlf/Arrhenius` + `shifted_material` — τᵢ(T) generated from cited C1/C2 or Eₐ.**
 - [ ] **Non-linear hyperviscoelastic formulations, applying the Prony series to the hyperelastic energy in finite strain rather than in the linear-viscoelastic regime.**
+  **Fung-type QLV delivered (2026-10-01): `QuasiLinearViscoelastic` — the Prony kernel convolved with a hyperelastic stress history (step histories exact; linear-regime equivalence with `PronyIntegrator` asserted). The internal-variable finite-strain formulation remains open as the thermodynamically complete alternative.**
 - [x] **A time-integration helper, so callers driving a finite-element inner loop do not each reimplement the recurrence.**
   **Done (2026-09-29): `PronyIntegrator` — exact exponential recurrence; matches G(dt) exactly and the analytic ramp response.**
 

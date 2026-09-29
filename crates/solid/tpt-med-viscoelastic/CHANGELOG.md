@@ -12,6 +12,16 @@ changes for consumers of this crate.
 ## [Unreleased]
 
 ### Added
+- `QuasiLinearViscoelastic`: **Fung-type quasi-linear viscoelasticity** —
+  the non-linear generalisation that applies the Prony series to a
+  *hyperelastic* stress history (the hereditary superposition σ(t) =
+  Σ g(t−t_k)·Δσ^e_k, kernel = the material's normalised relaxation
+  modulus). The elastic history may be any finite-strain stress from a
+  `tpt-med-tissue` model; a step elastic history is represented exactly,
+  and in the linear regime QLV reduces to `PronyIntegrator` (asserted
+  against it on a ramp-and-hold to first order in the step size). The
+  rectangle-on-increments discretisation is first-order for smooth
+  histories, documented on the type.
 - `TemperatureShift` (`Wlf` / `Arrhenius`) with `shift_factor` and
   `shifted_material`: master-curve shifting so `τᵢ(T) = τᵢ_ref · aT(T)` is
   generated rather than supplied. No built-in material constants — C1/C2 or
@@ -25,11 +35,10 @@ changes for consumers of this crate.
   glass-modulus change does not invalidate a fitted series.
 
 ### Planned
-  `τᵢ` values can be generated rather than supplied.
-- Non-linear hyperviscoelastic formulations, applying the Prony series to the
-  hyperelastic energy in finite strain rather than in the linear-viscoelastic
-  regime.
-  not each reimplement the recurrence.
+- The internal-variable finite-strain formulation (multiplicatively split
+  branches with an exact per-step update) — the thermodynamically complete
+  alternative to the delivered Fung-type QLV superposition, needed only when
+  large 3-D deformations and full tangent consistency are required together.
 
 ### Notes
 - The series is defined **in shear**; the volumetric response comes from the

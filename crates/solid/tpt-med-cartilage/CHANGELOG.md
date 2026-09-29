@@ -12,13 +12,20 @@ changes for consumers of this crate.
 ## [Unreleased]
 
 ### Added
+- `BiphasicMaterial::solid_shear_modulus`: the **shear half of the
+  unconfined-shear boundary-condition item** — first-order biphasic shear
+  produces no volumetric strain, so the interstitial fluid never
+  pressurises and the response is the solid matrix at all times
+  (`G = H_A(1−2ν_s)/(2(1−ν_s))`, permeability-independent; `None` at
+  `ν_s ≥ ½`). A closed form rather than a solve, which is *why* there is
+  no shear transient to implement.
 - Crate README explaining why poroelastic rather than elastic: interstitial
   fluid transport, not solid elasticity, dominates the time-dependent
   response, and a purely elastic model gets the equilibrium roughly right and
   the timing completely wrong.
 
 ### Planned
-- Additional boundary conditions: unconfined compression and shear.
+- Unconfined compression (its analytic transient needs the classical Bessel-series coefficients; shear, the other half, is delivered above as a closed form).
 - Nonlinear biphasic theory, and a coupling between permeability and strain.
 - A lubrication/repulsion term for the contact interface, so the model can be
   driven by a contact solver rather than a prescribed step load.

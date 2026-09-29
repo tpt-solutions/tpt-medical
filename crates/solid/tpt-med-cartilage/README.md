@@ -49,6 +49,10 @@ than a finite-element code.
 - Pure functions, no allocation, no state — trivially embeddable in a larger
   contact solver or an in-browser loop.
 
+- **Shear** — `solid_shear_modulus`: first-order biphasic shear is
+  fluid-free (no volumetric strain → no pressurisation → no transient),
+  so the shear response is a closed form, not a boundary-condition solve.
+
 ## Conventions
 
 - Aggregate modulus `H_A` in **MPa**; permeability `k` in **mm⁴/(N·s)**;

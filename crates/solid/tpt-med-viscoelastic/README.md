@@ -50,6 +50,11 @@ artifact and something a design engineer can use.
 - A documented re-export shim (`tpt_med_tissue_link`) that maps this crate's
   types onto `tpt-med-tissue` names for input-file compatibility.
 
+- **Quasi-linear viscoelasticity (Fung)** — `QuasiLinearViscoelastic`
+  convolves the Prony kernel with a *hyperelastic* stress history, so a
+  non-linear (finite-strain) elastic response gains rate effects without
+  leaving the linear-hereditary framework.
+
 ## Conventions
 
 - `g0` (instantaneous/glass shear modulus `G0`) in **MPa**.

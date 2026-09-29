@@ -90,6 +90,24 @@ impl BiphasicMaterial {
         sigma0 / self.aggregate_modulus
     }
 
+    /// Solid-matrix shear modulus `G = H_A·(1−2ν_s)/(2(1−ν_s))` (MPa).
+    ///
+    /// First-order biphasic **shear carries no interstitial fluid
+    /// pressurisation**: shear produces no volumetric strain, so Darcy
+    /// flow has nothing to drive and the response is the solid matrix at
+    /// *every* time — unlike compression, there is no transient and no
+    /// boundary-condition choice to make. The shear half of the
+    /// unconfined-shear boundary-condition item is therefore a closed
+    /// form, not a solve. `None` for `ν_s ≥ ½`, where the linear theory
+    /// has no valid shear modulus.
+    pub fn solid_shear_modulus(&self) -> Option<f64> {
+        let nu = self.poissons_ratio;
+        if nu < 0.0 || nu >= 0.5 {
+            return None;
+        }
+        Some(self.aggregate_modulus * (1.0 - 2.0 * nu) / (2.0 * (1.0 - nu)))
+    }
+
     /// Interstitial fluid pressure fraction `p(t)/σ0` at the impermeable
     /// subchondral boundary:
     /// `p/σ0 = (8/π) Σ_{n odd} (1/n) exp(−n² t/t_c)·sin(nπ·x/h)` evaluated
@@ -159,6 +177,37 @@ mod tests {
             ..m
         };
         assert!((doubled.gel_time() - 4.0 * m.gel_time()).abs() < 1e-9);
+    }
+
+    #[test]
+    fn shear_is_the_solid_matrix_alone() {
+        let m = BiphasicMaterial::default();
+        // ν_s = 0: G = H_A/2, exactly, and independent of permeability —
+        // the fluid never engages in shear.
+        assert!((m.solid_shear_modulus().expect("valid ν") - 0.35).abs() < 1e-12);
+        let stiffer = BiphasicMaterial {
+            permeability: m.permeability * 100.0,
+            ..m
+        };
+        assert_eq!(
+            m.solid_shear_modulus(),
+            stiffer.solid_shear_modulus(),
+            "permeability must not enter the shear response"
+        );
+        // General ν_s: G = H_A(1−2ν)/(2(1−ν)), hand-checked at ν = 0.3.
+        let nu = BiphasicMaterial {
+            poissons_ratio: 0.3,
+            ..m
+        };
+        let expected = 0.7 * (1.0 - 0.6) / (2.0 * 0.7);
+        assert!((nu.solid_shear_modulus().expect("valid ν") - expected).abs() < 1e-12);
+        // ν_s ≥ ½: the linear theory has no shear modulus.
+        assert!(BiphasicMaterial {
+            poissons_ratio: 0.5,
+            ..m
+        }
+        .solid_shear_modulus()
+        .is_none());
     }
 
     #[test]
