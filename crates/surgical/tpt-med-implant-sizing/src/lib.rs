@@ -211,6 +211,163 @@ impl KneeLandmarks {
         let base = along_ml.abs().max(1e-9);
         (perp / base).atan().to_degrees().clamp(0.0, 30.0)
     }
+
+    /// Posterior condylar offset (screening proxy): the posterior condyle's
+    /// perpendicular distance from the TEA line (mm). The surgical
+    /// definition references the femoral anatomical axis, which these
+    /// landmarks do not include — this proxy is the same *kind* of
+    /// posterior-reach measurement and is documented as a proxy, not the
+    /// clinical quantity.
+    pub fn posterior_condylar_offset(&self) -> f64 {
+        let tea = (self.lateral_epicondyle - self.medial_epicondyle).normalize();
+        let from_medial = self.posterior_condyle - self.medial_epicondyle;
+        let along = from_medial.dot(tea);
+        (from_medial - tea * along).norm()
+    }
+
+    /// The three femoral measurements as sizing inputs with the canonical
+    /// precedence order (TEA, then AP depth, then posterior condylar
+    /// offset) — a common vendor convention, overridable by the caller.
+    pub fn femoral_measurements(&self) -> [MeasurementInput; 3] {
+        [
+            MeasurementInput {
+                name: "tea_width",
+                value_mm: self.tea_width(),
+                precedence: 1,
+            },
+            MeasurementInput {
+                name: "ap_depth",
+                value_mm: self.ap_depth(),
+                precedence: 2,
+            },
+            MeasurementInput {
+                name: "posterior_condylar_offset",
+                value_mm: self.posterior_condylar_offset(),
+                precedence: 3,
+            },
+        ]
+    }
+}
+
+/// One measurement feeding a multi-measurement sizing decision.
+#[derive(Debug, Clone, Copy)]
+pub struct MeasurementInput {
+    /// Stable measurement name for the audit record.
+    pub name: &'static str,
+    /// The measurement (mm).
+    pub value_mm: f64,
+    /// Precedence rank: **lower wins** when measurements disagree on a
+    /// size; equal ranks resolve to the larger size (conservative
+    /// up-size).
+    pub precedence: u32,
+}
+
+/// How a multi-measurement decision resolved disagreement.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Resolution {
+    /// Every measurement selected the same size.
+    Consensus,
+    /// The lowest-precedence-rank measurement decided (named).
+    Precedence(&'static str),
+    /// Equal-precedence disagreement, resolved to the larger size.
+    UpsizeTieBreak,
+}
+
+/// One measurement's vote, recorded in the decision.
+#[derive(Debug, Clone, Copy)]
+pub struct MeasurementVote {
+    /// The measurement's name.
+    pub name: &'static str,
+    /// Its value (mm).
+    pub value_mm: f64,
+    /// The size it alone would select.
+    pub label: u32,
+    /// Its value fell below the chart.
+    pub below_chart: bool,
+    /// Its value rose above the chart.
+    pub above_chart: bool,
+}
+
+/// A multi-measurement sizing decision: every measurement maps through the
+/// chart, and an **explicit vendor precedence rule** resolves disagreement
+/// — the point where a single blended index (like [`size_tka`]'s fixed
+/// TEA/AP mix) hides which measurement actually drove the choice.
+#[derive(Debug, Clone)]
+pub struct MultiMeasurementDecision {
+    /// The resolved size label.
+    pub label: u32,
+    /// How disagreement (if any) was resolved.
+    pub resolved_by: Resolution,
+    /// Every measurement's individual vote, in input order.
+    pub votes: Vec<MeasurementVote>,
+}
+
+impl MultiMeasurementDecision {
+    /// True when every measurement agreed on the selected size.
+    pub fn is_unanimous(&self) -> bool {
+        matches!(self.resolved_by, Resolution::Consensus)
+    }
+}
+
+/// Sizes one component from several measurements jointly, resolving
+/// disagreement by the explicit precedence rule: lowest precedence rank
+/// wins; equal ranks up-size to the larger label.
+pub fn size_from_measurements(
+    chart: &SizeChart,
+    inputs: &[MeasurementInput],
+) -> Option<MultiMeasurementDecision> {
+    let mut votes = Vec::with_capacity(inputs.len());
+    for input in inputs {
+        let Some(choice) = chart.select(input.value_mm) else {
+            return None; // empty chart: nothing to vote on
+        };
+        votes.push(MeasurementVote {
+            name: input.name,
+            value_mm: input.value_mm,
+            label: choice.label,
+            below_chart: choice.below_chart,
+            above_chart: choice.above_chart,
+        });
+    }
+    if votes.is_empty() {
+        return None;
+    }
+
+    let resolved_by = if votes.iter().all(|v| v.label == votes[0].label) {
+        Resolution::Consensus
+    } else {
+        let best_rank = inputs
+            .iter()
+            .map(|i| i.precedence)
+            .min()
+            .expect("non-empty");
+        let top: Vec<&MeasurementVote> = votes
+            .iter()
+            .filter(|v| {
+                inputs
+                    .iter()
+                    .find(|i| i.name == v.name)
+                    .is_some_and(|i| i.precedence == best_rank)
+            })
+            .collect();
+        if top.len() == 1 {
+            Resolution::Precedence(top[0].name)
+        } else {
+            Resolution::UpsizeTieBreak
+        }
+    };
+
+    let label = match resolved_by {
+        Resolution::Consensus => votes[0].label,
+        Resolution::Precedence(name) => votes.iter().find(|v| v.name == name).expect("voted").label,
+        Resolution::UpsizeTieBreak => votes.iter().map(|v| v.label).max().expect("non-empty"),
+    };
+
+    Some(MultiMeasurementDecision {
+        label,
+        resolved_by,
+        votes,
+    })
 }
 
 /// Sizing recommendation bundle for a TKA case.
@@ -398,6 +555,105 @@ mod tests {
         assert_eq!(s.femoral_size, 4);
         // Plateau 60 → between 55(2) and 60(3) → label 3.
         assert_eq!(s.tibial_size, 3);
+    }
+
+    #[test]
+    fn posterior_condylar_offset_is_the_tea_perpendicular() {
+        let l = landmarks();
+        // posterior_condyle is (0,10,0); the TEA runs along x through
+        // (±35,0,0), so the perpendicular offset is sqrt(0² + 10²) = 10.
+        assert!((l.posterior_condylar_offset() - 10.0).abs() < 1e-9);
+        // The convenience inputs carry the canonical precedence order.
+        let inputs = l.femoral_measurements();
+        assert_eq!(inputs[0].name, "tea_width");
+        assert!(inputs[0].precedence < inputs[1].precedence);
+        assert!(inputs[1].precedence < inputs[2].precedence);
+    }
+
+    #[test]
+    fn unanimous_measurements_resolve_by_consensus() {
+        let c = chart();
+        // 58, 58.5, 57.5 all sit inside size 2's bracket.
+        let decision = size_from_measurements(
+            &c,
+            &[
+                MeasurementInput {
+                    name: "tea_width",
+                    value_mm: 58.0,
+                    precedence: 1,
+                },
+                MeasurementInput {
+                    name: "ap_depth",
+                    value_mm: 58.5,
+                    precedence: 2,
+                },
+                MeasurementInput {
+                    name: "posterior_condylar_offset",
+                    value_mm: 57.5,
+                    precedence: 3,
+                },
+            ],
+        )
+        .expect("decision");
+        assert_eq!(decision.label, 2);
+        assert_eq!(decision.resolved_by, Resolution::Consensus);
+        assert!(decision.is_unanimous());
+        assert_eq!(decision.votes.len(), 3);
+    }
+
+    #[test]
+    fn disagreement_resolves_by_precedence_then_upsize() {
+        let c = chart();
+        // TEA (rank 1) votes label 5, AP (rank 2) votes label 7, PCO
+        // (rank 3) votes label 1: the TEA decides.
+        let by_precedence = size_from_measurements(
+            &c,
+            &[
+                MeasurementInput {
+                    name: "tea_width",
+                    value_mm: 70.0,
+                    precedence: 1,
+                },
+                MeasurementInput {
+                    name: "ap_depth",
+                    value_mm: 78.0,
+                    precedence: 2,
+                },
+                MeasurementInput {
+                    name: "posterior_condylar_offset",
+                    value_mm: 54.0,
+                    precedence: 3,
+                },
+            ],
+        )
+        .expect("decision");
+        assert_eq!(by_precedence.label, 5);
+        assert_eq!(
+            by_precedence.resolved_by,
+            Resolution::Precedence("tea_width")
+        );
+        assert!(!by_precedence.is_unanimous());
+        // Same rank on the two disagreeing inputs: conservative up-size.
+        let tie = size_from_measurements(
+            &c,
+            &[
+                MeasurementInput {
+                    name: "tea_width",
+                    value_mm: 70.0,
+                    precedence: 1,
+                },
+                MeasurementInput {
+                    name: "ap_depth",
+                    value_mm: 90.0,
+                    precedence: 1,
+                },
+            ],
+        )
+        .expect("decision");
+        assert_eq!(tie.label, 8);
+        assert_eq!(tie.resolved_by, Resolution::UpsizeTieBreak);
+        // Out-of-chart votes are recorded, not silently clamped.
+        assert!(tie.votes.iter().any(|v| v.above_chart));
     }
 
     #[test]

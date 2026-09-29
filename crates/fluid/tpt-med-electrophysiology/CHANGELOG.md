@@ -11,13 +11,25 @@ what changes for consumers of this crate.
 
 ## [Unreleased]
 
+### Added
+- `FiberConductivity` + `MonodomainTissue::set_anisotropy`: **anisotropic
+  (fiber-direction) conductivity** — the acceptance point for an external
+  fiber-field source (atlas or DTI derivation, which the crate still does
+  not source itself). Per-voxel axisymmetric tensors
+  (`D_t + (D_l − D_t)(d̂·â)²` projected on each face normal), whole-field
+  validation (finite positive conductivities, `transverse ≤ longitudinal`,
+  non-zero direction; a violation rejects the field and leaves the tissue
+  isotropic), and a stability bound that tightens to the fiber maximum.
+  Verified by the isotropic-limit equivalence (a `D_l = D_t = D` field
+  reproduces the plain isotropic activation map exactly), the projection
+  algebra, the bound, and the rejection cases. `tpt-med-geometry` moves
+  from dev-dependency to dependency (`Vec3` is now production API).
+
 ### Planned
 - Stage 2 (ECG/EGM forward problem via pseudo-bidomain lead-field
   projection) and Stage 3 (ablation screening), both kept at roadmap depth
   in `rfcs/0005-cardiac-electrophysiology.md` pending Stage 1 usage and,
   for Stage 3, clinical-data validation.
-- Anisotropic (fiber-direction) conductivity — needs a fiber-field source
-  (atlas or DTI derivation) this crate has no source for yet.
 - Promotion path to `tpt-science`'s electrophysiology crate for ionic-model
   breadth beyond Mitchell-Schaeffer, once a real workflow needs it.
 

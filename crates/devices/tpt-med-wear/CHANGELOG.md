@@ -12,6 +12,25 @@ changes for consumers of this crate.
 ## [Unreleased]
 
 ### Added
+- `ContactSolver` trait + built-in `WinklerContact`, and
+  `simulate_wear_with_contact`: **the contact-solver coupling with
+  wear-debris feedback** — per-zone wear depths feed each block's pressure
+  solve, so wear changes the contact geometry and pressures. The Winkler
+  foundation is self-stabilising (worn zones shed load to fresh ones);
+  verified by load conservation at the final solve, load migration off the
+  faster-worn zone, and a coupled total below the prescribed-pressure run
+  at the initial uniform pressure. Contact loss past the penetration is
+  flagged (`any_zone_lost_contact`); runaway modes (edge loading,
+  third-body abrasion) plug in through the same trait. Three new tests.
+- `ContactSolver` trait + built-in `WinklerContact`, and
+  `simulate_wear_with_contact`: **the contact-solver coupling with
+  wear-debris feedback** — per-zone wear depths feed each block's pressure
+  solve, so wear changes the contact geometry and pressures. The
+  Winkler foundation is self-stabilising (worn zones shed load to fresh
+  ones; verified by load conservation, load migration off the faster-worn
+  zone, and a coupled total below the prescribed-pressure run); runaway
+  modes plug in through the same trait. Contact loss past the penetration
+  is flagged. Three new tests.
 - `WearSchedule` + `WearModel::simulate_wear_with_schedule`: **run-in
   excess wear** (linearly decaying multiplier over a run-in period) and
   **activity-level bands**, integrated cycle-exactly — gait extrapolation is
@@ -26,11 +45,6 @@ changes for consumers of this crate.
   default would be a fabricated number wearing a citation.
 
 ### Planned
-- Wear-debris-induced damage feedback, so wear changes the contact geometry and
-  pressures — without which the runaway that ends real implant life is not
-  captured.
-- A coupling helper to a contact solver, so pressures and sliding distances can
-  be solved rather than supplied.
   of magnitude between studies and which a defensible screening study should
   quantify.
   strictly linear in cycle count.
@@ -91,10 +105,10 @@ rather than stored snapshots:
 - Golden dataset `test-data/golden/devices/knee_wear_10mcycles.json`.
 
 ### Known limitations
-- No wear-debris-induced damage feedback, so the contact geometry does not
-  evolve. Screening tool, not a life model.
-- No lubricant or contact-mechanics solution: pressures and sliding distances
-  are inputs, not solved quantities.
+- The `simulate_wear_with_contact` feedback is a Winkler-foundation
+  screening loop (self-stabilising); lubricant physics and a full contact
+  solution stay external — a real contact solver implements the
+  `ContactSolver` trait.
 - Steady-state, single-condition extrapolation, linear in `gait_cycles`.
 - No coefficient uncertainty propagation.
 - Not a substitute for ASTM F2028 or ISO 14879 standard testing.

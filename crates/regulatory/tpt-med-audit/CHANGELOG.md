@@ -12,6 +12,23 @@ changes for consumers of this crate.
 ## [Unreleased]
 
 ### Added
+- `ed25519` cargo feature (off by default, `ed25519-dalek` 2 with default
+  features trimmed): **asymmetric Ed25519 signatures (RFC 8032)** for
+  non-repudiation, alongside the symmetric HMAC path —
+  `SigningKey::from_seed` / `sign`, `VerifyingKey::from_bytes` / `verify`,
+  and the `verify_chain_signature` convenience over a chain's head digest.
+  Verified against the RFC 8032 §7.1 TEST 2 constants (seed → public key
+  and the deterministic signature; the constants were cross-checked against
+  an independent OpenSSL derivation when recorded). Key *generation* stays
+  the caller's CSPRNG concern; the seed is never rendered by `Debug`.
+- `anchor` module (`AnchorKind`, `AnchorRecord`): **external anchoring
+  helpers** — the record binding a payload's SHA-256 digest to an RFC 3161
+  timestamp or transparency-log submission, with the anchor token kept
+  opaque (token verification belongs to the anchor service's own tooling;
+  this crate checks the digest binding mechanically via `covers`). A
+  dependency-free RFC 4648 base64 encoder carries the token; verified
+  against the RFC's own vectors. This is the seam RFC 0003 names for
+  closing the non-repudiation gap.
 - `verify_chain_detailed` / `LinkReport` / `LinkStatus`: per-index forensic
   verification, so a tool can report **which** link broke (and show the
   expected vs stored digests) instead of `verify_chain`'s all-or-nothing
@@ -26,11 +43,6 @@ changes for consumers of this crate.
   workflow will want.
 
 ### Planned
-- Asymmetric signatures (Ed25519) for non-repudiation, behind a clearly named
-  feature, alongside the existing symmetric HMAC path.
-- External anchoring helpers for RFC 3161 timestamping or a transparency log,
-  which RFC 0003 identifies as the way to close the non-repudiation gap.
-
 ### Notes
 - **Never weaken or replace a cryptographic primitive without an RFC and a
   security review.** Changes here must be behaviour-preserving refactors only.

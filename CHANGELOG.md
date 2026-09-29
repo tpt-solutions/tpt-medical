@@ -288,6 +288,23 @@ Tracked in `todo.md`. Summary of the user-visible change here:
 - `web/build-wasm.sh` — one-command engine build + wasm-bindgen glue
   generation (version-matched CLI); `web/README.md` run instructions.
 
+### Added — Backlog sweep (2026-09-30)
+Thirteen more scoped backlog items delivered across nine crates with tests
+(see each crate's CHANGELOG for API detail): `tpt-med-stents` (Level 2
+tapered ring groups with real dogboning, screening strain-life law),
+`tpt-med-cardiovascular` (waveform iFR, DFT-fitted patient waveforms,
+completing its backlog), `tpt-med-electrophysiology` (caller-supplied
+anisotropic fiber conductivity), `tpt-med-implant-sizing` (multi-
+measurement precedence decisions), `tpt-med-wear` (contact-solver coupling
+with wear feedback, completing its backlog), `tpt-med-biomechanics` (mixed
+bone/tissue materials via tissue linearization; nonlinear path confirmed as
+`tpt-med-fem-adapter`), `tpt-med-tissue` (the `F = I` linearization the
+mixed-material path consumes), `tpt-med-audit` (Ed25519 feature, external
+anchoring records, completing its backlog), `tpt-med-fda` (tag anchoring,
+completing its backlog), and `rfcs/0011-per-fragment-addressing.md`
+(Draft). CI gained a `tpt-med-audit --features ed25519` pass; `tpt-med-audit`
+gains its first optional dependency (`ed25519-dalek`, feature-gated).
+
 ### Added — Backlog sweep (2026-09-29)
 Eighteen scoped items from the per-crate `Planned` backlog, delivered across
 ten crates with tests (see each crate's CHANGELOG for API detail):

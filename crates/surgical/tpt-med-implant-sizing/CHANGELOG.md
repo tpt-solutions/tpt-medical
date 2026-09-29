@@ -12,6 +12,17 @@ changes for consumers of this crate.
 ## [Unreleased]
 
 ### Added
+- `size_from_measurements` + `MeasurementInput` / `MultiMeasurementDecision`
+  / `Resolution` / `MeasurementVote`: **multi-measurement sizing with an
+  explicit vendor precedence rule** — each measurement maps through the
+  chart, every vote is recorded (with out-of-chart flags), and
+  disagreement resolves by lowest precedence rank, with equal ranks
+  up-sizing conservatively. `KneeLandmarks::posterior_condylar_offset`
+  (a TEA-perpendicular screening proxy, documented as such) and
+  `femoral_measurements()` (TEA → AP depth → PCO precedence) supply the
+  femoral triple. Four new tests: the PCO proxy against a hand-computed
+  offset, consensus, precedence resolution, and the up-size tie-break
+  with out-of-chart recording.
 - `SizeChart::validate` (+ `ChartError`): **schema validation for
   caller-supplied charts** — non-empty, finite positive nominals in strict
   ascending order, unique labels — so a mis-transcribed chart is caught at
@@ -26,14 +37,11 @@ changes for consumers of this crate.
 ### Planned
 - Automatic landmark detection from a CT, which is the hard part of the problem
   and is not attempted here.
-- Multi-measurement charts, so a femoral decision can weigh TEA, AP depth and
-  posterior condylar offset jointly, with a vendor-specific precedence rule.
+
 - Soft-tissue and ligament balance assessment, and a check that the selected
   size leaves acceptable gap balancing. Sizing is necessary for a good plan and
   not sufficient.
 - Hip, shoulder and ankle sizing beyond the knee-specific `KneeLandmarks`.
-  mis-transcribed chart is caught rather than silently producing a
-  recommendation.
 
 ### Notes
 - **Ties round up.** At exactly `t = 0.5` between two sizes the larger size is

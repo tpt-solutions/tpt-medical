@@ -12,6 +12,15 @@ changes for consumers of this crate.
 ## [Unreleased]
 
 ### Added
+- `AuditTrail::attach_anchor` (+ `PolicyError::AnchorDigestMismatch`,
+  `anchors()`): **external anchoring of the detached tag** — the RFC 0003
+  seam. An `AnchorRecord` (from `tpt-med-audit`) binds the payload's
+  SHA-256 digest to an RFC 3161 timestamp or transparency-log submission;
+  the digest binding is checked at attach time and the anchor itself is
+  recorded as an audit event, so removing one after the fact breaks the
+  chain. The token stays opaque — cryptographic verification belongs to
+  the anchor service's tooling. One new test (binding, audit growth,
+  swapped-payload rejection).
 - `SignaturePolicy` (permissive vs `RequireSignatureAfterLastEdit`),
   `ReasonPolicy` (free text vs structured reason codes), and the
   policy-checked `checked_append` / `export_package_checked`: **workflow
@@ -40,8 +49,6 @@ changes for consumers of this crate.
   cross-run splice detection, and free-text escaping round-trip.
 
 ### Planned
-- External anchoring of the detached tag (HSM, transparency log, RFC 3161) to
-  close the non-repudiation gap identified in RFC 0003.
 
 ### Notes
 - **Changes to the canonical form, the export schema or the signing semantics
@@ -54,7 +61,7 @@ changes for consumers of this crate.
 - **Never commit PHI**, including in `reason` strings.
 - In-memory trails are the caller's to persist or not; the `worm` module's
   `WormLog` is the write-once journal when durability is wanted.
-
+
 ## [0.1.0] - 2026-09-22
 
 ### Added

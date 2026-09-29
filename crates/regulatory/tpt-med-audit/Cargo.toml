@@ -12,7 +12,19 @@ documentation = "https://docs.rs/tpt-med-audit"
 keywords = ["sha256", "hmac", "audit-log", "hash-chain", "tamper-evident"]
 categories = ["cryptography", "security"]
 
+[features]
+default = []
+# Asymmetric (Ed25519) signatures for non-repudiation, alongside the
+# symmetric HMAC path. Off by default: the WASM footprint stays
+# dependency-free unless a caller asks for it.
+ed25519 = ["dep:ed25519-dalek"]
+
 [dependencies]
+ed25519-dalek = { version = "2", default-features = false, features = [
+    "fast",
+    "signature",
+    "zeroize",
+], optional = true }
 
 
 [lints]

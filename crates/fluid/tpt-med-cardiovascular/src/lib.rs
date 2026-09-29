@@ -216,6 +216,71 @@ impl FractionalFlowReserve {
     }
 }
 
+/// The instantaneous wave-free ratio (iFR): the distal/proximal pressure
+/// ratio restricted to the **wave-free period** of diastole, when
+/// microvascular resistance is naturally low and stable — a resting
+/// (non-hyperemic) alternative to FFR built on pressure *waveforms*
+/// (Davies et al. 2012; the commercial convention averages over a window
+/// beginning 5 ms after end-systole and ending 5 ms before the next
+/// systole, detected from the dP/dt minima).
+///
+/// The waveform form here takes sampled aortic and distal pressures plus
+/// the window as cycle fractions, so the caller (or a detector upstream)
+/// owns the window detection convention.
+#[derive(Debug, Clone, Copy)]
+pub struct InstantaneousWaveFreeRatio {
+    /// Wave-free window start as a fraction of the cardiac cycle
+    /// (clinical convention ≈ 0.45).
+    pub window_start: f64,
+    /// Wave-free window end as a fraction of the cycle (≈ 0.95).
+    pub window_end: f64,
+    /// Clinical threshold: iFR < 0.90 flags ischemia.
+    pub ischemic_threshold: f64,
+}
+
+impl Default for InstantaneousWaveFreeRatio {
+    fn default() -> Self {
+        Self {
+            window_start: 0.45,
+            window_end: 0.95,
+            ischemic_threshold: 0.90,
+        }
+    }
+}
+
+impl InstantaneousWaveFreeRatio {
+    /// Mean `Pd/Pa` over the wave-free window, from evenly sampled
+    /// waveforms (exactly one cycle, `pa[i]`/`pd[i]` at `t = i/n · T`).
+    /// Samples with non-finite or non-positive aortic pressure are skipped
+    /// rather than poisoning the mean; an empty window returns `NaN`.
+    pub fn calculate(&self, pa: &[f64], pd: &[f64]) -> f64 {
+        assert_eq!(pa.len(), pd.len(), "pressure waveforms must pair");
+        let n = pa.len();
+        let mut sum = 0.0;
+        let mut count = 0usize;
+        for i in 0..n {
+            let t = (n as f64).recip() * i as f64;
+            if t < self.window_start || t >= self.window_end {
+                continue;
+            }
+            if pa[i].is_finite() && pd[i].is_finite() && pa[i] > 0.0 {
+                sum += pd[i] / pa[i];
+                count += 1;
+            }
+        }
+        if count == 0 {
+            f64::NAN
+        } else {
+            sum / count as f64
+        }
+    }
+
+    /// The ischemia classification at the configured threshold.
+    pub fn is_ischemic(&self, ifr: f64) -> bool {
+        ifr < self.ischemic_threshold
+    }
+}
+
 /// Pulsatile flow waveform `Q(t)` over one cardiac cycle (mm³/s).
 #[derive(Debug, Clone)]
 pub struct FlowWaveform {
@@ -263,6 +328,81 @@ impl FlowWaveform {
             pulsatility: 0.5,
             harmonics: 4,
         }
+    }
+}
+
+/// A flow waveform **fitted to measurement**: mean plus per-harmonic
+/// amplitude and phase from a discrete Fourier transform of one cycle of
+/// evenly sampled data — the patient-specific counterpart to the fixed
+/// analytic [`FlowWaveform`] shapes, which remain the screening default.
+///
+/// ```text
+/// Q(t) = mean + Σₙ Aₙ·cos(2π n t/T − φₙ)
+/// ```
+#[derive(Debug, Clone)]
+pub struct MeasuredFlowWaveform {
+    /// Cycle length (s).
+    pub cycle: f64,
+    /// Cycle-mean flow (mm³/s).
+    pub mean: f64,
+    /// `(amplitude, phase)` per harmonic `n = 1..=k`, phase in radians.
+    pub harmonics: Vec<(f64, f64)>,
+}
+
+impl MeasuredFlowWaveform {
+    /// Least-squares fit of the truncated Fourier series above to one
+    /// cycle of evenly sampled flow data. The first `keep_harmonics`
+    /// harmonics are retained; sample counts beyond `2·k` make the
+    /// truncation meaningful rather than exact interpolation.
+    pub fn fit(cycle: f64, samples: &[f64], keep_harmonics: usize) -> Self {
+        let n = samples.len();
+        assert!(n > 0, "cannot fit an empty waveform");
+        assert!(keep_harmonics > 0, "at least one harmonic is required");
+        let mean = samples.iter().sum::<f64>() / n as f64;
+        let mut harmonics = Vec::with_capacity(keep_harmonics);
+        for h in 1..=keep_harmonics {
+            let mut a = 0.0f64;
+            let mut b = 0.0f64;
+            for (j, &s) in samples.iter().enumerate() {
+                let theta = 2.0 * core::f64::consts::PI * h as f64 * j as f64 / n as f64;
+                a += s * theta.cos();
+                b += s * theta.sin();
+            }
+            a *= 2.0 / n as f64;
+            b *= 2.0 / n as f64;
+            harmonics.push((a.hypot(b), b.atan2(a)));
+        }
+        Self {
+            cycle,
+            mean,
+            harmonics,
+        }
+    }
+
+    /// Evaluates the fitted waveform (periodic).
+    pub fn flow(&self, t: f64) -> f64 {
+        let omega = 2.0 * core::f64::consts::PI / self.cycle;
+        let mut q = self.mean;
+        for (n, &(amplitude, phase)) in self.harmonics.iter().enumerate() {
+            q += amplitude * (omega * (n + 1) as f64 * t - phase).cos();
+        }
+        q
+    }
+
+    /// RMS residual of the fit against the samples it was (or would be)
+    /// fitted from — the caller's truncation-error measure.
+    pub fn fit_rms(&self, samples: &[f64]) -> f64 {
+        let n = samples.len();
+        let se: f64 = samples
+            .iter()
+            .enumerate()
+            .map(|(j, &s)| {
+                let t = self.cycle * j as f64 / n as f64;
+                let e = s - self.flow(t);
+                e * e
+            })
+            .sum();
+        (se / n as f64).sqrt()
     }
 }
 
@@ -515,6 +655,89 @@ mod tests {
             (mean_q - expected).abs() < 1e-5 * expected.abs(),
             "mean flow {mean_q} vs DC gain {expected}"
         );
+    }
+
+    #[test]
+    fn ifr_averages_only_over_the_wave_free_window() {
+        // Distal pressure tracks 90% of aortic inside the window but only
+        // 70% outside: the iFR must read 0.90, not the whole-cycle mean.
+        let ifr = InstantaneousWaveFreeRatio::default();
+        let n = 100;
+        let mut pa = Vec::with_capacity(n);
+        let mut pd = Vec::with_capacity(n);
+        for i in 0..n {
+            let t = i as f64 / n as f64;
+            let pulse = 1.0 + 0.2 * (2.0 * core::f64::consts::PI * t).sin();
+            pa.push(10.0 * pulse);
+            pd.push(if (0.45..0.95).contains(&t) {
+                9.0 * pulse
+            } else {
+                7.0 * pulse
+            });
+        }
+        let value = ifr.calculate(&pa, &pd);
+        assert!((value - 0.90).abs() < 1e-9, "iFR {value}");
+        // The whole-cycle mean, for contrast, is dragged down by the
+        // extrasystolic samples.
+        let whole: f64 = (0..n).map(|i| pd[i] / pa[i]).sum::<f64>() / n as f64;
+        assert!(
+            whole < value - 0.05,
+            "windowing must matter: {whole} vs {value}"
+        );
+        // Classification at the 0.90 clinical threshold (strict).
+        assert!(!ifr.is_ischemic(0.90));
+        assert!(ifr.is_ischemic(0.89));
+        // Degenerate window: NaN, not a division by zero.
+        let empty = InstantaneousWaveFreeRatio {
+            window_start: 0.9,
+            window_end: 0.9,
+            ..ifr
+        };
+        assert!(empty.calculate(&pa, &pd).is_nan());
+    }
+
+    #[test]
+    fn dft_fit_recovers_an_exact_fourier_series() {
+        // Sample the analytic carotid waveform (a pure 6-harmonic sine
+        // series) and fit with 6 harmonics: the fit is exact and the
+        // reconstructed waveform agrees pointwise.
+        let wf = FlowWaveform::carotid_default();
+        let n = 200;
+        let samples: Vec<f64> = (0..n)
+            .map(|i| wf.flow(wf.cycle * i as f64 / n as f64))
+            .collect();
+        let fitted = MeasuredFlowWaveform::fit(wf.cycle, &samples, 6);
+        assert!((fitted.mean - wf.mean).abs() < 1e-9);
+        assert!(
+            fitted.fit_rms(&samples) < 1e-9,
+            "rms {}",
+            fitted.fit_rms(&samples)
+        );
+        for i in [0, 17, 55, 130, 199] {
+            let t = wf.cycle * i as f64 / n as f64;
+            assert!(
+                (fitted.flow(t) - wf.flow(t)).abs() < 1e-6,
+                "t={t}: {} vs {}",
+                fitted.flow(t),
+                wf.flow(t)
+            );
+        }
+        // Periodicity of the fitted form.
+        assert!((fitted.flow(0.0) - fitted.flow(fitted.cycle)).abs() < 1e-9);
+    }
+
+    #[test]
+    fn dft_truncation_error_shrinks_with_harmonics() {
+        let wf = FlowWaveform::carotid_default();
+        let n = 128;
+        let samples: Vec<f64> = (0..n)
+            .map(|i| wf.flow(wf.cycle * i as f64 / n as f64))
+            .collect();
+        let rms2 = MeasuredFlowWaveform::fit(wf.cycle, &samples, 2).fit_rms(&samples);
+        let rms4 = MeasuredFlowWaveform::fit(wf.cycle, &samples, 4).fit_rms(&samples);
+        let rms6 = MeasuredFlowWaveform::fit(wf.cycle, &samples, 6).fit_rms(&samples);
+        assert!(rms2 > rms4 && rms4 > rms6, "{rms2} {rms4} {rms6}");
+        assert!(rms6 < 1e-9);
     }
 
     #[test]

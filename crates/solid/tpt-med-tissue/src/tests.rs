@@ -403,3 +403,54 @@ fn tangent_stiffens_under_uniaxial_loading() {
     }
     assert_eq!(max_abs, 0.0, "inverted tangent must be zero");
 }
+
+#[test]
+fn linearized_constants_match_the_closed_forms() {
+    let nh = TissueModel::NeoHookean(NeoHookeanParams { c10: 0.5, d1: 0.2 });
+    let (mu, k) = nh.linearized_elastic_constants();
+    assert!((mu - 1.0).abs() < 1e-12);
+    assert!((k - 10.0).abs() < 1e-12);
+    // Engineering constants from the moduli, hand-computed:
+    // E = 9·10·1/(30+1) = 90/31, ν = (30−2)/(2·31) = 14/31.
+    let (e, nu) = nh.linearized_engineering_constants().expect("physical");
+    assert!((e - 90.0 / 31.0).abs() < 1e-12);
+    assert!((nu - 14.0 / 31.0).abs() < 1e-12);
+
+    let mr = TissueModel::MooneyRivlin(MooneyRivlinParams {
+        c10: 0.3,
+        c01: 0.2,
+        d1: 0.5,
+    });
+    let (mu, _) = mr.linearized_elastic_constants();
+    assert!((mu - 1.0).abs() < 1e-12);
+
+    let ogden = TissueModel::Ogden(OgdenParams {
+        mu: vec![0.4, 0.1],
+        alpha: vec![2.0, -2.0],
+        d1: 0.5,
+    });
+    let (mu, _) = ogden.linearized_elastic_constants();
+    assert!((mu - 0.5).abs() < 1e-12);
+
+    // HGO linearizes to its ground substance: fibers are inactive at F = I.
+    let hgo = TissueModel::HolzapfelGasserOgden(HgoParams {
+        c: 0.8,
+        k1: 5.0,
+        k2: 12.0,
+        kappa: 0.2,
+        fiber_directions: vec![Vec3::new(1.0, 1.0, 0.0), Vec3::new(-1.0, 1.0, 0.0)],
+        d1: 100.0,
+    });
+    let (mu, k) = hgo.linearized_elastic_constants();
+    assert!((mu - 1.6).abs() < 1e-12);
+    assert!((k - 0.02).abs() < 1e-12);
+
+    // Non-physical parameters are refused, not coerced.
+    let degenerate = TissueModel::NeoHookean(NeoHookeanParams { c10: 0.0, d1: 1.0 });
+    assert!(degenerate.linearized_engineering_constants().is_none());
+    let incompressible_limit = TissueModel::NeoHookean(NeoHookeanParams { c10: 10.0, d1: 1.0 });
+    // K = 2, μ = 20 → 3K = 6 < 2μ = 40: ν ≥ ½, refused.
+    assert!(incompressible_limit
+        .linearized_engineering_constants()
+        .is_none());
+}

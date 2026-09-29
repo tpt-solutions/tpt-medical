@@ -60,6 +60,13 @@ black box.
   limit, so a screening verdict is one call rather than a hand calculation.
 - No allocation, trivially embeddable in a parameter sweep.
 
+- **Contact coupling with wear feedback** — `simulate_wear_with_contact`
+  drives a `ContactSolver` (the built-in `WinklerContact` foundation, or an
+  external solver implementing the trait) once per block: accumulated
+  per-zone wear depths change the solved pressures, so the contact
+  geometry evolves instead of staying prescribed. Worn zones shed load;
+  contact loss past the penetration is flagged.
+
 ## Conventions
 
 - Contact pressure in **MPa**; sliding distance in **mm per cycle**; bearing

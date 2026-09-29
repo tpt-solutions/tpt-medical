@@ -63,6 +63,12 @@ throws away the information the surgeon uses to decide whether to upsize.
 - **`size_tka`** — the bundle: both component labels, all three measurements
   and both alignment proxies in one `TkaSizing` value.
 
+- **Multi-measurement decisions** — `size_from_measurements` maps each
+  measurement through the chart and resolves disagreement by an explicit
+  precedence rule (lowest rank wins, equal ranks up-size), recording every
+  vote. `femoral_measurements()` supplies the TEA → AP depth → posterior
+  condylar offset triple; the PCO is a TEA-perpendicular screening proxy.
+
 ## Conventions
 
 - All measurements in **millimetres**; angles in **degrees** (as returned by

@@ -67,7 +67,11 @@ an already-shipped crate's version history.
 
 ## Explicit Non-Features
 
-- **No anisotropic (fiber-direction) conductivity.** Diffusivity is a single
+- **Anisotropy is accepted, not sourced.** `set_anisotropy` takes a
+  caller-supplied per-voxel fiber field (`FiberConductivity`, axisymmetric
+  about the fiber direction) with whole-field validation; the crate still
+  has no source for the field itself (atlas/DTI derivation stays external).
+  Isotropic by default: diffusivity remains a single
   scalar; real atrial/ventricular conduction is anisotropic along fiber
   direction. Needs a fiber-field source (an atlas or DTI derivation) this
   crate has no source for — see Known Limitations and the RFC's Unresolved

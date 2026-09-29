@@ -289,6 +289,43 @@ impl TissueModel {
         a
     }
 
+    /// Linearization at `F = I`: the small-strain `(shear, bulk)` moduli
+    /// (MPa) of the model — the values a linear-elastic solver needs to
+    /// include soft tissue in a model that also carries linear bone
+    /// (e.g. via `tpt-med-biomechanics`' mixed-material input).
+    ///
+    /// Deviatoric: `μ = 2C10` (Neo-Hookean), `2(C10+C01)` (Mooney–Rivlin),
+    /// `2c1` (Yeoh), `Σμᵢ` (Ogden), `2c` (HGO ground substance).
+    /// Volumetric: every variant shares the `(J−1)²/D1` penalty, so
+    /// `K = 2/D1` throughout. The fiber terms of HGO are *not* active at
+    /// `F = I` (the invariant `E_f = 0` there), so the HGO linearization
+    /// is the ground substance alone — documented, not accidental.
+    pub fn linearized_elastic_constants(&self) -> (f64, f64) {
+        let shear = match self {
+            TissueModel::NeoHookean(p) => 2.0 * p.c10,
+            TissueModel::MooneyRivlin(p) => 2.0 * (p.c10 + p.c01),
+            TissueModel::Yeoh(p) => 2.0 * p.c1,
+            TissueModel::Ogden(p) => p.mu.iter().sum(),
+            TissueModel::HolzapfelGasserOgden(p) => 2.0 * p.c,
+        };
+        (shear, 2.0 / self.volumetric_d1())
+    }
+
+    /// Engineering constants `(E, ν)` from the
+    /// [`Self::linearized_elastic_constants`] moduli:
+    /// `E = 9Kμ/(3K+μ)`, `ν = (3K−2μ)/(2(3K+μ))`. None for non-physical
+    /// parameters (`μ ≤ 0`, `K ≤ 0`, or `3K ≤ 2μ`, which would give
+    /// `ν ≥ ½`).
+    pub fn linearized_engineering_constants(&self) -> Option<(f64, f64)> {
+        let (mu, k) = self.linearized_elastic_constants();
+        if mu <= 0.0 || k <= 0.0 || 3.0 * k <= 2.0 * mu {
+            return None;
+        }
+        let e = 9.0 * k * mu / (3.0 * k + mu);
+        let nu = (3.0 * k - 2.0 * mu) / (2.0 * (3.0 * k + mu));
+        Some((e, nu))
+    }
+
     /// The shared `d1` of the `(J−1)²/d1` penalty.
     fn volumetric_d1(&self) -> f64 {
         match self {

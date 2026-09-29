@@ -86,6 +86,79 @@ impl BoundaryConditions {
     }
 }
 
+/// Per-element material for a mixed bone/soft-tissue model: linear
+/// constants given directly, or a hyperelastic [`TissueModel`] linearized
+/// at `F = I` — which is what lets one linear solve carry both linear
+/// bone and hyperelastic soft tissue. (Nonlinear response is the
+/// `tpt-med-fem-adapter` crate's job; this is the small-strain inclusion
+/// path.)
+#[derive(Debug, Clone)]
+pub enum ElementMaterial {
+    /// Linear elastic constants given directly (MPa, dimensionless).
+    Linear {
+        /// Young's modulus (MPa).
+        youngs_modulus: f64,
+        /// Poisson's ratio.
+        poissons_ratio: f64,
+    },
+    /// A hyperelastic tissue model, linearized at `F = I` via
+    /// [`TissueModel::linearized_engineering_constants`]. Errors at model
+    /// build time for non-physical parameter sets.
+    SoftTissue(tpt_med_tissue::TissueModel),
+}
+
+impl BiomechanicsModel {
+    /// Builds a model whose elements carry **mixed materials**: linear
+    /// bone next to linearized soft tissue. Element order pairs with
+    /// `materials`; the tissue linearization errors
+    /// ([`SolverError::Invalid`]) for non-physical parameter sets rather
+    /// than silently clamping ν.
+    pub fn from_parts_mixed(
+        nodes: Vec<Vec3>,
+        elements: Vec<[u32; 8]>,
+        materials: &[ElementMaterial],
+    ) -> Result<Self, SolverError> {
+        if elements.len() != materials.len() {
+            return Err(SolverError::Invalid(
+                "material count must pair with element count".into(),
+            ));
+        }
+        let mut modulus = Vec::with_capacity(materials.len());
+        let mut poisson = Vec::with_capacity(materials.len());
+        for (i, m) in materials.iter().enumerate() {
+            match m {
+                ElementMaterial::Linear {
+                    youngs_modulus,
+                    poissons_ratio,
+                } => {
+                    if !youngs_modulus.is_finite() || *youngs_modulus <= 0.0 {
+                        return Err(SolverError::Invalid(format!(
+                            "element {i}: modulus must be finite and positive"
+                        )));
+                    }
+                    modulus.push(*youngs_modulus);
+                    poisson.push(*poissons_ratio);
+                }
+                ElementMaterial::SoftTissue(model) => {
+                    let Some((e, nu)) = model.linearized_engineering_constants() else {
+                        return Err(SolverError::Invalid(format!(
+                            "element {i}: tissue model has non-physical linearization"
+                        )));
+                    };
+                    modulus.push(e);
+                    poisson.push(nu);
+                }
+            }
+        }
+        Ok(Self {
+            nodes,
+            elements,
+            element_modulus: modulus,
+            element_poisson: poisson,
+        })
+    }
+}
+
 impl BiomechanicsModel {
     /// Adapts a voxel mesh (node positions + per-element HU-derived
     /// moduli).

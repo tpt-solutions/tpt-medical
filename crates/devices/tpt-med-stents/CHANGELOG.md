@@ -16,7 +16,6 @@ changes for consumers of this crate.
   (shipped) → tapered ring groups → 3D superelastic FEM with frictional contact
   on `tpt-fem` — and stating that the default parameters are literature-typical
   starting points, **not vendor data**.
-
 - `StentModel::foreshortening(manufactured_length, diameter, link_fraction)`:
   **geometric foreshortening** — the axial shortening when a zig-zag crown
   ring opens from its crimped configuration, from fixed strut segment
@@ -29,19 +28,34 @@ changes for consumers of this crate.
   summed stiffness, with the radial force split proportionally to per-crown
   stiffness and the largest single-crown share reported (an empty slice
   falls back to the uniform model exactly).
-- Two new test groups: foreshortening (zero at the crimped diameter,
-  monotone in diameter, few-percent band at realistic link fraction, upper
-  bound at `link_fraction = 0`, NaN limit) and non-uniform deployment
-  (equal stiffnesses reproduce the uniform ring, proportional force split,
-  forces summing to the ring total, no-contact carries nothing).
+- `simulate_tapered_deployment` / `TaperedDeployment`: **Level 2 of the
+  RFC 0004 ladder** — the stent resolved into axial ring groups, each at
+  its own equilibrium against a caller-supplied axial lumen profile. A
+  stiff mid-lesion makes the ends open wider and `dogboning` takes a real
+  value (`|d_ends − d_mids|/nominal`; the two ends are compared directly
+  for a two-group ring), replacing the structural `0.0` the uniform ring
+  reports. Group-level metrics reuse the Level-1 equilibrium unchanged, so
+  a uniform profile reproduces `simulate_deployment` exactly.
+- `StrainLifeLaw` (+ `nitinol_screening()`): **cyclic degradation of the
+  strain capacity** — a screening log-log strain-life law (0.4 %
+  alternating amplitude at 10⁷ cycles, a factor-of-two drop per four
+  decades, per the published Nitinol fatigue band) with `amplitude_at(N)`
+  and a conservative `survives(N, ε)` verdict. A screening interpolation
+  of band data, not a device S–N curve: a life claim still needs vendor
+  fatigue data and ASTM F2477-style pulsatile testing.
+- Test groups: foreshortening (zero at the crimped diameter, monotone in
+  diameter, few-percent band at realistic link fraction, upper bound at
+  `link_fraction = 0`, NaN limit); non-uniform deployment (equal
+  stiffnesses reproduce the uniform ring, proportional force split, forces
+  summing to the ring total, no-contact carries nothing); tapered
+  deployment (uniform-profile equivalence to the Level-1 ring, the
+  stiff-mid-lesion dogbone with direction-agnostic magnitude and the
+  two-group variant); and the strain-life law's degradation and screening
+  verdicts.
 
 ### Planned
-- **Level 2** — tapered ring groups, which would give `dogboning` a real value
-  instead of the structural `0.0` it reports today.
 - **Level 3** — 3D superelastic FEM with frictional contact via
   `tpt-fem-hyperelastic` / `tpt-fem-contact`.
-- Cyclic degradation of `ε_L` over 10⁶ cycles, to support fatigue and
-  accelerated-dilation life claims.
 - Direct coupling to a `tpt-med-hemodynamics` solution in the same solve,
   rather than a prescribed vessel law.
 
@@ -49,12 +63,13 @@ changes for consumers of this crate.
 - `simulate_deployment` takes the vessel pressure–diameter law as a caller
   closure `Fn(f64 /*MPa*/) -> f64 /*mm*/`, so vessel compliance is the
   caller's model. This is a deliberate design choice, not a missing feature.
-- `DeploymentResult.dogboning` is `0.0` for the uniform ring model. It is
-  reported rather than omitted so Level 2 can fill it in without a breaking API
-  change.
+- `DeploymentResult.dogboning` remains `0.0` for the single uniform ring
+  (one group has no ends-vs-middle reference); the Level-2
+  `simulate_tapered_deployment` is where a real value comes from.
 - `NitinolParams::default()` is a **literature-typical** parameter set. Feeding
   vendor data is the caller's responsibility, and the defaults are not a
   substitute for it.
+
 
 ## [0.1.0] - 2026-09-22
 

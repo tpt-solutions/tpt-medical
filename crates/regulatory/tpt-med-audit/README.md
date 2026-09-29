@@ -56,8 +56,17 @@ audit trail should not drag in a crypto crate with a heavy dependency tree.
 - **`ct_eq`** — constant-time byte-slice comparison, so `verify_chain` does
   not leak digest prefixes through timing.
 - **`hex`** — lowercase hex encoding for digests and tags.
-- Zero dependencies, no `unsafe`, compiles to `wasm32-unknown-unknown`, and
+- No dependencies by default (the `ed25519` feature adds `ed25519-dalek`), no `unsafe`, compiles to `wasm32-unknown-unknown`, and
   the same code path is covered by native `cargo test`.
+
+- **Ed25519 signatures (feature `ed25519`)** — `SigningKey` /
+  `VerifyingKey` (RFC 8032, via `ed25519-dalek`) for the non-repudiation
+  path a shared HMAC key cannot provide, verified against the RFC 8032
+  §7.1 TEST 2 constants. Key generation stays with the caller's CSPRNG.
+- **External anchoring** — `AnchorRecord` / `AnchorKind` record that a
+  payload's SHA-256 digest was submitted to an RFC 3161 timestamp
+  authority or a transparency log, with the token kept opaque and the
+  digest binding checked by `covers`.
 
 ## Conventions
 
@@ -67,10 +76,12 @@ Read this before using the crate.
   primitives. The trail itself, the record schema, signatures with *meaning*,
   timestamps and export live in
   [`tpt-med-fda`](https://github.com/tpt-solutions/tpt-medical/tree/master/crates/regulatory/tpt-med-fda).
-- **A symmetric key gives integrity and attribution, not non-repudiation**
-  (RFC 0003). Anyone holding the key can produce a valid tag. When
-  non-repudiation is required, anchor the tag externally — an HSM, a
-  transparency log, or RFC 3161 timestamping.
+- **A symmetric key gives integrity and attribution, not non-repudiation.**
+  The `ed25519` feature adds asymmetric signatures, and `AnchorRecord` binds
+  a digest to an external timestamp/transparency-log submission — the
+  RFC 0003 seam. Turning either into a full non-repudiation *claim* still
+  requires the operational half: a protected signing key and a real anchor
+  service (HSM, TSA, log).
 - **A hash chain is what detects tampering, not a signature.** Edits,
   reordering, truncation and seed splicing all break the chain; the HMAC binds
   the chain to one key.

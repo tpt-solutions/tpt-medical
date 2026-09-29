@@ -230,9 +230,12 @@ fn main() {
 
 ## Known Limitations
 
-- **Symmetric keys give integrity and attribution, not non-repudiation**
-  (RFC 0003). Anchor the detached tag externally — an HSM, a transparency log,
-  or RFC 3161 — when non-repudiation is required.
+- **Non-repudiation needs the operational half.** `attach_anchor` records
+  that a payload's digest was submitted to an RFC 3161 authority or a
+  transparency log (`tpt-med-audit::AnchorRecord`), and the `ed25519`
+  feature of `tpt-med-audit` adds asymmetric signatures — but a full
+  non-repudiation *claim* still requires a protected signing key and a
+  real anchor service (HSM, TSA, log), which are deployment concerns.
 - **No key management.** Generation, storage, rotation and revocation are the
   caller's responsibility.
 - **No access control or authentication.** The crate does not verify *who* an

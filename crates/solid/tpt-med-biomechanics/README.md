@@ -33,9 +33,12 @@ analytical solutions, and whose every intermediate number is inspectable.
 **Scope is the point.** This is a *linear* core: 8-node trilinear hexes,
 isotropic materials, static loading, conjugate gradient. It is not a
 general-purpose nonlinear FEM package, and it is not trying to be. Nonlinear
-hyperelasticity, large deformation and contact are the documented upgrade path
-via `tpt-fem` / `tpt-fem-hyperelastic` / `tpt-fem-contact` (RFC 0002), pinned in
-the workspace manifest as the sanctioned integration points.
+hyperelasticity, large deformation and contact live in
+[`tpt-med-fem-adapter`](../../../crates/solid/tpt-med-fem-adapter) (RFC 0009's
+implementation of the RFC 0002 upgrade path); what this crate adds is the
+small-strain *inclusion* of soft tissue — `ElementMaterial::SoftTissue`
+linearizes a `tpt-med-tissue` model at `F = I` so one linear solve can carry
+bone and soft tissue together.
 
 ## Features
 
@@ -255,7 +258,8 @@ and it is worth more than the bytes.
 
 - [`tpt-med-meshing`](https://github.com/tpt-solutions/tpt-medical/tree/master/crates/imaging/tpt-med-meshing) — produces the `VoxelHexMesh`; the hex corner order is the contract between the two crates.
 - [`tpt-med-dicom`](https://github.com/tpt-solutions/tpt-medical/tree/master/crates/imaging/tpt-med-dicom) — the HU→E correlations behind the per-element materials.
-- [`tpt-med-tissue`](https://github.com/tpt-solutions/tpt-medical/tree/master/crates/solid/tpt-med-tissue) — hyperelastic models for the nonlinear upgrade path (RFC 0002).
+- [`tpt-med-tissue`](https://github.com/tpt-solutions/tpt-medical/tree/master/crates/solid/tpt-med-tissue) — hyperelastic models; linearized at `F = I` via `ElementMaterial::SoftTissue` for mixed bone/tissue linear models, and the constitutive source for the nonlinear path.
+- [`tpt-med-fem-adapter`](https://github.com/tpt-solutions/tpt-medical/tree/master/crates/solid/tpt-med-fem-adapter) — the nonlinear (large-deformation, contact) solve path; deliberately a separate crate rather than a feature here (see this crate's CHANGELOG Notes).
 - [`tpt-med-bone`](https://github.com/tpt-solutions/tpt-medical/tree/master/crates/solid/tpt-med-bone) — anisotropic bone materials and remodeling.
 - [`tpt-med-wasm`](https://github.com/tpt-solutions/tpt-medical/tree/master/crates/core/tpt-med-wasm) — runs this solver in the browser.
 

@@ -181,7 +181,9 @@ fn main() {
   the assembled model rather than to a single named fragment, so a plan that
   repositions two different fragments independently needs two
   `VirtualSurgery` invocations or an extension to `PlanStep`. This is a
-  deliberate v0 simplification and a known gap.
+  deliberate v0 simplification and a known gap. Per-fragment addressing is designed in
+[`rfcs/0011-per-fragment-addressing.md`](../../../rfcs/0011-per-fragment-addressing.md)
+(Draft) and lands as `move_fragment_named` once accepted.
 - **No soft tissue.** Only the bone voxel model is planned; ligaments,
   capsules and neurovascular structures are absent, so no plan can be checked
   for collateral damage.

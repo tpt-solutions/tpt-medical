@@ -35,6 +35,12 @@ const K: [u32; 64] = [
     0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
 ];
 
+pub mod anchor;
+#[cfg(feature = "ed25519")]
+pub mod ed25519;
+
+pub use anchor::{AnchorKind, AnchorRecord};
+
 /// SHA-256 digest of `data` (FIPS 180-4).
 pub fn sha256(data: &[u8]) -> [u8; 32] {
     let mut h: [u32; 8] = [

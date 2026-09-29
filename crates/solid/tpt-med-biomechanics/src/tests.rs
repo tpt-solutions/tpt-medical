@@ -249,3 +249,62 @@ fn roller_and_symmetry_constraints_give_a_clean_uniaxial_state() {
         assert!((e.stress[2] + 1.0).abs() < 1e-9, "sigma_zz {}", e.stress[2]);
     }
 }
+
+#[test]
+fn mixed_bone_and_linearized_tissue_materials() {
+    use crate::solver::ElementMaterial;
+    use tpt_med_tissue::{NeoHookeanParams, TissueModel};
+
+    let (nodes, elements) = grid_mesh(2, 1, 1, 1.0, 1.0, 1.0);
+    // Element 0: linear bone at 1000 MPa; element 1: Neo-Hookean tissue
+    // linearized at F = I.
+    let tissue = TissueModel::NeoHookean(NeoHookeanParams { c10: 0.5, d1: 0.2 });
+    // μ = 1 MPa, K = 10 MPa → E = 9·10·1/31, ν = 14/31.
+    let materials = [
+        ElementMaterial::Linear {
+            youngs_modulus: 1000.0,
+            poissons_ratio: 0.3,
+        },
+        ElementMaterial::SoftTissue(tissue),
+    ];
+    let model = BiomechanicsModel::from_parts_mixed(nodes, elements, &materials)
+        .expect("physical parameter set");
+    // The tissue element's constants are the linearization, to machine
+    // precision.
+    let expected_e = 90.0 / 31.0;
+    assert!((model.element_modulus[1] - expected_e).abs() < 1e-12);
+    assert!((model.element_poisson[1] - 14.0 / 31.0).abs() < 1e-12);
+    assert!((model.element_modulus[0] - 1000.0).abs() < 1e-12);
+
+    // The mesh solves end to end with the soft element in it.
+    let mut bc = BoundaryConditions::default();
+    bc.fix_nodes(
+        model
+            .elements
+            .iter()
+            .flat_map(|e| e.iter().copied())
+            .filter(|&n| model.nodes[n as usize].x < 0.5),
+    );
+    for n in 0..model.nodes.len() as u32 {
+        if (model.nodes[n as usize].x - 2.0).abs() < 1e-9 {
+            bc.add_force(n, Vec3::new(0.5, 0.0, 0.0));
+        }
+    }
+    let result = model.solve(&bc, 1e-10, 20_000).expect("solves");
+    assert!(result.displacements.iter().all(|d| d.x.is_finite()));
+}
+
+#[test]
+fn nonphysical_tissue_linearization_is_a_build_error() {
+    use crate::solver::ElementMaterial;
+    use tpt_med_tissue::{NeoHookeanParams, TissueModel};
+
+    let (nodes, elements) = grid_mesh(1, 1, 1, 1.0, 1.0, 1.0);
+    // K = 2, μ = 20 → ν ≥ ½: refused at build, not clamped.
+    let materials = [ElementMaterial::SoftTissue(TissueModel::NeoHookean(
+        NeoHookeanParams { c10: 10.0, d1: 1.0 },
+    ))];
+    let err = BiomechanicsModel::from_parts_mixed(nodes, elements, &materials)
+        .expect_err("non-physical set must be refused");
+    assert!(err.to_string().contains("non-physical"));
+}

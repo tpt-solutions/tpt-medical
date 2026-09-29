@@ -369,6 +369,149 @@ pub fn simulate_deployment_with_crowns(
     }
 }
 
+/// Result of a **tapered** (multi-ring-group) deployment — the Level-2
+/// model, per RFC 0004's fidelity ladder. Each axial ring group reaches its
+/// own equilibrium against the local lumen, which is what gives `dogboning`
+/// a real value: a lesion profile that resists mid-stent expansion makes
+/// the ends open wider.
+#[derive(Debug, Clone)]
+pub struct TaperedDeployment {
+    /// Per-group equilibrium results, in input order.
+    pub groups: Vec<DeploymentResult>,
+    /// Axial **dogboning**: `|d_ends − d_mids| / nominal`, where the end
+    /// diameter is the mean of the first and last group and the middle
+    /// diameter is the mean of the interior groups (the overall mean when
+    /// there are no interior groups). Zero for fewer than two groups.
+    pub dogboning: f64,
+    /// Mean equilibrium diameter over the groups (mm).
+    pub mean_diameter: f64,
+    /// Total radial force: the sum over groups (N).
+    pub radial_force: f64,
+}
+
+/// Level-2 radial equilibrium with the stent resolved into **axial ring
+/// groups** — a tapered design (different nominal diameter or stiffness per
+/// group) or an axial lesion profile (a smaller lumen at the mid-stent
+/// groups) produces genuinely different group equilibria, and the
+/// F2394-style dogboning metric takes a non-zero value.
+///
+/// The three slices pair element-by-element (equal lengths, ≥ 1 group):
+/// `group_nominal` is the group's free (recovered) diameter, `group_stiffness`
+/// its per-crown stiffness, and `group_lumen` the local vessel lumen at the
+/// deployment pressure (the caller's axial profile — evaluate the vessel law
+/// at each group's position to pass a lesion shape through). The uniform
+/// single-ring case is [`simulate_deployment`].
+pub fn simulate_tapered_deployment(
+    stent: &StentModel,
+    nitinol: &NitinolParams,
+    group_nominal: &[f64],
+    group_stiffness: &[f64],
+    group_lumen: &[f64],
+) -> TaperedDeployment {
+    assert_eq!(
+        group_nominal.len(),
+        group_stiffness.len(),
+        "group nominal-diameter and stiffness counts must pair"
+    );
+    assert_eq!(
+        group_nominal.len(),
+        group_lumen.len(),
+        "group nominal-diameter and lumen counts must pair"
+    );
+    assert!(
+        !group_nominal.is_empty(),
+        "at least one ring group is required"
+    );
+
+    let groups: Vec<DeploymentResult> = group_nominal
+        .iter()
+        .zip(group_stiffness)
+        .zip(group_lumen)
+        .map(|((&nominal, &stiffness), &lumen)| {
+            let group = StentModel {
+                expanded_diameter: nominal,
+                crimped_diameter: stent.crimped_diameter,
+                n_crowns: stent.n_crowns,
+                crown_stiffness: stiffness,
+            };
+            simulate_deployment(&group, nitinol, |_| lumen, Pressure::from_mpa(0.0))
+        })
+        .collect();
+
+    let mean_diameter = groups.iter().map(|g| g.diameter).sum::<f64>() / groups.len() as f64;
+    let radial_force: f64 = groups.iter().map(|g| g.radial_force).sum();
+
+    let dogboning = match groups.len() {
+        0 | 1 => 0.0,
+        2 => (groups[0].diameter - groups[1].diameter).abs() / stent.expanded_diameter,
+        _ => {
+            let d_end = 0.5 * (groups[0].diameter + groups[groups.len() - 1].diameter);
+            let d_mid = groups[1..groups.len() - 1]
+                .iter()
+                .map(|g| g.diameter)
+                .sum::<f64>()
+                / (groups.len() - 2) as f64;
+            (d_end - d_mid).abs() / stent.expanded_diameter
+        }
+    };
+
+    TaperedDeployment {
+        groups,
+        dogboning,
+        mean_diameter,
+        radial_force,
+    }
+}
+
+/// Screening strain-life law for superelastic Nitinol: the alternating
+/// strain amplitude the material tolerates **degrades logarithmically with
+/// cycle count** (the published Nitinol fatigue band drops roughly a factor
+/// of two from 10³ to 10⁷ cycles — e.g. the rotational-bending data
+/// collected in Pelton's Nitinol fatigue reviews). A design whose computed
+/// strain amplitude exceeds the degraded limit fails the screen.
+///
+/// This is a *screening* interpolation of published band data, not a
+/// device-specific S–N curve; a life claim still needs the vendor's own
+/// fatigue data and ASTM F2477-style pulsatile testing.
+#[derive(Debug, Clone, Copy)]
+pub struct StrainLifeLaw {
+    /// Alternating strain amplitude tolerated at [`Self::reference_cycles`].
+    pub amplitude_at_reference: f64,
+    /// Reference cycle count for `amplitude_at_reference`.
+    pub reference_cycles: f64,
+    /// Log–log slope `d log(ε)/d log(N)` (negative: life shortens the more
+    /// strain is applied).
+    pub slope: f64,
+}
+
+impl StrainLifeLaw {
+    /// A screening Nitinol band: 0.4 % alternating amplitude at 10⁷ cycles,
+    /// a factor-of-two drop per four decades (slope ≈ −0.075).
+    pub fn nitinol_screening() -> Self {
+        Self {
+            amplitude_at_reference: 0.004,
+            reference_cycles: 1.0e7,
+            slope: -0.075,
+        }
+    }
+
+    /// Tolerated alternating amplitude (dimensionless strain) after `cycles`
+    /// cycles.
+    pub fn amplitude_at(&self, cycles: f64) -> f64 {
+        if cycles <= 0.0 {
+            return f64::INFINITY; // no fatigue demand yet
+        }
+        self.amplitude_at_reference * (cycles / self.reference_cycles).powf(self.slope)
+    }
+
+    /// Screening verdict: `true` when the applied alternating strain
+    /// amplitude stays below the tolerated amplitude at `cycles` — the
+    /// conservative order (equality fails).
+    pub fn survives(&self, cycles: f64, applied_amplitude: f64) -> bool {
+        applied_amplitude < self.amplitude_at(cycles)
+    }
+}
+
 impl StentModel {
     /// Geometric **foreshortening** of a zig-zag crown ring: the axial
     /// shortening when the ring opens from its delivery (crimped)
@@ -582,5 +725,88 @@ mod tests {
         assert!(out.crown_forces.iter().all(|&f| f == 0.0));
         assert_eq!(out.peak_crown_fraction, 0.0);
         assert_eq!(out.ring.radial_force, 0.0);
+    }
+
+    fn base_stent() -> StentModel {
+        StentModel {
+            expanded_diameter: 6.0,
+            crimped_diameter: 1.8,
+            n_crowns: 12,
+            crown_stiffness: 0.5,
+        }
+    }
+
+    #[test]
+    fn tapered_deployment_with_uniform_profile_matches_the_uniform_ring() {
+        let stent = base_stent();
+        let nitinol = NitinolParams::default();
+        let out = simulate_tapered_deployment(
+            &stent,
+            &nitinol,
+            &[6.0, 6.0, 6.0],
+            &[0.5, 0.5, 0.5],
+            &[5.0, 5.0, 5.0],
+        );
+        let single = simulate_deployment(&stent, &nitinol, |_| 5.0, Pressure::from_mpa(0.013));
+        assert_eq!(out.dogboning, 0.0, "uniform profile cannot dogbone");
+        for g in &out.groups {
+            assert!((g.radial_force - single.radial_force).abs() < 1e-12);
+        }
+        assert!((out.radial_force - 3.0 * single.radial_force).abs() < 1e-12);
+        assert!((out.mean_diameter - single.diameter).abs() < 1e-12);
+    }
+
+    #[test]
+    fn stiff_mid_lesion_produces_real_dogboning() {
+        let stent = base_stent();
+        let nitinol = NitinolParams::default();
+        // A calcified mid-lesion: the middle group meets a smaller lumen,
+        // the ends open wider — the ends-flare-out dogbone shape.
+        let out = simulate_tapered_deployment(
+            &stent,
+            &nitinol,
+            &[6.0, 6.0, 6.0],
+            &[0.5, 0.5, 0.5],
+            &[5.0, 4.6, 5.0],
+        );
+        assert!(out.dogboning > 0.0, "dogboning {}", out.dogboning);
+        assert!(
+            out.groups[0].diameter > out.groups[1].diameter,
+            "ends wider than the lesion: {} vs {}",
+            out.groups[0].diameter,
+            out.groups[1].diameter
+        );
+        // Mirror the profile: |d_end − d_mid| is direction-agnostic.
+        let mirrored = simulate_tapered_deployment(
+            &stent,
+            &nitinol,
+            &[6.0, 6.0, 6.0],
+            &[0.5, 0.5, 0.5],
+            &[4.6, 5.0, 4.6],
+        );
+        assert!(
+            (mirrored.dogboning - out.dogboning).abs() < 1e-12,
+            "{mirrored:?} vs {out:?}"
+        );
+        // A two-group ring uses the overall mean as the middle reference.
+        let two =
+            simulate_tapered_deployment(&stent, &nitinol, &[6.0, 6.0], &[0.5, 0.5], &[5.0, 4.6]);
+        assert!(two.dogboning > 0.0);
+    }
+
+    #[test]
+    fn strain_life_law_degrades_with_cycles() {
+        let law = StrainLifeLaw::nitinol_screening();
+        assert!((law.amplitude_at(law.reference_cycles) - 0.004).abs() < 1e-15);
+        // Fewer cycles tolerate more strain; more cycles less.
+        assert!(law.amplitude_at(1.0e3) > law.amplitude_at(1.0e7));
+        assert!(law.amplitude_at(1.0e9) < 0.004);
+        // Screening verdict: 0.3 % amplitude is safe at 10 years of
+        // cardiac cycling, 0.5 % is not.
+        assert!(law.survives(3.0e8, 0.003));
+        assert!(!law.survives(3.0e8, 0.005));
+        // No cycles yet: infinite capacity.
+        assert_eq!(law.amplitude_at(0.0), f64::INFINITY);
+        assert!(law.survives(0.0, 0.05));
     }
 }

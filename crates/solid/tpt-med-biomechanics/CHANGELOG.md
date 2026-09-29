@@ -12,6 +12,14 @@ changes for consumers of this crate.
 ## [Unreleased]
 
 ### Added
+- `ElementMaterial` (`Linear` or `SoftTissue`) +
+  `BiomechanicsModel::from_parts_mixed`: **direct `tpt-med-tissue`
+  material support** — a hyperelastic tissue model is linearized at
+  `F = I` (`tpt-med-tissue::TissueModel::linearized_engineering_constants`)
+  so one linear solve can carry linear bone next to soft tissue.
+  Non-physical parameter sets (`ν ≥ ½`) are build errors, not clamps.
+  Two new tests: the tissue element's constants against the hand-computed
+  linearization and an end-to-end solve with the soft element present.
 - **Per-DOF constraints**: `BoundaryConditions::constrained_dofs` /
   `constrain_dofs(nodes, [x, y, z])` — symmetry planes and roller supports
   constrain individual axes instead of all-3-DOFs `fix_nodes`. Verified by
@@ -25,15 +33,15 @@ changes for consumers of this crate.
 - Crate README documenting the deliberate scope boundary (linear, isotropic,
   static), the mm–N–MPa unit set, and the fidelity ladder to `tpt-fem`.
 
-### Planned
-- Nonlinear capability behind a cargo feature via `tpt-fem` /
-  `tpt-fem-hyperelastic` / `tpt-fem-contact`, per RFC 0002. The linear core
-  stays the default so the WASM footprint is unchanged.
-  as a convenience over the current all-3-DOFs `fix_nodes`.
-- Direct `tpt-med-tissue` material support, so a single model can mix linear
-  bone and hyperelastic soft tissue.
-  first-class result rather than an off-script exercise.
-
+### Notes
+- **Nonlinear capability lives in `tpt-med-fem-adapter`, not here.** RFC
+  0002 named a cargo feature over the `tpt-fem` substrate; RFC 0009's
+  accepted implementation delivered it as the adapter crate (3-D Hex8
+  nonlinear assembly, tangent stiffness, Newton solve, contact). Duplicating
+  a second Newton assembly inside `biomechanics` was rejected in review —
+  the linear core stays this crate's only code path, the WASM footprint is
+  unchanged, and the small-strain *inclusion* of soft tissue is what this
+  crate provides instead (above).
 ### Notes
 - `StressResult` and `ElementStress` field layout is public API and is consumed
   by `tpt-med-wasm` and the golden datasets; adding a field is semver-minor,

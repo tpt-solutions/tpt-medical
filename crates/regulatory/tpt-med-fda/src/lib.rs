@@ -240,6 +240,12 @@ pub enum PolicyError {
         /// The rejected reason.
         reason: String,
     },
+    /// An anchor record's digest did not match the payload it claims to
+    /// anchor.
+    AnchorDigestMismatch {
+        /// The digest the anchor record carried.
+        recorded: String,
+    },
 }
 
 impl core::fmt::Display for PolicyError {
@@ -252,6 +258,10 @@ impl core::fmt::Display for PolicyError {
             PolicyError::ReasonPolicyViolation { reason } => {
                 write!(f, "reason policy: rejected reason {reason:?}")
             }
+            PolicyError::AnchorDigestMismatch { recorded } => write!(
+                f,
+                "anchor digest {recorded} does not match the payload it anchors"
+            ),
         }
     }
 }
@@ -268,6 +278,9 @@ pub struct AuditTrail {
     digest_index: Vec<String>,
     /// Reproducibility manifest, when the run recorded one.
     manifest: Option<ReproducibilityManifest>,
+    /// External anchors (RFC 3161 timestamps, transparency-log proofs),
+    /// in attachment order.
+    anchors: Vec<tpt_med_audit::AnchorRecord>,
     /// Signature discipline (default: permissive).
     signature_policy: SignaturePolicy,
     /// Reason-field policy (default: free text).
@@ -283,6 +296,7 @@ impl AuditTrail {
             signatures: Vec::new(),
             digest_index: Vec::new(),
             manifest: None,
+            anchors: Vec::new(),
             signature_policy: SignaturePolicy::default(),
             reason_policy: ReasonPolicy::default(),
         }
@@ -298,6 +312,7 @@ impl AuditTrail {
             signatures: Vec::new(),
             digest_index: Vec::new(),
             manifest: None,
+            anchors: Vec::new(),
             signature_policy: SignaturePolicy::default(),
             reason_policy: ReasonPolicy::default(),
         }
@@ -503,6 +518,46 @@ impl AuditTrail {
     pub fn manifest(&self) -> Option<&ReproducibilityManifest> {
         self.manifest.as_ref()
     }
+
+    /// Records an **external anchor**: proof that the trail's exported tag
+    /// (or any payload) was submitted to an RFC 3161 timestamp authority
+    /// or a transparency log. The record's digest binding is checked on
+    /// attach ([`tpt_med_audit::AnchorRecord::covers`]); the token itself
+    /// stays opaque and is verified by the anchor service's own tooling —
+    /// this is the RFC 0003 non-repudiation seam. Anchoring is recorded as
+    /// an audit event, so removing an anchor after the fact breaks the
+    /// chain.
+    ///
+    /// # Errors
+    ///
+    /// [`PolicyError::AnchorDigestMismatch`] when the record's digest does
+    /// not match the payload it claims to anchor.
+    pub fn attach_anchor(
+        &mut self,
+        anchor: tpt_med_audit::AnchorRecord,
+        payload: &[u8],
+    ) -> Result<(), PolicyError> {
+        if !anchor.covers(payload) {
+            return Err(PolicyError::AnchorDigestMismatch {
+                recorded: anchor.digest_hex,
+            });
+        }
+        let digest = anchor.digest_hex.clone();
+        self.anchors.push(anchor);
+        self.append(AuditEvent::new(
+            "system:anchor",
+            "external_anchor",
+            digest,
+            AuditAction::Create,
+            "payload digest anchored to an external timestamp/transparency service",
+        ));
+        Ok(())
+    }
+
+    /// The recorded external anchors, in attachment order.
+    pub fn anchors(&self) -> &[tpt_med_audit::AnchorRecord] {
+        &self.anchors
+    }
 }
 
 #[cfg(test)]
@@ -703,6 +758,31 @@ mod tests {
         }
         assert_eq!(depth, 0, "unbalanced delimiters");
         assert!(closes_at_top, "no top-level value closed");
+    }
+
+    #[test]
+    fn external_anchors_bind_to_their_payload_and_are_audited() {
+        use tpt_med_audit::{AnchorKind, AnchorRecord};
+        let mut trail = AuditTrail::new("run-anchor");
+        trail.append(event(AuditAction::Create, "sim-1"));
+        let tag = trail.export_tag(b"k");
+        let anchor = AnchorRecord::anchor(AnchorKind::Rfc3161, tag.as_bytes(), b"TSA-TOKEN");
+        trail
+            .attach_anchor(anchor, tag.as_bytes())
+            .expect("binding holds");
+        assert_eq!(trail.anchors().len(), 1);
+        assert_eq!(trail.anchors()[0].kind.key(), "rfc3161");
+        assert!(trail.anchors()[0].covers(tag.as_bytes()));
+        // The attach is itself an audit event: the chain grew and verifies.
+        assert!(trail.verify_integrity());
+        assert_eq!(trail.len(), 2);
+        // A swapped payload is refused at attach time.
+        let bad = AnchorRecord::anchor(AnchorKind::Rfc3161, b"other payload", b"TSA-TOKEN");
+        assert!(matches!(
+            trail.attach_anchor(bad, tag.as_bytes()),
+            Err(PolicyError::AnchorDigestMismatch { .. })
+        ));
+        assert_eq!(trail.anchors().len(), 1, "rejected anchor is not stored");
     }
 
     #[test]

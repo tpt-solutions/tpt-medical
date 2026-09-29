@@ -13,6 +13,7 @@ keywords = ["fem", "finite-element", "biomechanics", "voxel", "solver"]
 categories = ["science", "simulation", "mathematics", "algorithms"]
 
 [dependencies]
+tpt-med-tissue = { path = "../tpt-med-tissue", version = "0.1.0" }
 tpt-med-meshing = { path = "../../imaging/tpt-med-meshing", version = "0.1.0" }
 tpt-med-geometry = { path = "../../core/tpt-med-geometry", version = "0.1.0" }
 tpt-med-units = { path = "../../core/tpt-med-units", version = "0.1.0" }

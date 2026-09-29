@@ -24,6 +24,12 @@ pub enum EpError {
     },
     /// A diffusivity was not finite or not positive.
     InvalidDiffusivity(f64),
+    /// A fiber-conductivity field was rejected (bad direction, transverse
+    /// diffusivity above the longitudinal one, or a non-finite value).
+    InvalidAnisotropy {
+        /// What was wrong.
+        reason: &'static str,
+    },
     /// An [`crate::S1S2Protocol`] failed to establish even the baseline S1
     /// pacing train (no measurable action potential was detected at all —
     /// usually a cycle length shorter than the model's own refractory
@@ -45,6 +51,9 @@ impl core::fmt::Display for EpError {
             ),
             EpError::InvalidDiffusivity(d) => {
                 write!(f, "diffusivity must be finite and positive, got {d}")
+            }
+            EpError::InvalidAnisotropy { reason } => {
+                write!(f, "fiber conductivity field rejected: {reason}")
             }
             EpError::RestitutionFailed(why) => write!(f, "S1-S2 restitution protocol: {why}"),
         }

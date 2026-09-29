@@ -28,10 +28,13 @@ changes for consumers of this crate.
   Three new tests (volume/depth on a plane cut, alignment error for a
   grid-aligned and a sub-voxel translation, multi-cut totals).
 
+- `rfcs/0011-per-fragment-addressing.md` (Draft): the design for
+  per-fragment addressing — `move_fragment_named`, fragment identity as the
+  producing cut's name, split/keep semantics for later cuts, and the
+  `CutAfterMove` rejection — scoped but not implemented, per the RFC
+  process.
+
 ### Planned
-- Per-fragment addressing, so a `PlanStep::Move` can target a single named
-  fragment rather than the whole assembled model. This is the largest known gap
-  and needs an RFC.
 - Curved and freeform resections, saw-kerf width, and multi-plane wedges.
 - Implant component placement with a bone–implant interface, and bone graft or
   defect reconstruction.
@@ -48,7 +51,7 @@ changes for consumers of this crate.
 - Fragment transforms are **rigid** (rotation plus translation). No scaling and
   no shear — a plan that could scale bone would not be a surgical plan.
 - Adding a `PlanStep` variant is breaking for downstream exhaustive matches.
-
+
 ## [Unreleased]
 
 ### Added
@@ -56,10 +59,13 @@ changes for consumers of this crate.
   planning primitives are not hard, but producing the operation log *by
   construction* rather than reconstructing it from screenshots afterwards is.
 
+- `rfcs/0011-per-fragment-addressing.md` (Draft): the design for
+  per-fragment addressing — `move_fragment_named`, fragment identity as the
+  producing cut's name, split/keep semantics for later cuts, and the
+  `CutAfterMove` rejection — scoped but not implemented, per the RFC
+  process.
+
 ### Planned
-- Per-fragment addressing, so a `PlanStep::Move` can target a single named
-  fragment rather than the whole assembled model. This is the largest known gap
-  and needs an RFC.
 - Curved and freeform resections, saw-kerf width, and multi-plane wedges.
 - Implant component placement with a bone–implant interface, and bone graft or
   defect reconstruction.

@@ -67,6 +67,14 @@ vendor data**.
   per-crown stiffness slice (tapered or anomalous crowns) and reports the
   per-crown force distribution plus the largest single-crown share, with
   the ring-level metrics from the summed stiffness.
+- **Tapered ring groups (Level 2)** — `simulate_tapered_deployment`
+  resolves the stent into axial groups, each at its own equilibrium
+  against a caller-supplied axial lumen profile, so a stiff mid-lesion
+  gives `dogboning` a real value.
+- **Strain-life screening** — `StrainLifeLaw::nitinol_screening()` degrades
+  the tolerated alternating strain amplitude logarithmically with cycle
+  count (0.4 % at 10⁷, factor-of-two per four decades) and answers
+  `survives(N, ε)` for fatigue screens.
 
 ## Conventions
 
@@ -191,11 +199,14 @@ fn main() {
 
 ## Known Limitations
 
-- **Level-1 ring model.** Uniform ring radius, no taper between ring
-  groups, no 3D bending stiffness. The `dogboning` output is structurally
-  `0.0` here. Per-crown *stiffness* variation is supported
-  (`simulate_deployment_with_crowns`), but the ring still shares one radius,
-  so per-crown geometry variation is not resolved.
+- **Level 2, not 3.** `simulate_tapered_deployment` resolves axial ring
+  groups against an axial lumen profile (so dogboning is real), but each
+  group is still a Level-1 ring: no 3D bending, no inter-ring interaction,
+  and the vessel law is the caller's. Level 3 (3D superelastic FEM with
+  frictional contact) remains the RFC 0004 upgrade path. Per-crown
+  *stiffness* variation is supported within a ring
+  (`simulate_deployment_with_crowns`), but the ring still shares one
+  radius.
 - **Foreshortening is geometric, not structural.** The diamond-cell model
   with a `link_fraction` calibration is a screening number to be checked
   against the manufacturer's published foreshortening, not a strut-level

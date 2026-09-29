@@ -486,15 +486,19 @@ gating input is a purchase of ISO/IEC 15444-2, not engineering time.
 
 - [x] **A `verify_chain_detailed` returning per-index status, so a forensic tool can report the first broken link rather than only that the chain fails.**
   **Done (2026-09-29): `verify_chain_detailed`/`LinkReport`/`LinkStatus` in `tpt-med-audit` — first broken link, expected-vs-stored digests, truncation as `Missing`.**
-- [ ] **Asymmetric signatures (Ed25519) for non-repudiation, behind a clearly named feature, alongside the existing symmetric HMAC path.**
-- [ ] **External anchoring helpers for RFC 3161 timestamping or a transparency log, which RFC 0003 identifies as the way to close the non-repudiation gap.**
+- [x] **Asymmetric signatures (Ed25519) for non-repudiation, behind a clearly named feature, alongside the existing symmetric HMAC path.**
+  **Done (2026-09-30): `ed25519` cargo feature (off by default) — `SigningKey`/`VerifyingKey` over `ed25519-dalek`, pinned against the RFC 8032 §7.1 TEST 2 constants (cross-checked against an independent OpenSSL derivation when recorded); CI gained a feature-gated pass.**
+- [x] **External anchoring helpers for RFC 3161 timestamping or a transparency log, which RFC 0003 identifies as the way to close the non-repudiation gap.**
+  **Done (2026-09-30): `anchor` module — `AnchorRecord::anchor` binds a payload's SHA-256 digest to a TSA/transparency-log submission, `covers` checks the binding mechanically, and the token stays opaque (service-side verification, by design).**
 
 ### `tpt-med-biomechanics`
 
-- [ ] **Nonlinear capability behind a cargo feature via `tpt-fem` / `tpt-fem-hyperelastic` / `tpt-fem-contact`, per RFC 0002. The linear core stays the default so the WASM footprint is unchanged.**
+- [x] **Nonlinear capability behind a cargo feature via `tpt-fem` / `tpt-fem-hyperelastic` / `tpt-fem-contact`, per RFC 0002. The linear core stays the default so the WASM footprint is unchanged.**
+  **Closed 2026-09-30 by architectural decision: the capability shipped as the `tpt-med-fem-adapter` crate (RFC 0009's accepted implementation). A second Newton assembly inside `biomechanics` was rejected in review — the crate's CHANGELOG Notes carries the rationale; this crate contributes the small-strain inclusion path instead.**
 - [x] **Multi-constraint boundary conditions (symmetry planes, roller constraints) as a convenience over the current all-3-DOFs `fix_nodes`.**
   **Done (2026-09-29): `BoundaryConditions::constrain_dofs(nodes, [x,y,z])` — verified by an exact symmetry-plane uniaxial state.**
-- [ ] **Direct `tpt-med-tissue` material support, so a single model can mix linear bone and hyperelastic soft tissue.**
+- [x] **Direct `tpt-med-tissue` material support, so a single model can mix linear bone and hyperelastic soft tissue.**
+  **Done (2026-09-30): `ElementMaterial::SoftTissue` + `from_parts_mixed` — a tissue model linearized at `F = I` (`linearized_engineering_constants`) joins linear bone in one solve; `ν ≥ ½` parameter sets are build errors, not clamps.**
 - [x] **Grid and time convergence reporting (`CalculationVerification` evidence) as a first-class result rather than an off-script exercise.**
   **Done (2026-09-29): `convergence::convergence_study` + `ConvergenceReport` — sorted levels, relative errors, observed order (locked to 2.0 on an h² series).**
 
@@ -511,8 +515,10 @@ gating input is a purchase of ISO/IEC 15444-2, not engineering time.
 
 - [x] **Four-element and non-linear pressure–flow relations for systemic circulation modelling.**
   **Done (2026-09-30): `FourElementWindkessel` (inertance `L` in the pressure-driven two-state form — the formulation where the inertance adds ring-down physics; verified against the theoretical envelope decay and DC-gain superposition) + `WaterfallResistor` (Starling-resistor non-linear pressure–flow). Flow-driven CFD coupling stays 3-element, documented.**
-- [ ] **Waveform-based instantaneous-hyperbolic FFR, alongside the pressure-ratio definition implemented here.**
-- [ ] **Patient-specific waveform fitting, rather than the fixed analytic shapes.**
+- [x] **Waveform-based instantaneous-hyperbolic FFR, alongside the pressure-ratio definition implemented here.**
+  **Done (2026-09-30): `InstantaneousWaveFreeRatio` — Pd/Pa averaged over the wave-free diastolic window (caller-supplied fractions, 0.90 threshold), the resting waveform-based counterpart to the hyperemic pressure ratio.**
+- [x] **Patient-specific waveform fitting, rather than the fixed analytic shapes.**
+  **Done (2026-09-30): `MeasuredFlowWaveform::fit` — truncated Fourier series (mean + per-harmonic amplitude/phase) fitted by real DFT to sampled flow, with `fit_rms` as the truncation measure; verified by exact recovery of the analytic carotid series.**
 - [x] **A direct coupling helper so a `tpt-med-hemodynamics` solve can step the Windkessel state in lockstep with the CFD time step.**
   **Done (2026-09-29): `CoupledWindkessel` — stateful RK4 advance returning the outlet pressure per CFD step; steady-state + decay tests.**
 
@@ -526,7 +532,8 @@ gating input is a purchase of ISO/IEC 15444-2, not engineering time.
 ### `tpt-med-electrophysiology`
 
 - [ ] **Stage 2 (ECG/EGM forward problem via pseudo-bidomain lead-field projection) and Stage 3 (ablation screening), both kept at roadmap depth in `rfcs/0005-cardiac-electrophysiology.md` pending Stage 1 usage and, for Stage 3, clinical-data validation.**
-- [ ] **Anisotropic (fiber-direction) conductivity — needs a fiber-field source (atlas or DTI derivation) this crate has no source for yet.**
+- [x] **Anisotropic (fiber-direction) conductivity — needs a fiber-field source (atlas or DTI derivation) this crate has no source for yet.**
+  **Done (2026-09-30): the *acceptance* half — `FiberConductivity` + `set_anisotropy` take a caller-supplied per-voxel field (axisymmetric projections, whole-field validation, stability bound from the fiber maximum; isotropic-limit equivalence verified). The *source* stays external by design, exactly as the item framed it.**
 - [ ] **Promotion path to `tpt-science`'s electrophysiology crate for ionic-model breadth beyond Mitchell-Schaeffer, once a real workflow needs it.**
 
 ### `tpt-med-fda`
@@ -535,7 +542,8 @@ gating input is a purchase of ISO/IEC 15444-2, not engineering time.
   **Done (2026-09-29): `SignaturePolicy::RequireSignatureAfterLastEdit` + `checked_append`/`export_package_checked` with `PolicyError`.**
 - [x] **An append-only persistence layer with WORM semantics, so the trail survives a process restart without a caller-supplied store.**
   **Done (2026-09-30): `worm::WormLog` — write-once journal (`create_new`), per-entry chain digest + `fsync` per append, reopen verifies header/chain/sequence; torn tails refused as `TornTail`, retroactive edits and cross-run splices as `ChainBroken` at the first bad link; `into_trail` rebuilds a self-verifying trail. Signatures/policies remain trail-side state.**
-- [ ] **External anchoring of the detached tag (HSM, transparency log, RFC 3161) to close the non-repudiation gap identified in RFC 0003.**
+- [x] **External anchoring of the detached tag (HSM, transparency log, RFC 3161) to close the non-repudiation gap identified in RFC 0003.**
+  **Done (2026-09-30): `AuditTrail::attach_anchor` — digest binding checked at attach, the anchor recorded as an audit event (removal breaks the chain), `PolicyError::AnchorDigestMismatch` on swapped payloads.**
 - [x] **Reason-field policy enforcement, so a site can require a structured reason code rather than free text.**
   **Done (2026-09-29): `ReasonPolicy::structured([...])` — code-prefix validation in `checked_append`.**
 
@@ -554,7 +562,8 @@ gating input is a purchase of ISO/IEC 15444-2, not engineering time.
 ### `tpt-med-implant-sizing`
 
 - [ ] **Automatic landmark detection from a CT, which is the hard part of the problem and is not attempted here.**
-- [ ] **Multi-measurement charts, so a femoral decision can weigh TEA, AP depth and posterior condylar offset jointly, with a vendor-specific precedence rule.**
+- [x] **Multi-measurement charts, so a femoral decision can weigh TEA, AP depth and posterior condylar offset jointly, with a vendor-specific precedence rule.**
+  **Done (2026-09-30): `size_from_measurements` — every measurement votes, disagreement resolves by lowest precedence rank (equal ranks up-size), every vote recorded with out-of-chart flags; `posterior_condylar_offset` + `femoral_measurements()` supply the TEA/AP/PCO triple (PCO as a documented TEA-perpendicular proxy).**
 - [ ] **Soft-tissue and ligament balance assessment, and a check that the selected size leaves acceptable gap balancing. Sizing is necessary for a good plan and not sufficient.**
 - [ ] **Hip, shoulder and ankle sizing beyond the knee-specific `KneeLandmarks`.**
 - [x] **Schema validation and reporting for a caller-supplied chart, so a mis-transcribed chart is caught rather than silently producing a recommendation.**
@@ -587,12 +596,14 @@ gating input is a purchase of ISO/IEC 15444-2, not engineering time.
 - [ ] ****Level 3** — 3D superelastic FEM with frictional contact via `tpt-fem-hyperelastic` / `tpt-fem-contact`.**
 - [x] **Foreshortening, and per-crown stiffness variation for a non-uniform ring.**
   **Done (2026-09-30): `StentModel::foreshortening` — diamond-cell geometry with a `link_fraction` calibration landing in the published few-percent band (NaN beyond the developed-length limit); `simulate_deployment_with_crowns`/`NonUniformDeployment` — per-crown stiffness slice with proportional force split and peak-crown share (empty slice reproduces the uniform ring exactly).**
-- [ ] **Cyclic degradation of `ε_L` over 10⁶ cycles, to support fatigue and accelerated-dilation life claims.**
+- [x] **Cyclic degradation of `ε_L` over 10⁶ cycles, to support fatigue and accelerated-dilation life claims.**
+  **Done (2026-09-30): `StrainLifeLaw::nitinol_screening` — log-log strain-life law (0.4 % at 10⁷, factor-of-two per four decades per the published fatigue band) with a conservative `survives(N, ε)` verdict. Screening interpolation, not a device S–N curve.**
 - [ ] **Direct coupling to a `tpt-med-hemodynamics` solution in the same solve, rather than a prescribed vessel law.**
 
 ### `tpt-med-surgical-planning`
 
 - [ ] **Per-fragment addressing, so a `PlanStep::Move` can target a single named fragment rather than the whole assembled model. This is the largest known gap and needs an RFC.**
+  **RFC drafted (2026-09-30): `rfcs/0011-per-fragment-addressing.md` (Draft) — fragment identity from the producing cut, `move_fragment_named`, split/keep semantics, `CutAfterMove` rejection. Implementation pending RFC acceptance.**
 - [ ] **Curved and freeform resections, saw-kerf width, and multi-plane wedges.**
 - [ ] **Implant component placement with a bone–implant interface, and bone graft or defect reconstruction.**
 - [ ] **Soft-tissue structures, so a plan can be checked for collateral damage to ligaments, capsules and neurovascular bundles.**
@@ -627,8 +638,10 @@ gating input is a purchase of ISO/IEC 15444-2, not engineering time.
 
 ### `tpt-med-wear`
 
-- [ ] **Wear-debris-induced damage feedback, so wear changes the contact geometry and pressures — without which the runaway that ends real implant life is not captured.**
-- [ ] **A coupling helper to a contact solver, so pressures and sliding distances can be solved rather than supplied.**
+- [x] **Wear-debris-induced damage feedback, so wear changes the contact geometry and pressures — without which the runaway that ends real implant life is not captured.**
+  **Done (2026-09-30): the feedback loop in `simulate_wear_with_contact` — accumulated per-zone wear depths drive each block's pressure solve. The built-in Winkler foundation is self-stabilising (verified: load migration off the faster-worn zone, coupled total below the prescribed run); runaway modes enter through the same `ContactSolver` trait.**
+- [x] **A coupling helper to a contact solver, so pressures and sliding distances can be solved rather than supplied.**
+  **Done (2026-09-30): `ContactSolver` trait with the built-in `WinklerContact` (penetration solved so zones carry the total load; worn zones shed load; contact loss flagged). A real contact solver implements the trait.**
 - [x] **Uncertainty propagation over the wear coefficient, which scatters over orders of magnitude between studies and which a defensible screening study should quantify.**
   **Done (2026-09-29): `WearUncertainty` + `simulate_wear_uncertainty` — low/central/high band and `relative_band`.**
 - [x] **A run-in period and activity-level variation, so gait extrapolation is not strictly linear in cycle count.**

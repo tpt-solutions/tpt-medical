@@ -58,6 +58,15 @@ without a performance argument.
 - **`WaterfallResistor`** — the vascular waterfall (Starling resistor)
   non-linear pressure–flow relation: `Q = max(0, (p_up − p_collapse)/R)`,
   flow independent of downstream pressure once the vessel collapses.
+- **`InstantaneousWaveFreeRatio`** — the waveform-based iFR: `Pd/Pa`
+  averaged over the wave-free diastolic window (default fractions
+  0.45–0.95 of the cycle, threshold 0.90), the resting alternative to the
+  hyperemic pressure-ratio FFR.
+- **`MeasuredFlowWaveform::fit`** — patient-specific waveforms: a
+  truncated Fourier series (mean + per-harmonic amplitude and phase)
+  fitted by DFT to one cycle of sampled flow, with `fit_rms` as the
+  truncation-error measure. The analytic shapes remain the screening
+  default.
 
 ## Conventions
 
@@ -181,11 +190,14 @@ asserted:
 - The only non-linear pressure–flow element is the vascular waterfall. Other
   non-linear relations (power-law resistors, flow limitation, venous
   capacitance curves) are not implemented.
-- FFR here is the *pressure-ratio* definition. The waveform-based
-  instantaneous-hyperbolic FFR used in some catheter workflows is not
-  implemented.
-- Waveforms are fixed analytic shapes, not measured from a specific patient.
-  Per-patient waveform fitting is a caller-side concern.
+- iFR here takes the wave-free window as caller-supplied cycle fractions;
+  automatic window detection from dP/dt features (the catheter-workflow
+  convention) is upstream of this crate by design.
+- `MeasuredFlowWaveform` is a truncated Fourier fit — its `fit_rms` is the
+  honest truncation-error measure, and features sharper than the kept
+  harmonic order are not representable.
+- Waveform *fitting* is provided; waveform *acquisition* (sample
+  alignment, averaging over beats) stays with the caller.
 
 ## Related Crates
 

@@ -37,10 +37,20 @@ changes for consumers of this crate.
   (Permutt & Bromberger-Barnea), the standard non-linear element of systemic
   and cerebral circulation modelling.
 
-### Planned
-- Waveform-based instantaneous-hyperbolic FFR, alongside the pressure-ratio
-  definition implemented here.
-- Patient-specific waveform fitting, rather than the fixed analytic shapes.
+- `InstantaneousWaveFreeRatio`: **waveform-based iFR** — the distal/proximal
+  pressure ratio averaged over the wave-free diastolic window (default
+  fractions 0.45–0.95, threshold 0.90), the resting alternative to the
+  pressure-ratio FFR. Window fractions are caller-supplied, so the window
+  detection convention stays upstream; degenerate windows yield `NaN`.
+- `MeasuredFlowWaveform::fit`: **patient-specific waveform fitting** — a
+  truncated Fourier series fitted to one cycle of evenly sampled flow data
+  by real DFT (mean plus per-harmonic amplitude and phase), with `fit_rms`
+  as the truncation-error measure. The fixed analytic `FlowWaveform`
+  shapes remain the screening default. Verified by exact recovery of the
+  analytic carotid series, periodicity, and monotone truncation-error
+  decay.
+- Both remaining Planned items are delivered; the crate has no open
+  per-crate backlog left.
 
 ### Notes
 - The FFR ischaemia threshold is `≤ 0.80`, and it is **inclusive**. The
