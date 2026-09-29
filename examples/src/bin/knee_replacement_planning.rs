@@ -10,7 +10,9 @@
 
 use tpt_med_geometry::{Plane, Vec3};
 use tpt_med_implant_sizing::{size_tka, KneeLandmarks, SizeChart, SizeEntry};
-use tpt_med_surgical_planning::{FragmentTransform, OsteotomyCut, VirtualSurgery, VoxelModel};
+use tpt_med_surgical_planning::{
+    DiscardedSide, FragmentTransform, OsteotomyCut, VirtualSurgery, VoxelModel,
+};
 
 fn main() {
     println!("=== tpt-medical virtual TKA planning (Phase 6 milestone) ===");
@@ -63,7 +65,9 @@ fn main() {
         fragment_name: "distal_resection".into(),
         keep_positive: true,
         kerf_width: 0.0,
-    });
+        discarded: DiscardedSide::Resect,
+    })
+    .expect("valid plan");
     plan.move_fragment(FragmentTransform {
         rotation_axis: Vec3::new(-1.0, 0.0, 0.0), // TEA (medial→lateral = +x; rotate about it)
         rotation_angle: 2.0f64.to_radians(),

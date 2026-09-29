@@ -610,8 +610,8 @@ gating input is a purchase of ISO/IEC 15444-2, not engineering time.
 
 ### `tpt-med-surgical-planning`
 
-- [ ] **Per-fragment addressing, so a `PlanStep::Move` can target a single named fragment rather than the whole assembled model. This is the largest known gap and needs an RFC.**
-  **RFC drafted (2026-09-30): `rfcs/0011-per-fragment-addressing.md` (Draft) — fragment identity from the producing cut, `move_fragment_named`, split/keep semantics, `CutAfterMove` rejection. Implementation pending RFC acceptance.**
+- [x] **Per-fragment addressing, so a `PlanStep::Move` can target a single named fragment rather than the whole assembled model. This is the largest known gap and needs an RFC.**
+  **Implemented (2026-10-01) as RFC 0011's option-3 first slice, following maintainer direction to proceed: `DiscardedSide::{Resect, RetainAs { name }}` + `PlanStep::MoveNamed`/`move_fragment_named` with build-time `PlanError` validation; plans without retention are byte-identical (rule 4 asserted by the untouched prior suite). The implementation also exposed that the RFC's original option 1 was itself flawed — recorded in the RFC. Remaining (tracked in the crate's CHANGELOG): cuts after named moves (grid unification), multi-fragment retaining cuts, collision handling beyond last-write-wins.**
 - [ ] **Curved and freeform resections, saw-kerf width, and multi-plane wedges.**
   **Kerf and wedges delivered (2026-10-01): `OsteotomyCut::kerf_width` (symmetric slab removal, boundary shifted by half the kerf, depth measured past the kept face) and `WedgeCut`/`PlanStep::Wedge` (the exact two-plane intersection sequential cuts cannot express). Curved/freeform resections remain open.**
 - [ ] **Implant component placement with a bone–implant interface, and bone graft or defect reconstruction.**

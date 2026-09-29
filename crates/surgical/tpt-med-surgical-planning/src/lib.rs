@@ -59,6 +59,27 @@ impl VoxelModel {
 /// within `kerf_width / 2` of the plane is removed on both sides, so a
 /// kerf of 4 mm shifts the kept boundary 2 mm outward and the resection
 /// measurement grows by the slab.
+/// What happens to a cut's discarded side (`rfcs/0011`'s resolution):
+/// resected — the executor's original semantics, and the default — or
+/// **retained as a named fragment**, so the two pieces of an osteotomy
+/// can be addressed and repositioned independently.
+#[derive(Debug, Clone, PartialEq)]
+pub enum DiscardedSide {
+    /// The discarded side is removed from the model (original behaviour).
+    Resect,
+    /// The discarded side is kept as a named, independently addressable
+    /// fragment.
+    RetainAs {
+        /// The retained fragment's name (audit label; must be non-empty).
+        name: String,
+    },
+}
+
+/// A plane cut: keeps the voxels on the `keep_side` side of `plane`
+/// (`signed_distance ≥ 0`), with an optional **saw-kerf width** — material
+/// within `kerf_width / 2` of the plane is removed on both sides, so a
+/// kerf of 4 mm shifts the kept boundary 2 mm outward and the resection
+/// measurement grows by the slab.
 #[derive(Debug, Clone)]
 pub struct OsteotomyCut {
     /// Cutting plane.
@@ -70,6 +91,9 @@ pub struct OsteotomyCut {
     /// Saw-kerf width (mm): material within `kerf_width / 2` of the plane
     /// is discarded from both sides. 0.0 (the default) is a pure plane cut.
     pub kerf_width: f64,
+    /// The discarded side's fate. `Resect` (the default) is the original
+    /// behaviour; `RetainAs` keeps it as a second named fragment.
+    pub discarded: DiscardedSide,
 }
 
 impl OsteotomyCut {
@@ -81,13 +105,21 @@ impl OsteotomyCut {
     }
 
     /// [`Self::apply`] plus the step's measurements: the **resection
-    /// volume** (discarded non-empty voxels × voxel volume) and the **cut
-    /// depth** (deepest discarded voxel centre below the plane, 0 when
-    /// nothing was discarded).
-    pub fn apply_measured(&self, model: &VoxelModel) -> (VoxelModel, CutMeasurement) {
+    /// volume** (resected non-empty voxels × voxel volume — a retained
+    /// side is not resection) and the **cut depth** (deepest discarded
+    /// voxel centre below the plane, 0 when nothing was discarded).
+    /// Returns `(kept model, discarded model when retained, measurement)`.
+    pub fn apply_measured(
+        &self,
+        model: &VoxelModel,
+    ) -> (VoxelModel, Option<VoxelModel>, CutMeasurement) {
         let mut out = model.clone();
         let (nx, ny, nz) = model.dims;
         let voxel_volume = model.spacing.0 * model.spacing.1 * model.spacing.2;
+        let retaining = matches!(self.discarded, DiscardedSide::RetainAs { .. });
+        // The retained side keeps its own copy of the grid (a fragment is
+        // an independent model; moves later diverge the grids).
+        let mut retained = if retaining { Some(model.clone()) } else { None };
         let mut min = [usize::MAX; 3];
         let mut max = [0usize; 3];
         let mut resected = 0usize;
@@ -116,9 +148,14 @@ impl OsteotomyCut {
                         max[0] = max[0].max(x);
                         max[1] = max[1].max(y);
                         max[2] = max[2].max(z);
+                        if let Some(r) = &mut retained {
+                            r.values[idx] = f64::NAN;
+                        }
                     } else {
                         out.values[idx] = f64::NAN;
-                        resected += 1;
+                        if !retaining {
+                            resected += 1;
+                        }
                         // Depth past the kerf face on the kept side, not
                         // past the plane (with kerf 0 this is the distance
                         // past the plane on the discard side).
@@ -138,10 +175,36 @@ impl OsteotomyCut {
             max_depth_mm: max_depth,
         };
         if max[0] == 0 {
-            return (out, measurement); // empty cut result; leave as-is
+            return (out, None, measurement); // empty cut result; leave as-is
         }
         compact(&mut out, min, max);
-        (out, measurement)
+        // Compact the retained fragment to its own bounding box.
+        let retained_model = retained.map(|mut r| {
+            let mut rmin = [usize::MAX; 3];
+            let mut rmax = [0usize; 3];
+            for z in 0..r.dims.2 {
+                for y in 0..r.dims.1 {
+                    for x in 0..r.dims.0 {
+                        if !r.values[r.index(x, y, z).expect("in-bounds")].is_nan() {
+                            rmin[0] = rmin[0].min(x);
+                            rmin[1] = rmin[1].min(y);
+                            rmin[2] = rmin[2].min(z);
+                            rmax[0] = rmax[0].max(x);
+                            rmax[1] = rmax[1].max(y);
+                            rmax[2] = rmax[2].max(z);
+                        }
+                    }
+                }
+            }
+            if rmax[0] == 0 {
+                r // nothing retained (empty side)
+            } else {
+                compact(&mut r, rmin, rmax);
+                r
+            }
+        });
+        let retained_model = retained_model.filter(|r| r.values.iter().any(|v| !v.is_nan()));
+        (out, retained_model, measurement)
     }
 }
 
@@ -275,6 +338,16 @@ pub struct FragmentTransform {
 }
 
 impl FragmentTransform {
+    /// Identity transform — no rotation, no translation.
+    pub fn no_op() -> Self {
+        Self {
+            rotation_axis: Vec3::Z,
+            rotation_angle: 0.0,
+            pivot: Vec3::ZERO,
+            translation: Vec3::ZERO,
+        }
+    }
+
     /// Patient-space position of a point after the transform.
     pub fn apply_to_point(&self, p: Vec3) -> Vec3 {
         let r =
@@ -382,9 +455,72 @@ pub enum PlanStep {
     Cut(OsteotomyCut),
     /// Two-plane closed-wedge osteotomy.
     Wedge(WedgeCut),
-    /// Rigid fragment reposition.
+    /// Rigid reposition of **every** fragment (the original semantics).
     Move(FragmentTransform),
+    /// Rigid reposition of one **named** fragment
+    /// (`rfcs/0011-per-fragment-addressing.md`, first slice). The name
+    /// must be a fragment that exists at this point in the plan.
+    MoveNamed {
+        /// The target fragment's name.
+        fragment: String,
+        /// The transform to apply.
+        transform: FragmentTransform,
+    },
 }
+
+/// Plan-structure rejection, raised at **build time** (when a step is
+/// appended) so an invalid plan cannot be recorded, and `execute` stays
+/// infallible.
+#[derive(Debug, Clone, PartialEq)]
+pub enum PlanError {
+    /// A [`VirtualSurgery::move_fragment_named`] named a fragment that
+    /// does not exist at that point in the plan.
+    UnknownFragment {
+        /// The unknown name.
+        name: String,
+    },
+    /// A cut or wedge was appended after a named-fragment move. Once a
+    /// fragment has moved onto its own grid, a later cut cannot be applied
+    /// without a lossy re-composition (`rfcs/0011` v0 rejects rather than
+    /// risks a silently wrong osteotomy). Whole-model moves do not block
+    /// cuts when no fragment has been split.
+    CutAfterMove {
+        /// The fragment that moved before the cut.
+        fragment: String,
+    },
+    /// A retaining cut ([`DiscardedSide::RetainAs`]) was appended when the
+    /// model already holds more than one fragment: one cut cannot name a
+    /// discarded side per intersected fragment.
+    ModelAlreadySplit {
+        /// The fragment count at the point of the cut.
+        fragments: usize,
+    },
+    /// A [`DiscardedSide::RetainAs`] carried an empty name.
+    EmptyRetainedName,
+}
+
+impl core::fmt::Display for PlanError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            PlanError::UnknownFragment { name } => {
+                write!(f, "no fragment named {name:?} exists at this point in the plan")
+            }
+            PlanError::CutAfterMove { fragment } => write!(
+                f,
+                "cut after a named move of {fragment:?}: re-composition across moved grids is not supported in v0"
+            ),
+            PlanError::ModelAlreadySplit { fragments } => write!(
+                f,
+                "retaining cut on a model of {fragments} fragments: one cut cannot name a discarded side per fragment"
+            ),
+            PlanError::EmptyRetainedName => {
+                write!(f, "retained side must carry a non-empty fragment name")
+            }
+        }
+    }
+}
+
+impl std::error::Error for PlanError {}
 
 /// Measurement of one [`PlanStep::Move`]: what the transform was prescribed
 /// to do to the fragment centroid vs what the voxel scatter achieved —
@@ -421,13 +557,31 @@ pub struct SurgeryReport {
     pub total_resection_volume_mm3: f64,
 }
 
+/// A named, independently addressable piece of the operated model
+/// (`rfcs/0011` first slice).
+#[derive(Debug, Clone)]
+struct NamedFragment {
+    name: Option<String>,
+    model: VoxelModel,
+}
+
 /// A virtual surgery plan over a base model.
+///
+/// Steps are validated **as they are appended** (fragment existence, cut
+/// sequencing), so `execute` is infallible: every rejection this crate can
+/// detect happens at plan-building time with a [`PlanError`].
 #[derive(Debug, Clone)]
 pub struct VirtualSurgery {
     base: VoxelModel,
     steps: Vec<PlanStep>,
     /// Labels of fragments produced/modified, in order.
     fragment_log: Vec<String>,
+    /// Build-time fragment-name state ("" = the unnamed base).
+    fragment_names: Vec<String>,
+    /// Build-time fragment count (mirrors `fragment_names.len()`).
+    fragment_count: usize,
+    /// The last named-moved fragment, if any.
+    last_named_move: Option<String>,
 }
 
 impl VirtualSurgery {
@@ -437,25 +591,60 @@ impl VirtualSurgery {
             base,
             steps: Vec::new(),
             fragment_log: Vec::new(),
+            fragment_names: vec![String::new()],
+            fragment_count: 1,
+            last_named_move: None,
         }
     }
 
     /// Appends an osteotomy step.
-    pub fn cut(&mut self, cut: OsteotomyCut) -> &mut Self {
-        self.fragment_log.push(cut.fragment_name.clone());
+    ///
+    /// # Errors
+    ///
+    /// [`PlanError::CutAfterMove`] when a named-fragment move precedes the
+    /// cut, [`PlanError::ModelAlreadySplit`] when the model already holds
+    /// several fragments, [`PlanError::EmptyRetainedName`] for an unnamed
+    /// retained side.
+    pub fn cut(&mut self, cut: OsteotomyCut) -> Result<&mut Self, PlanError> {
+        self.validate_cut()?;
+        if let DiscardedSide::RetainAs { name } = &cut.discarded {
+            if name.trim().is_empty() {
+                return Err(PlanError::EmptyRetainedName);
+            }
+        }
+        let retained = matches!(cut.discarded, DiscardedSide::RetainAs { .. });
+        self.fragment_log.push(format!("cut:{}", cut.fragment_name));
         self.steps.push(PlanStep::Cut(cut));
-        self
+        self.fragment_names = vec![self.latest_kept_name().to_string()];
+        if retained {
+            if let Some(PlanStep::Cut(c)) = self.steps.last() {
+                if let DiscardedSide::RetainAs { name } = &c.discarded {
+                    self.fragment_names.push(name.clone());
+                }
+            }
+        }
+        self.fragment_count = self.fragment_names.len();
+        Ok(self)
     }
 
     /// Appends a two-plane closed-wedge step.
-    pub fn wedge(&mut self, cut: WedgeCut) -> &mut Self {
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::cut`] (wedges always resect their discarded region).
+    pub fn wedge(&mut self, cut: WedgeCut) -> Result<&mut Self, PlanError> {
+        self.validate_cut()?;
         self.fragment_log
             .push(format!("wedge:{}", cut.fragment_name));
         self.steps.push(PlanStep::Wedge(cut));
-        self
+        self.fragment_names = vec![self.latest_kept_name().to_string()];
+        self.fragment_count = 1;
+        Ok(self)
     }
 
-    /// Appends a fragment transform step.
+    /// Appends a whole-model fragment transform — every fragment moves
+    /// together, preserving their relative positions (the original
+    /// semantics; existing plans are unaffected).
     pub fn move_fragment(&mut self, transform: FragmentTransform) -> &mut Self {
         self.fragment_log.push(format!(
             "rotate({:.3} rad) + translate({:.1}, {:.1}, {:.1}) mm",
@@ -468,8 +657,67 @@ impl VirtualSurgery {
         self
     }
 
+    /// Appends a reposition of **one named fragment** — the per-fragment
+    /// addressing of `rfcs/0011`. The fragment must exist at this point in
+    /// the plan (a cut's kept side, or a retained discarded side).
+    ///
+    /// # Errors
+    ///
+    /// [`PlanError::UnknownFragment`] when no fragment carries `name`.
+    pub fn move_fragment_named(
+        &mut self,
+        name: impl Into<String>,
+        transform: FragmentTransform,
+    ) -> Result<&mut Self, PlanError> {
+        let name = name.into();
+        if !self.fragment_names.iter().any(|n| n == &name) {
+            return Err(PlanError::UnknownFragment { name });
+        }
+        self.fragment_log.push(format!(
+            "move_named:{name}:rotate({:.3} rad) + translate({:.1}, {:.1}, {:.1}) mm",
+            transform.rotation_angle,
+            transform.translation.x,
+            transform.translation.y,
+            transform.translation.z
+        ));
+        self.steps.push(PlanStep::MoveNamed {
+            fragment: name.clone(),
+            transform,
+        });
+        self.last_named_move = Some(name);
+        Ok(self)
+    }
+
+    /// Shared cut/wedge sequencing checks.
+    fn validate_cut(&self) -> Result<(), PlanError> {
+        if let Some(fragment) = &self.last_named_move {
+            return Err(PlanError::CutAfterMove {
+                fragment: fragment.clone(),
+            });
+        }
+        if self.fragment_count > 1 {
+            return Err(PlanError::ModelAlreadySplit {
+                fragments: self.fragment_count,
+            });
+        }
+        Ok(())
+    }
+
+    /// The kept-side name of the most recent cut/wedge step.
+    fn latest_kept_name(&self) -> &str {
+        for step in self.steps.iter().rev() {
+            match step {
+                PlanStep::Cut(c) => return &c.fragment_name,
+                PlanStep::Wedge(w) => return &w.fragment_name,
+                _ => continue,
+            }
+        }
+        ""
+    }
+
     /// Executes the plan, returning the operated model and the audit log
-    /// (step descriptions in execution order).
+    /// (step descriptions in execution order). Infallible: the plan was
+    /// validated as it was built.
     pub fn execute(&self) -> (VoxelModel, Vec<String>) {
         let (model, report) = self.execute_with_report();
         (model, report.step_log)
@@ -480,31 +728,57 @@ impl VirtualSurgery {
     /// move (the alignment error), and the total resection volume. The
     /// report is index-aligned with the audit log, so a submission bundle
     /// can attach the numbers to the steps they belong to.
+    ///
+    /// Execution tracks one [`NamedFragment`] per piece. The operated model
+    /// is the composition of all fragments — for plans that never split
+    /// the model (every existing plan) this is exactly the single-model
+    /// executor this crate has always had, byte for byte.
     pub fn execute_with_report(&self) -> (VoxelModel, SurgeryReport) {
-        let mut model = self.base.clone();
+        let mut fragments: Vec<NamedFragment> = vec![NamedFragment {
+            name: None,
+            model: self.base.clone(),
+        }];
         let mut log = Vec::with_capacity(self.steps.len());
         let mut measurements = Vec::with_capacity(self.steps.len());
         let mut total_resection = 0.0f64;
         for step in &self.steps {
             match step {
                 PlanStep::Cut(cut) => {
-                    let (next, m) = cut.apply_measured(&model);
+                    // Validated at build: exactly one fragment.
+                    let current = &fragments[0].model;
+                    let (kept, retained, m) = cut.apply_measured(current);
                     total_resection += m.resection_volume_mm3;
                     log.push(format!("cut:{}", cut.fragment_name));
                     measurements.push(StepMeasurement::Cut(m));
-                    model = next;
+                    fragments[0] = NamedFragment {
+                        name: Some(cut.fragment_name.clone()),
+                        model: kept,
+                    };
+                    if let (Some(r), DiscardedSide::RetainAs { name }) = (retained, &cut.discarded)
+                    {
+                        fragments.push(NamedFragment {
+                            name: Some(name.clone()),
+                            model: r,
+                        });
+                    }
                 }
                 PlanStep::Wedge(cut) => {
-                    let (next, m) = cut.apply_measured(&model);
+                    let current = &fragments[0].model;
+                    let (next, m) = cut.apply_measured(current);
                     total_resection += m.resection_volume_mm3;
                     log.push(format!("wedge:{}", cut.fragment_name));
                     measurements.push(StepMeasurement::Cut(m));
-                    model = next;
+                    fragments[0] = NamedFragment {
+                        name: Some(cut.fragment_name.clone()),
+                        model: next,
+                    };
                 }
                 PlanStep::Move(m) => {
-                    let before = fragment_centroid(&model);
-                    let next = m.apply_to_model(&model);
-                    let after = fragment_centroid(&next);
+                    let before = union_centroid(&fragments);
+                    for f in &mut fragments {
+                        f.model = m.apply_to_model(&f.model);
+                    }
+                    let after = union_centroid(&fragments);
                     let achieved = after - before;
                     let prescribed = m.apply_to_point(before) - before;
                     log.push(format!("move:{}", format_args!("{:?}", m.translation)));
@@ -513,10 +787,35 @@ impl VirtualSurgery {
                         achieved_centroid_translation: achieved,
                         alignment_error_mm: (prescribed - achieved).norm(),
                     }));
-                    model = next;
+                }
+                PlanStep::MoveNamed {
+                    fragment,
+                    transform,
+                } => {
+                    let Some(f) = fragments
+                        .iter_mut()
+                        .find(|f| f.name.as_deref() == Some(fragment.as_str()))
+                    else {
+                        unreachable!("validated at build time");
+                    };
+                    let before = fragment_centroid(&f.model);
+                    f.model = transform.apply_to_model(&f.model);
+                    let after = fragment_centroid(&f.model);
+                    let achieved = after - before;
+                    let prescribed = transform.apply_to_point(before) - before;
+                    log.push(format!(
+                        "move_named:{fragment}:{}",
+                        format_args!("{:?}", transform.translation)
+                    ));
+                    measurements.push(StepMeasurement::Move(MoveMeasurement {
+                        prescribed_centroid_translation: prescribed,
+                        achieved_centroid_translation: achieved,
+                        alignment_error_mm: (prescribed - achieved).norm(),
+                    }));
                 }
             }
         }
+        let model = compose_fragments(&fragments, &self.base);
         (
             model,
             SurgeryReport {
@@ -542,9 +841,106 @@ impl VirtualSurgery {
     }
 }
 
+/// Scatters every fragment into one grid covering the union extent
+/// (nearest-neighbour by voxel centre; all fragments share the base
+/// spacing). A single-fragment composition is the identity, which is what
+/// keeps every pre-existing plan byte-identical.
+fn compose_fragments(fragments: &[NamedFragment], base: &VoxelModel) -> VoxelModel {
+    if fragments.len() == 1 {
+        return fragments[0].model.clone();
+    }
+    let spacing = base.spacing;
+    let mut min_corner = fragments[0].model.origin;
+    let mut max_corner = fragments[0].model.origin;
+    for f in fragments {
+        let m = &f.model;
+        let far = m.origin
+            + Vec3::new(
+                m.dims.0 as f64 * spacing.0,
+                m.dims.1 as f64 * spacing.1,
+                m.dims.2 as f64 * spacing.2,
+            );
+        min_corner = Vec3::new(
+            min_corner.x.min(m.origin.x),
+            min_corner.y.min(m.origin.y),
+            min_corner.z.min(m.origin.z),
+        );
+        max_corner = Vec3::new(
+            max_corner.x.max(far.x),
+            max_corner.y.max(far.y),
+            max_corner.z.max(far.z),
+        );
+    }
+    let dims = (
+        ((max_corner.x - min_corner.x) / spacing.0).round() as usize + 1,
+        ((max_corner.y - min_corner.y) / spacing.1).round() as usize + 1,
+        ((max_corner.z - min_corner.z) / spacing.2).round() as usize + 1,
+    );
+    let mut values = vec![f64::NAN; dims.0 * dims.1 * dims.2];
+    for f in fragments {
+        let m = &f.model;
+        for z in 0..m.dims.2 {
+            for y in 0..m.dims.1 {
+                for x in 0..m.dims.0 {
+                    let Some(idx) = m.index(x, y, z) else {
+                        continue;
+                    };
+                    let v = m.values[idx];
+                    if v.is_nan() {
+                        continue;
+                    }
+                    let c = m.center(x, y, z);
+                    let gx = ((c.x - min_corner.x) / spacing.0).round();
+                    let gy = ((c.y - min_corner.y) / spacing.1).round();
+                    let gz = ((c.z - min_corner.z) / spacing.2).round();
+                    if gx < 0.0 || gy < 0.0 || gz < 0.0 {
+                        continue;
+                    }
+                    let (gx, gy, gz) = (gx as usize, gy as usize, gz as usize);
+                    if gx < dims.0 && gy < dims.1 && gz < dims.2 {
+                        values[(gz * dims.1 + gy) * dims.0 + gx] = v;
+                    }
+                }
+            }
+        }
+    }
+    VoxelModel {
+        dims,
+        spacing,
+        origin: min_corner,
+        values,
+    }
+}
+
+/// Centroid over every fragment of a tracked state.
+fn union_centroid(fragments: &[NamedFragment]) -> Vec3 {
+    let mut sum = Vec3::ZERO;
+    let mut count = 0usize;
+    for f in fragments {
+        let (s, c) = centroid_sum(&f.model);
+        sum += s;
+        count += c;
+    }
+    if count == 0 {
+        Vec3::ZERO
+    } else {
+        sum / count as f64
+    }
+}
+
 /// Centroid of the non-empty (non-NaN) voxels of a model, in patient
 /// coordinates. `Vec3::ZERO` for an empty model.
 fn fragment_centroid(model: &VoxelModel) -> Vec3 {
+    let (sum, count) = centroid_sum(model);
+    if count == 0 {
+        Vec3::ZERO
+    } else {
+        sum / count as f64
+    }
+}
+
+/// `(coordinate sum, voxel count)` of a model's non-empty voxels.
+fn centroid_sum(model: &VoxelModel) -> (Vec3, usize) {
     let (nx, ny, nz) = model.dims;
     let mut sum = Vec3::ZERO;
     let mut count = 0usize;
@@ -562,11 +958,7 @@ fn fragment_centroid(model: &VoxelModel) -> Vec3 {
             }
         }
     }
-    if count == 0 {
-        Vec3::ZERO
-    } else {
-        sum / count as f64
-    }
+    (sum, count)
 }
 
 #[cfg(test)]
@@ -601,6 +993,7 @@ mod tests {
             fragment_name: "proximal".into(),
             keep_positive: true,
             kerf_width: 0.0,
+            discarded: DiscardedSide::Resect,
         };
         let out = cut.apply(&model);
         // Positive-z side of the cube: z ∈ 0..=7 slices kept from the cube
@@ -621,7 +1014,9 @@ mod tests {
             fragment_name: "distal".into(),
             keep_positive: false,
             kerf_width: 0.0,
-        });
+            discarded: DiscardedSide::Resect,
+        })
+        .expect("valid plan");
         // Negative-z fragment: z ∈ 2..5 (3 slices). Distract +2 mm in z.
         plan.move_fragment(FragmentTransform {
             rotation_axis: Vec3::Z,
@@ -663,7 +1058,9 @@ mod tests {
             fragment_name: "lateral".into(),
             keep_positive: true,
             kerf_width: 0.0,
-        });
+            discarded: DiscardedSide::Resect,
+        })
+        .expect("valid plan");
         assert_eq!(plan.fragments().len(), 1);
         assert_eq!(plan.base_model().dims, (10, 10, 10));
     }
@@ -679,8 +1076,9 @@ mod tests {
             fragment_name: "distal".into(),
             keep_positive: true,
             kerf_width: 0.0,
+            discarded: DiscardedSide::Resect,
         };
-        let (out, m) = cut.apply_measured(&model);
+        let (out, _, m) = cut.apply_measured(&model);
         assert_eq!(out.count_above(50.0), 3 * 36);
         assert_eq!(m.fragment_name, "distal");
         assert!(
@@ -702,8 +1100,9 @@ mod tests {
             fragment_name: "d".into(),
             keep_positive: true,
             kerf_width: 0.0,
+            discarded: DiscardedSide::Resect,
         };
-        let (kept0, m0) = base.apply_measured(&model);
+        let (kept0, _, m0) = base.apply_measured(&model);
         assert_eq!(kept0.count_above(50.0), 3 * 36);
         assert!((m0.max_depth_mm - 5.0).abs() < 1e-9);
         // A 2 mm kerf removes the slab (−1, +1) around the plane: the
@@ -712,14 +1111,14 @@ mod tests {
         // the kept face at +1 mm, so the deepest voxel (centre −5) sits
         // 6 mm from it.
         base.kerf_width = 2.0;
-        let (kept2, m2) = base.apply_measured(&model);
+        let (kept2, _, m2) = base.apply_measured(&model);
         assert_eq!(kept2.count_above(50.0), 2 * 36);
         assert!((m2.max_depth_mm - 6.0).abs() < 1e-9, "{}", m2.max_depth_mm);
         // The slab is resected tissue: volume grows by the slice.
         assert!((m2.resection_volume_mm3 - m0.resection_volume_mm3 - 100.0).abs() < 1e-9);
         // The negative side with kerf: the slab is removed from there too.
         base.keep_positive = false;
-        let (kept_neg, _) = base.apply_measured(&model);
+        let (kept_neg, _, _) = base.apply_measured(&model);
         assert_eq!(kept_neg.count_above(50.0), 3 * 36);
     }
 
@@ -750,7 +1149,7 @@ mod tests {
         assert!(m.max_depth_mm > 0.0 && m.max_depth_mm <= 5.0 + 1e-9);
         // The wedge integrates through the plan with its own log label.
         let mut plan = VirtualSurgery::new(model);
-        plan.wedge(wedge);
+        plan.wedge(wedge).expect("valid plan");
         let (_, report) = plan.execute_with_report();
         assert!(report.step_log[0].starts_with("wedge:wedge"));
         assert!((report.total_resection_volume_mm3 - 250.0).abs() < 1e-9);
@@ -769,6 +1168,142 @@ mod tests {
         // Half-kerf offset: discard now includes centres with x ≤ 0 or
         // z ≤ 0 in the overlap — strictly more than the zero-kerf wedge.
         assert!(m.resection_volume_mm3 > 250.0);
+    }
+
+    #[test]
+    fn retaining_cut_keeps_both_sides_as_addressable_fragments() {
+        let model = cube_model();
+        let mut plan = VirtualSurgery::new(model);
+        plan.cut(OsteotomyCut {
+            plane: Plane::from_point_normal(Vec3::ZERO, Vec3::Z).unwrap(),
+            fragment_name: "distal".into(),
+            keep_positive: false,
+            kerf_width: 0.0,
+            discarded: DiscardedSide::RetainAs {
+                name: "proximal".into(),
+            },
+        })
+        .expect("single-fragment model accepts a retaining cut");
+        // Move only the distal piece 3 mm laterally — a collision-free
+        // distraction (moving it through the retained piece would overlap
+        // voxels, which the composition records last-write-wins).
+        plan.move_fragment_named(
+            "distal",
+            FragmentTransform {
+                rotation_axis: Vec3::Z,
+                rotation_angle: 0.0,
+                pivot: Vec3::ZERO,
+                translation: Vec3::new(3.0, 0.0, 0.0),
+            },
+        )
+        .expect("distal exists");
+        let (operated, log) = plan.execute();
+        assert!(log[0].starts_with("cut:distal"));
+        assert!(log[1].starts_with("move_named:distal:"));
+        // Both pieces survive: the full 6³ cube (216 voxels ≥ 50 HU) is
+        // present in the composed model.
+        assert_eq!(operated.count_above(50.0), 216);
+        // And the composed grid grew laterally to hold the moved piece:
+        // its x extent now exceeds the original cube's.
+        let max_x = operated.origin.x + operated.dims.0 as f64 * operated.spacing.0;
+        assert!(max_x > 5.0, "composed x extent {max_x}");
+    }
+
+    #[test]
+    fn retained_side_is_not_counted_as_resection() {
+        let model = cube_model();
+        let mut plan = VirtualSurgery::new(model);
+        plan.cut(OsteotomyCut {
+            plane: Plane::from_point_normal(Vec3::ZERO, Vec3::Z).unwrap(),
+            fragment_name: "kept".into(),
+            keep_positive: true,
+            kerf_width: 0.0,
+            discarded: DiscardedSide::RetainAs {
+                name: "held".into(),
+            },
+        })
+        .expect("valid");
+        let (_, report) = plan.execute_with_report();
+        // Nothing is resected: the discarded side was retained.
+        assert!((report.total_resection_volume_mm3 - 0.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn plan_errors_are_raised_at_build_time() {
+        let model = cube_model();
+        // Unknown fragment name.
+        let mut plan = VirtualSurgery::new(model.clone());
+        let err = plan
+            .move_fragment_named("ghost", FragmentTransform::no_op())
+            .unwrap_err();
+        assert_eq!(
+            err,
+            PlanError::UnknownFragment {
+                name: "ghost".into()
+            }
+        );
+        // Cut after a named move.
+        let mut plan = VirtualSurgery::new(model.clone());
+        plan.cut(OsteotomyCut {
+            plane: Plane::from_point_normal(Vec3::ZERO, Vec3::Z).unwrap(),
+            fragment_name: "a".into(),
+            keep_positive: true,
+            kerf_width: 0.0,
+            discarded: DiscardedSide::RetainAs { name: "b".into() },
+        })
+        .expect("valid");
+        plan.move_fragment_named("b", FragmentTransform::no_op())
+            .expect("b exists");
+        let err = plan
+            .cut(OsteotomyCut {
+                plane: Plane::from_point_normal(Vec3::ZERO, Vec3::X).unwrap(),
+                fragment_name: "c".into(),
+                keep_positive: true,
+                kerf_width: 0.0,
+                discarded: DiscardedSide::Resect,
+            })
+            .unwrap_err();
+        assert_eq!(
+            err,
+            PlanError::CutAfterMove {
+                fragment: "b".into()
+            }
+        );
+        // Retaining cut on an already-split model.
+        let mut plan2 = VirtualSurgery::new(model);
+        plan2
+            .cut(OsteotomyCut {
+                plane: Plane::from_point_normal(Vec3::ZERO, Vec3::Z).unwrap(),
+                fragment_name: "a".into(),
+                keep_positive: true,
+                kerf_width: 0.0,
+                discarded: DiscardedSide::RetainAs { name: "b".into() },
+            })
+            .expect("valid");
+        let err = plan2
+            .cut(OsteotomyCut {
+                plane: Plane::from_point_normal(Vec3::ZERO, Vec3::X).unwrap(),
+                fragment_name: "c".into(),
+                keep_positive: true,
+                kerf_width: 0.0,
+                discarded: DiscardedSide::RetainAs { name: "d".into() },
+            })
+            .unwrap_err();
+        assert_eq!(err, PlanError::ModelAlreadySplit { fragments: 2 });
+        // Empty retained name.
+        let mut plan3 = VirtualSurgery::new(cube_model());
+        assert_eq!(
+            plan3
+                .cut(OsteotomyCut {
+                    plane: Plane::from_point_normal(Vec3::ZERO, Vec3::Z).unwrap(),
+                    fragment_name: "a".into(),
+                    keep_positive: true,
+                    kerf_width: 0.0,
+                    discarded: DiscardedSide::RetainAs { name: "  ".into() },
+                })
+                .err(),
+            Some(PlanError::EmptyRetainedName)
+        );
     }
 
     #[test]
@@ -830,13 +1365,17 @@ mod tests {
             fragment_name: "a".into(),
             keep_positive: true,
             kerf_width: 0.0,
-        });
+            discarded: DiscardedSide::Resect,
+        })
+        .expect("valid plan");
         plan.cut(OsteotomyCut {
             plane: Plane::from_point_normal(Vec3::ZERO, Vec3::X).unwrap(),
             fragment_name: "b".into(),
             keep_positive: false,
             kerf_width: 0.0,
-        });
+            discarded: DiscardedSide::Resect,
+        })
+        .expect("valid plan");
         let (_, report) = plan.execute_with_report();
         // First cut removes 5 slices of 100 (zero-valued tissue included);
         // the second keeps x ≤ 0 and discards the 4 positive-x columns of

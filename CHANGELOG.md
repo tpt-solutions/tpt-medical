@@ -302,6 +302,15 @@ Tracked in `todo.md`. Summary of the user-visible change here:
   instantaneous limits (exact closed forms; the Bessel-series transient
   stays out deliberately).
 
+- `tpt-med-surgical-planning`: **per-fragment addressing, first slice**
+  (`rfcs/0011` option 3) — `DiscardedSide::RetainAs` retains a cut's
+  discarded side as a named fragment, `move_fragment_named` repositions
+  one fragment independently, and plan mistakes are rejected at build
+  time (`PlanError`). Plans without retention are byte-identical to the
+  historical executor. The RFC's rule-2/rule-4 contradiction found
+  during implementation is recorded in the RFC with the corrected
+  resolution.
+
 ### Added — Backlog follow-up, continued (2026-10-01)
 `tpt-med-cartilage` (first-order shear: a closed form, the fluid never
 engages), `tpt-med-viscoelastic` (Fung-type quasi-linear viscoelasticity

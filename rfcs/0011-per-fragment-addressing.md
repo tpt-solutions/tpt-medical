@@ -160,9 +160,29 @@ Resolution options, for review:
    nearly useless for real osteotomy planning, where both pieces are
    kept and moved.
 
-Option 1 is the working recommendation: it is the only reading under
-which per-fragment addressing is useful *and* existing plans are
-untouched. Implementation waits on this being accepted.
+**Option 3 (post-review, 2026-10-01 — supersedes option 1 as the
+working recommendation).** Writing option 1 down exposed its own flaw:
+a cut's *kept side* is named immediately (every cut carries a
+`fragment_name`), so the second cut of any existing plan already
+intersects *named* material and would split rather than resect — option
+1 does not preserve rule 4 after all. The resolution that actually
+works is to make retention **explicit and opt-in**:
+
+3. **`DiscardedSide::{Resect, RetainAs { name }}` on `OsteotomyCut`.**
+   Default `Resect` reproduces today's executor byte-for-byte (rule 4
+   holds by construction). A cut with `RetainAs` keeps *both* sides as
+   named fragments, which is the operation osteotomy planning actually
+   needs — cut, then move the pieces relative to each other. Per-
+   fragment addressing (`move_fragment_named`) targets retained
+   fragments. v0 guards: a cut after any named move is rejected
+   (`CutAfterMove` — stricter than the same-fragment-only rule drafted
+   above, because grid unification across moved fragments is the risky
+   part), and a retaining cut requires a single-fragment model (one
+   cut cannot name a discarded side per intersected fragment).
+
+Option 3 is additive (no existing plan changes), has no invalid states,
+and does not foreclose any future resolution. Implementation of this
+slice follows this revision.
 
 ## Unresolved questions
 

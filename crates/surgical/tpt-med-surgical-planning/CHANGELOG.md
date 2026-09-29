@@ -12,6 +12,26 @@ changes for consumers of this crate.
 ## [Unreleased]
 
 ### Added
+- **Per-fragment addressing, first slice** (`rfcs/0011` option 3,
+  implemented following the maintainer's direction to proceed):
+  `DiscardedSide::{Resect, RetainAs { name }}` on `OsteotomyCut` — a cut
+  can retain its discarded side as a **named, independently addressable
+  fragment** — plus `PlanStep::MoveNamed` /
+  `VirtualSurgery::move_fragment_named` and build-time validation
+  (`PlanError::{UnknownFragment, CutAfterMove, ModelAlreadySplit,
+  EmptyRetainedName}`), so `execute` stays infallible. The executor
+  tracks named fragments and composes them into the operated model;
+  **plans that never use retention are unaffected** (single-fragment
+  composition is the identity — every existing plan, log and
+  measurement is byte-identical, asserted by the untouched prior
+  suite). A retained side is not counted as resection. Fragment
+  moves that collide record last-write-wins in the composition (the
+  per-fragment measurement report is the honest statement of the
+  quantisation). Five new tests: the retain-and-move workflow,
+  retention-vs-resection accounting, and the three build-time
+  rejections. The RFC's own rule 2/rule 4 contradiction (found while
+  implementing) is recorded in the RFC with option 3 superseding the
+  original recommendation.
 - `OsteotomyCut::kerf_width` and `WedgeCut` (+ `PlanStep::Wedge`,
   `VirtualSurgery::wedge`): **saw-kerf width and multi-plane closed
   wedges**. The kerf removes a slab of the given width centred on the
@@ -39,12 +59,6 @@ changes for consumers of this crate.
   Three new tests (volume/depth on a plane cut, alignment error for a
   grid-aligned and a sub-voxel translation, multi-cut totals).
 
-- `rfcs/0011-per-fragment-addressing.md` (Draft): the design for
-  per-fragment addressing — `move_fragment_named`, fragment identity as the
-  producing cut's name, split/keep semantics for later cuts, and the
-  `CutAfterMove` rejection — scoped but not implemented, per the RFC
-  process.
-
 ### Planned
 - Curved and freeform resections (kerf width and two-plane wedges are delivered).
 - Implant component placement with a bone–implant interface, and bone graft or
@@ -69,12 +83,6 @@ changes for consumers of this crate.
 - Crate README explaining why the audit trail is the point of this crate: the
   planning primitives are not hard, but producing the operation log *by
   construction* rather than reconstructing it from screenshots afterwards is.
-
-- `rfcs/0011-per-fragment-addressing.md` (Draft): the design for
-  per-fragment addressing — `move_fragment_named`, fragment identity as the
-  producing cut's name, split/keep semantics for later cuts, and the
-  `CutAfterMove` rejection — scoped but not implemented, per the RFC
-  process.
 
 ### Planned
 - Curved and freeform resections (kerf width and two-plane wedges are delivered).

@@ -64,6 +64,14 @@ voxel grid.
   removes exactly the two-plane intersection, the closed wedge that two
   sequential single-sided cuts cannot express, with its own audit label.
 
+- **Per-fragment addressing** — a cut with
+  `DiscardedSide::RetainAs { name }` keeps *both* sides as named
+  fragments, and `move_fragment_named` repositions one of them
+  independently. Plan-structure mistakes (unknown fragment, cut after a
+  named move, retaining an already-split model) are rejected at build
+  time with `PlanError`, keeping `execute` infallible. Plans that never
+  retain are byte-identical to the original single-model executor.
+
 ## Conventions
 
 - `spacing` in **mm** per axis; `origin` is the patient-space position of
@@ -186,9 +194,11 @@ fn main() {
   the assembled model rather than to a single named fragment, so a plan that
   repositions two different fragments independently needs two
   `VirtualSurgery` invocations or an extension to `PlanStep`. This is a
-  deliberate v0 simplification and a known gap. Per-fragment addressing is designed in
-[`rfcs/0011-per-fragment-addressing.md`](../../../rfcs/0011-per-fragment-addressing.md)
-(Draft) and lands as `move_fragment_named` once accepted.
+  deliberate v0 simplification and a known gap. The first slice of per-fragment addressing
+(`DiscardedSide::RetainAs` + `move_fragment_named`, per
+[`rfcs/0011`](../../../rfcs/0011-per-fragment-addressing.md)) is in;
+cuts after named moves are rejected in v0, and fragment collisions in
+the composition record last-write-wins.
 - **No soft tissue.** Only the bone voxel model is planned; ligaments,
   capsules and neurovascular structures are absent, so no plan can be checked
   for collateral damage.
