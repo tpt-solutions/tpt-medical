@@ -30,7 +30,70 @@ pub struct SizeChart {
     pub entries: Vec<SizeEntry>,
 }
 
+/// Chart validation failure, with the offending entry so a
+/// mis-transcribed chart is caught rather than silently producing
+/// recommendations.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ChartError {
+    /// No entries.
+    Empty,
+    /// A nominal value is not finite or not positive.
+    NonPositiveNominal {
+        /// Index of the offending entry.
+        index: usize,
+    },
+    /// Nominal values are not strictly ascending.
+    NotAscending {
+        /// Index of the entry that broke the ordering.
+        index: usize,
+    },
+    /// Duplicate size labels.
+    DuplicateLabel {
+        /// The duplicated label.
+        label: u32,
+    },
+}
+
+impl core::fmt::Display for ChartError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            ChartError::Empty => write!(f, "chart has no entries"),
+            ChartError::NonPositiveNominal { index } => {
+                write!(f, "entry {index} has a non-finite or non-positive nominal")
+            }
+            ChartError::NotAscending { index } => {
+                write!(f, "entry {index} breaks ascending nominal order")
+            }
+            ChartError::DuplicateLabel { label } => write!(f, "duplicate label {label}"),
+        }
+    }
+}
+
+impl std::error::Error for ChartError {}
+
 impl SizeChart {
+    /// Validates the chart: non-empty, finite positive nominals in strict
+    /// ascending order, unique labels. [`Self::select`] implicitly assumes
+    /// all of this; call this once when a chart is transcribed or loaded.
+    pub fn validate(&self) -> Result<(), ChartError> {
+        if self.entries.is_empty() {
+            return Err(ChartError::Empty);
+        }
+        let mut seen = std::collections::BTreeSet::new();
+        for (i, e) in self.entries.iter().enumerate() {
+            if !e.nominal.is_finite() || e.nominal <= 0.0 {
+                return Err(ChartError::NonPositiveNominal { index: i });
+            }
+            if i > 0 && e.nominal <= self.entries[i - 1].nominal {
+                return Err(ChartError::NotAscending { index: i });
+            }
+            if !seen.insert(e.label) {
+                return Err(ChartError::DuplicateLabel { label: e.label });
+            }
+        }
+        Ok(())
+    }
+
     /// Selects the smallest size whose nominal ≥ measurement; when the
     /// measurement is between sizes, `SizeChoice` reports the interpolated
     /// position so callers can decide to size up/down.
@@ -218,6 +281,75 @@ mod tests {
             tibial_center: Vec3::new(0.0, 0.0, -80.0),
             tibial_tubercle: Vec3::new(5.0, 0.0, -78.0),
         }
+    }
+
+    #[test]
+    fn chart_validation_catches_transcription_errors() {
+        let ok = SizeChart {
+            family: "ok".into(),
+            entries: vec![
+                SizeEntry {
+                    label: 1,
+                    nominal: 50.0,
+                },
+                SizeEntry {
+                    label: 2,
+                    nominal: 55.0,
+                },
+            ],
+        };
+        assert!(ok.validate().is_ok());
+
+        let empty = SizeChart {
+            family: "e".into(),
+            entries: vec![],
+        };
+        assert_eq!(empty.validate(), Err(ChartError::Empty));
+
+        let zero = SizeChart {
+            family: "z".into(),
+            entries: vec![SizeEntry {
+                label: 1,
+                nominal: 0.0,
+            }],
+        };
+        assert_eq!(
+            zero.validate(),
+            Err(ChartError::NonPositiveNominal { index: 0 })
+        );
+
+        let unsorted = SizeChart {
+            family: "u".into(),
+            entries: vec![
+                SizeEntry {
+                    label: 1,
+                    nominal: 55.0,
+                },
+                SizeEntry {
+                    label: 2,
+                    nominal: 50.0,
+                },
+            ],
+        };
+        assert_eq!(
+            unsorted.validate(),
+            Err(ChartError::NotAscending { index: 1 })
+        );
+
+        let dup = SizeChart {
+            family: "d".into(),
+            entries: vec![
+                SizeEntry {
+                    label: 3,
+                    nominal: 50.0,
+                },
+                SizeEntry {
+                    label: 3,
+                    nominal: 55.0,
+                },
+            ],
+        };
+        assert_eq!(dup.validate(), Err(ChartError::DuplicateLabel { label: 3 }));
     }
 
     #[test]

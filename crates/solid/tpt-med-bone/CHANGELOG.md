@@ -12,17 +12,22 @@ changes for consumers of this crate.
 ## [Unreleased]
 
 ### Added
+- `ModulusLaw` trait (+ `PowerLaw`, and a blanket impl for closures) and
+  `BoneMaterial::from_hu_with_law`: **QCT calibration hook** — a study can
+  evaluate a phantom-fitted density→modulus relation instead of the default
+  power law.
+- `BoneRemodelingModel::remodel_field`: **spatial remodeling** — drives a
+  per-voxel density field from a solved stimulus field (e.g. SED per element
+  from a `tpt-med-biomechanics` result), with per-voxel viable clamping.
 - Crate README distinguishing the HU→modulus correlations (owned by
   `tpt-med-dicom`) from the structural description, anisotropy and remodeling
   law owned here, and stating explicitly that the reference constants are
   literature-typical population values rather than patient-calibrated ones.
 
 ### Planned
-- Spatial remodeling: drive per-element density from a solved strain energy
   density field rather than the current single lumped value per call.
 - A disuse/resorption-deadline model, and temperature- or load-rate-dependent
   remodeling.
-- QCT phantom calibration hooks, so a study can supply a calibrated
   density→modulus relation instead of the default power law.
 
 ### Notes

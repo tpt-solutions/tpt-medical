@@ -48,6 +48,29 @@ pub struct BoundaryConditions {
     /// Optionally prescribed nodal displacements (mm) — applied after
     /// `fixed_nodes`.
     pub prescribed_displacements: Vec<(u32, Vec3)>,
+    /// Per-node partial constraints — one axis flag per DOF
+    /// (`[x, y, z]`, `true` = constrained): symmetry planes and roller
+    /// supports constrain individual axes, unlike all-3-DOFs
+    /// [`Self::fixed_nodes`]. Folded into the constraint elimination after
+    /// `fixed_nodes` and before prescribed displacements.
+    pub constrained_dofs: Vec<(u32, [bool; 3])>,
+}
+
+/// Per-axis DOF constraint mask helpers.
+impl BoundaryConditions {
+    /// Constrains selected axes of a node: `[true, false, false]` pins x
+    /// only (a symmetry plane normal to x); `[true, true, false]` is a
+    /// roller in the x-y plane.
+    pub fn constrain_dofs(
+        &mut self,
+        nodes: impl IntoIterator<Item = u32>,
+        axes: [bool; 3],
+    ) -> &mut Self {
+        for n in nodes {
+            self.constrained_dofs.push((n, axes));
+        }
+        self
+    }
 }
 
 impl BoundaryConditions {
@@ -183,6 +206,18 @@ impl BiomechanicsModel {
             }
             for i in 0..3 {
                 fixed[3 * n as usize + i] = true;
+            }
+        }
+        for &(n, axes) in &bc.constrained_dofs {
+            if n as usize >= n_nodes {
+                return Err(SolverError::Invalid(format!(
+                    "partial constraint on missing node {n}"
+                )));
+            }
+            for (i, &on) in axes.iter().enumerate() {
+                if on {
+                    fixed[3 * n as usize + i] = true;
+                }
             }
         }
         for &(n, _d) in &bc.prescribed_displacements {

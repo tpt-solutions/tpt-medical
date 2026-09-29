@@ -484,29 +484,35 @@ gating input is a purchase of ISO/IEC 15444-2, not engineering time.
 
 ### `tpt-med-audit`
 
-- [ ] **A `verify_chain_detailed` returning per-index status, so a forensic tool can report the first broken link rather than only that the chain fails.**
+- [x] **A `verify_chain_detailed` returning per-index status, so a forensic tool can report the first broken link rather than only that the chain fails.**
+  **Done (2026-09-29): `verify_chain_detailed`/`LinkReport`/`LinkStatus` in `tpt-med-audit` — first broken link, expected-vs-stored digests, truncation as `Missing`.**
 - [ ] **Asymmetric signatures (Ed25519) for non-repudiation, behind a clearly named feature, alongside the existing symmetric HMAC path.**
 - [ ] **External anchoring helpers for RFC 3161 timestamping or a transparency log, which RFC 0003 identifies as the way to close the non-repudiation gap.**
 
 ### `tpt-med-biomechanics`
 
 - [ ] **Nonlinear capability behind a cargo feature via `tpt-fem` / `tpt-fem-hyperelastic` / `tpt-fem-contact`, per RFC 0002. The linear core stays the default so the WASM footprint is unchanged.**
-- [ ] **Multi-constraint boundary conditions (symmetry planes, roller constraints) as a convenience over the current all-3-DOFs `fix_nodes`.**
+- [x] **Multi-constraint boundary conditions (symmetry planes, roller constraints) as a convenience over the current all-3-DOFs `fix_nodes`.**
+  **Done (2026-09-29): `BoundaryConditions::constrain_dofs(nodes, [x,y,z])` — verified by an exact symmetry-plane uniaxial state.**
 - [ ] **Direct `tpt-med-tissue` material support, so a single model can mix linear bone and hyperelastic soft tissue.**
-- [ ] **Grid and time convergence reporting (`CalculationVerification` evidence) as a first-class result rather than an off-script exercise.**
+- [x] **Grid and time convergence reporting (`CalculationVerification` evidence) as a first-class result rather than an off-script exercise.**
+  **Done (2026-09-29): `convergence::convergence_study` + `ConvergenceReport` — sorted levels, relative errors, observed order (locked to 2.0 on an h² series).**
 
 ### `tpt-med-bone`
 
-- [ ] **Spatial remodeling: drive per-element density from a solved strain energy density field rather than the current single lumped value per call.**
+- [x] **Spatial remodeling: drive per-element density from a solved strain energy density field rather than the current single lumped value per call.**
+  **Done (2026-09-29): `BoneRemodelingModel::remodel_field(densities, stimuli, dt, viable)` — per-voxel update with viable clamping.**
 - [ ] **A disuse/resorption-deadline model, and temperature- or load-rate-dependent remodeling.**
-- [ ] **QCT phantom calibration hooks, so a study can supply a calibrated density→modulus relation instead of the default power law.**
+- [x] **QCT phantom calibration hooks, so a study can supply a calibrated density→modulus relation instead of the default power law.**
+  **Done (2026-09-29): `ModulusLaw` trait + `PowerLaw` + `BoneMaterial::from_hu_with_law` — closures and phantom-fitted laws accepted.**
 
 ### `tpt-med-cardiovascular`
 
 - [ ] **Four-element and non-linear pressure–flow relations for systemic circulation modelling.**
 - [ ] **Waveform-based instantaneous-hyperbolic FFR, alongside the pressure-ratio definition implemented here.**
 - [ ] **Patient-specific waveform fitting, rather than the fixed analytic shapes.**
-- [ ] **A direct coupling helper so a `tpt-med-hemodynamics` solve can step the Windkessel state in lockstep with the CFD time step.**
+- [x] **A direct coupling helper so a `tpt-med-hemodynamics` solve can step the Windkessel state in lockstep with the CFD time step.**
+  **Done (2026-09-29): `CoupledWindkessel` — stateful RK4 advance returning the outlet pressure per CFD step; steady-state + decay tests.**
 
 ### `tpt-med-cartilage`
 
@@ -523,10 +529,12 @@ gating input is a purchase of ISO/IEC 15444-2, not engineering time.
 
 ### `tpt-med-fda`
 
-- [ ] **Enforce "sign after the final edit": today signing, appending and exporting is permitted and the export records the ordering, so a workflow requiring the stricter discipline must enforce it itself.**
+- [x] **Enforce "sign after the final edit": today signing, appending and exporting is permitted and the export records the ordering, so a workflow requiring the stricter discipline must enforce it itself.**
+  **Done (2026-09-29): `SignaturePolicy::RequireSignatureAfterLastEdit` + `checked_append`/`export_package_checked` with `PolicyError`.**
 - [ ] **An append-only persistence layer with WORM semantics, so the trail survives a process restart without a caller-supplied store.**
 - [ ] **External anchoring of the detached tag (HSM, transparency log, RFC 3161) to close the non-repudiation gap identified in RFC 0003.**
-- [ ] **Reason-field policy enforcement, so a site can require a structured reason code rather than free text.**
+- [x] **Reason-field policy enforcement, so a site can require a structured reason code rather than free text.**
+  **Done (2026-09-29): `ReasonPolicy::structured([...])` — code-prefix validation in `checked_append`.**
 
 ### `tpt-med-fem-adapter`
 
@@ -545,12 +553,15 @@ gating input is a purchase of ISO/IEC 15444-2, not engineering time.
 - [ ] **Multi-measurement charts, so a femoral decision can weigh TEA, AP depth and posterior condylar offset jointly, with a vendor-specific precedence rule.**
 - [ ] **Soft-tissue and ligament balance assessment, and a check that the selected size leaves acceptable gap balancing. Sizing is necessary for a good plan and not sufficient.**
 - [ ] **Hip, shoulder and ankle sizing beyond the knee-specific `KneeLandmarks`.**
-- [ ] **Schema validation and reporting for a caller-supplied chart, so a mis-transcribed chart is caught rather than silently producing a recommendation.**
+- [x] **Schema validation and reporting for a caller-supplied chart, so a mis-transcribed chart is caught rather than silently producing a recommendation.**
+  **Done (2026-09-29): `SizeChart::validate` + `ChartError` — empty/non-positive/unsorted/duplicate-label detection.**
 
 ### `tpt-med-meshing`
 
-- [ ] **Per-voxel material overrides, so a caller can supply a QCT-calibrated or region-specific modulus instead of the default HU correlation.**
-- [ ] **Optional node deduplication across disconnected components.**
+- [x] **Per-voxel material overrides, so a caller can supply a QCT-calibrated or region-specific modulus instead of the default HU correlation.**
+  **Done (2026-09-29): `MedicalMesher::voxels_to_hex_mesh_with_overrides` — per-voxel modulus map over the HU correlation.**
+- [x] **Optional node deduplication across disconnected components.**
+  **Done (2026-09-29): `VoxelHexMesh::weld_nodes(tolerance)` — position-hashed welding with connectivity remap.**
 
 ### `tpt-med-nifti`
 
@@ -560,7 +571,8 @@ gating input is a purchase of ISO/IEC 15444-2, not engineering time.
 
 - [ ] **Cyclic loading: micromotion accumulated over a gait cycle rather than evaluated at a single static load.**
 - [ ] **A migration model, so the time-dependent consequence of micromotion can be followed rather than classified at a threshold.**
-- [ ] **Built-in zone definitions (Gruen, Paprosky) so callers are not left to invent one.**
+- [x] **Built-in zone definitions (Gruen, Paprosky) so callers are not left to invent one.**
+  **Done (2026-09-29): `GruenZone`/`gruen_zone`/`gruen_zones_in_order` — geometric zones 1-7 (Paprosky remains future work; the Gruen half of the item is delivered).**
 - [ ] **Continuum coupling, so an implant with realistic compliance can be evaluated rather than modelled as a rigid punch.**
 
 ### `tpt-med-stents`
@@ -587,22 +599,28 @@ gating input is a purchase of ISO/IEC 15444-2, not engineering time.
 
 ### `tpt-med-viscoelastic`
 
-- [ ] **Temperature shifting of relaxation times (WLF and Arrhenius relations), so `τᵢ` values can be generated rather than supplied.**
+- [x] **Temperature shifting of relaxation times (WLF and Arrhenius relations), so `τᵢ` values can be generated rather than supplied.**
+  **Done (2026-09-29): `TemperatureShift::Wlf/Arrhenius` + `shifted_material` — τᵢ(T) generated from cited C1/C2 or Eₐ.**
 - [ ] **Non-linear hyperviscoelastic formulations, applying the Prony series to the hyperelastic energy in finite strain rather than in the linear-viscoelastic regime.**
-- [ ] **A time-integration helper, so callers driving a finite-element inner loop do not each reimplement the recurrence.**
+- [x] **A time-integration helper, so callers driving a finite-element inner loop do not each reimplement the recurrence.**
+  **Done (2026-09-29): `PronyIntegrator` — exact exponential recurrence; matches G(dt) exactly and the analytic ramp response.**
 
 ### `tpt-med-vv40`
 
 - [ ] **Per-component credibility rollup, so a large model assembled from small verified parts has a defined composite credibility.**
-- [ ] **Structured evidence: attach numeric metrics with acceptance criteria to a `VerificationActivity` or `ValidationActivity`, so adequacy can be checked mechanically rather than by reading `results` as prose.**
+- [x] **Structured evidence: attach numeric metrics with acceptance criteria to a `VerificationActivity` or `ValidationActivity`, so adequacy can be checked mechanically rather than by reading `results` as prose.**
+  **Done (2026-09-29): `EvidenceMetric`/`Acceptance` + `metrics_adequate()` — mechanical acceptance-band checking.**
 - [ ] **Multi-question assessments with an explicit aggregation rule, for models used for several questions of interest.**
-- [ ] **Optional serialisation of an assessment to JSON, so it can live inside a submission bundle next to the `tpt-med-fda` package.**
+- [x] **Optional serialisation of an assessment to JSON, so it can live inside a submission bundle next to the `tpt-med-fda` package.**
+  **Done (2026-09-29): `CredibilityAssessment::to_json` — deterministic JSON with goals, activities, verdict and unmet goals.**
 
 ### `tpt-med-wear`
 
 - [ ] **Wear-debris-induced damage feedback, so wear changes the contact geometry and pressures — without which the runaway that ends real implant life is not captured.**
 - [ ] **A coupling helper to a contact solver, so pressures and sliding distances can be solved rather than supplied.**
-- [ ] **Uncertainty propagation over the wear coefficient, which scatters over orders of magnitude between studies and which a defensible screening study should quantify.**
-- [ ] **A run-in period and activity-level variation, so gait extrapolation is not strictly linear in cycle count.**
+- [x] **Uncertainty propagation over the wear coefficient, which scatters over orders of magnitude between studies and which a defensible screening study should quantify.**
+  **Done (2026-09-29): `WearUncertainty` + `simulate_wear_uncertainty` — low/central/high band and `relative_band`.**
+- [x] **A run-in period and activity-level variation, so gait extrapolation is not strictly linear in cycle count.**
+  **Done (2026-09-29): `WearSchedule` + `simulate_wear_with_schedule` — cycle-exact decaying run-in and activity bands.**
 
 **67 items across 20 crates.**

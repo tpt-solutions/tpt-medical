@@ -12,6 +12,16 @@ changes for consumers of this crate.
 ## [Unreleased]
 
 ### Added
+- **Per-DOF constraints**: `BoundaryConditions::constrained_dofs` /
+  `constrain_dofs(nodes, [x, y, z])` — symmetry planes and roller supports
+  constrain individual axes instead of all-3-DOFs `fix_nodes`. Verified by
+  an exact symmetry-plane uniaxial state (sigma_zz uniform to 1e-9,
+  lateral stress zero).
+- **Grid-convergence reporting** (`convergence::convergence_study`,
+  `ConvergenceReport`): first-class `CalculationVerification` evidence —
+  sorts refinement levels, computes relative errors against an analytic or
+  finest-mesh reference, and reports the observed convergence order per
+  level pair.
 - Crate README documenting the deliberate scope boundary (linear, isotropic,
   static), the mm–N–MPa unit set, and the fidelity ladder to `tpt-fem`.
 
@@ -19,11 +29,9 @@ changes for consumers of this crate.
 - Nonlinear capability behind a cargo feature via `tpt-fem` /
   `tpt-fem-hyperelastic` / `tpt-fem-contact`, per RFC 0002. The linear core
   stays the default so the WASM footprint is unchanged.
-- Multi-constraint boundary conditions (symmetry planes, roller constraints)
   as a convenience over the current all-3-DOFs `fix_nodes`.
 - Direct `tpt-med-tissue` material support, so a single model can mix linear
   bone and hyperelastic soft tissue.
-- Grid and time convergence reporting (`CalculationVerification` evidence) as a
   first-class result rather than an off-script exercise.
 
 ### Notes

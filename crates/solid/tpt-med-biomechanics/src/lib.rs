@@ -36,11 +36,13 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
+pub mod convergence;
 pub mod hex;
 pub mod results;
 pub mod solver;
 pub mod sparse;
 
+pub use convergence::{convergence_study, ConvergenceReport, Level};
 pub use hex::trilinear_hex_stiffness;
 pub use results::{ElementStress, StressResult};
 pub use solver::{BiomechanicsModel, BoundaryConditions, SolverError};

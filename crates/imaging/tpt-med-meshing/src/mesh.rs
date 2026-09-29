@@ -60,6 +60,20 @@ impl MedicalMesher {
     /// Converts a segmentation mask into a hex mesh. Returns
     /// [`MeshError::EmptyMask`] when no voxel passes the threshold.
     pub fn voxels_to_hex_mesh(&self, mask: &SegmentationMask) -> Result<VoxelHexMesh, MeshError> {
+        self.voxels_to_hex_mesh_with_overrides(mask, &HashMap::new())
+    }
+
+    /// Like [`Self::voxels_to_hex_mesh`], but with **per-voxel modulus
+    /// overrides**: for every `(x, y, z)` key present in `overrides`, the
+    /// element's Young's modulus (MPa) is taken from the map instead of the
+    /// HU correlation — the direct hook for QCT-calibrated or
+    /// region-specific material assignment. Unlisted voxels keep the
+    /// default law; `mean_hu`/`density` stay informational either way.
+    pub fn voxels_to_hex_mesh_with_overrides(
+        &self,
+        mask: &SegmentationMask,
+        overrides: &HashMap<(usize, usize, usize), f64>,
+    ) -> Result<VoxelHexMesh, MeshError> {
         let (nx, ny, nz) = mask.dims;
         // Node grid: (nx+1)(ny+1)(nz+1); index = (i*(ny+1)+j)*(nz+1)+k
         let stride_i = (ny + 1) * (nz + 1);
@@ -97,12 +111,17 @@ impl MedicalMesher {
                     } else {
                         BoneRegion::Trabecular
                     };
-                    let modulus = HounsfieldMapper::density_to_youngs_modulus(density, region);
+                    let modulus_mpa = match overrides.get(&(x, y, z)) {
+                        Some(&e) => e,
+                        None => {
+                            HounsfieldMapper::density_to_youngs_modulus(density, region).to_mpa()
+                        }
+                    };
                     elements.push(corners.map(|c| c as u32));
                     materials.push(ElementMaterial {
                         mean_hu,
                         density: density.value(),
-                        youngs_modulus: modulus.to_mpa(),
+                        youngs_modulus: modulus_mpa,
                         region,
                         poissons_ratio: self.poissons_ratio,
                     });
@@ -134,6 +153,125 @@ impl MedicalMesher {
             elements,
             materials,
         })
+    }
+}
+
+impl VoxelHexMesh {
+    /// Welds nodes closer than `tolerance` (mm) into single vertices and
+    /// remaps connectivity, returning the number of nodes removed.
+    ///
+    /// Grid-corner construction never produces coincident nodes, but two
+    /// *disconnected* components can end up within welding distance after
+    /// Laplacian smoothing, and imports (e.g. a re-meshed half after an
+    /// osteotomy) can carry duplicate positions outright. Welding is
+    /// opt-in because it changes the topology contract of the mesh.
+    ///
+    /// The merge is position-hash based: nodes hash to a uniform grid of
+    /// cell size `tolerance`, and any two nodes in the same or adjacent
+    /// cell within `tolerance` merge into the lower index. Merged
+    /// positions average their members.
+    pub fn weld_nodes(&mut self, tolerance: f64) -> usize {
+        assert!(tolerance >= 0.0, "tolerance must be non-negative");
+        if tolerance == 0.0 || self.nodes.is_empty() {
+            return 0;
+        }
+        let inv = 1.0 / tolerance;
+        let cell = |v: f64| (v * inv).floor() as i64;
+
+        struct Cand {
+            index: u32,
+            x: f64,
+            y: f64,
+            z: f64,
+        }
+        let mut grid: std::collections::HashMap<(i64, i64, i64), Vec<Cand>> =
+            std::collections::HashMap::new();
+        let mut remap: Vec<u32> = (0..self.nodes.len() as u32).collect();
+        let mut removed = 0usize;
+
+        for (i, node) in self.nodes.iter().enumerate() {
+            let key = (cell(node.x), cell(node.y), cell(node.z));
+            let mut target: Option<u32> = None;
+            'search: for dx in [-1i64, 0, 1] {
+                for dy in [-1, 0, 1] {
+                    for dz in [-1, 0, 1] {
+                        if let Some(cands) = grid.get(&(key.0 + dx, key.1 + dy, key.2 + dz)) {
+                            for c in cands {
+                                let d2 = (node.x - c.x).powi(2)
+                                    + (node.y - c.y).powi(2)
+                                    + (node.z - c.z).powi(2);
+                                if d2 <= tolerance * tolerance {
+                                    target = Some(c.index);
+                                    break 'search;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            match target {
+                Some(t) => {
+                    remap[i] = t;
+                    removed += 1;
+                }
+                None => {
+                    grid.entry(key).or_default().push(Cand {
+                        index: i as u32,
+                        x: node.x,
+                        y: node.y,
+                        z: node.z,
+                    });
+                }
+            }
+        }
+
+        if removed == 0 {
+            return 0;
+        }
+
+        // Path-compress: remap may point at a node that itself was merged.
+        for i in 0..remap.len() {
+            let mut r = remap[i];
+            while remap[r as usize] != r {
+                r = remap[r as usize];
+            }
+            remap[i] = r;
+        }
+
+        // Compact: one slot per representative; average merged positions.
+        let mut keep_of: HashMap<u32, u32> = HashMap::new();
+        let mut members: HashMap<u32, Vec<usize>> = HashMap::new();
+        let mut new_nodes: Vec<Vec3> = Vec::new();
+        for (i, &r) in remap.iter().enumerate() {
+            match keep_of.get(&r) {
+                None => {
+                    keep_of.insert(r, new_nodes.len() as u32);
+                    members.insert(r, vec![i]);
+                    new_nodes.push(self.nodes[i]);
+                }
+                Some(_) => members.get_mut(&r).expect("seeded").push(i),
+            }
+        }
+        for (r, idxs) in &members {
+            if idxs.len() > 1 {
+                let k = *keep_of.get(r).expect("seeded");
+                let inv_n = 1.0 / idxs.len() as f64;
+                let mut sum = Vec3::ZERO;
+                for &i in idxs {
+                    sum += self.nodes[i];
+                }
+                new_nodes[k as usize] = sum * inv_n;
+            }
+        }
+
+        for el in &mut self.elements {
+            for c in el.iter_mut() {
+                *c = remap[*c as usize];
+            }
+        }
+        let removed_total = self.nodes.len() - new_nodes.len();
+        self.nodes = new_nodes;
+        removed_total
     }
 }
 
@@ -193,6 +331,99 @@ mod tests {
 
         let (min, max) = mesh.bounds();
         assert!(max.x > min.x);
+    }
+
+    #[test]
+    fn modulus_overrides_replace_the_correlation() {
+        let series = synthetic::femur_phantom(8, 8, 4);
+        let mask = SegmentationMask::threshold_hu(&series.parse().unwrap(), 200.0);
+        let mut solid = None;
+        'find: for z in 0..mask.dims.2 {
+            for y in 0..mask.dims.1 {
+                for x in 0..mask.dims.0 {
+                    if mask.is_solid(x, y, z) {
+                        solid = Some((x, y, z));
+                        break 'find;
+                    }
+                }
+            }
+        }
+        let (x, y, z) = solid.expect("phantom has bone");
+        let mut overrides = HashMap::new();
+        overrides.insert((x, y, z), 1234.5);
+        let mesh = MedicalMesher::default()
+            .voxels_to_hex_mesh_with_overrides(&mask, &overrides)
+            .unwrap();
+        let overridden = mesh
+            .materials
+            .iter()
+            .filter(|m| (m.youngs_modulus - 1234.5).abs() < 1e-9)
+            .count();
+        assert_eq!(overridden, 1, "exactly one element overridden");
+        let hit = mesh
+            .materials
+            .iter()
+            .find(|m| (m.youngs_modulus - 1234.5).abs() < 1e-9)
+            .expect("override applied");
+        assert_eq!(hit.mean_hu, 700.0, "HU stays informational");
+    }
+
+    #[test]
+    fn weld_merges_coincident_nodes_across_components() {
+        let mat = || ElementMaterial {
+            mean_hu: 0.0,
+            density: 1.0,
+            youngs_modulus: 1.0,
+            region: BoneRegion::Cortical,
+            poissons_ratio: 0.3,
+        };
+        let mut mesh = VoxelHexMesh {
+            nodes: vec![
+                Vec3::new(0.0, 0.0, 0.0),
+                Vec3::new(1.0, 0.0, 0.0),
+                Vec3::new(1.0, 1.0, 0.0),
+                Vec3::new(0.0, 1.0, 0.0),
+                Vec3::new(0.0, 0.0, 1.0),
+                Vec3::new(1.0, 0.0, 1.0),
+                Vec3::new(1.0, 1.0, 1.0),
+                Vec3::new(0.0, 1.0, 1.0),
+                // A second cube whose bottom face duplicates the first
+                // cube's top face within welding tolerance (a stale import).
+                Vec3::new(0.0, 0.0, 1.0 + 1e-9),
+                Vec3::new(1.0, 0.0, 1.0 + 1e-9),
+                Vec3::new(1.0, 1.0, 1.0 + 1e-9),
+                Vec3::new(0.0, 1.0, 1.0 + 1e-9),
+            ],
+            elements: vec![[0, 1, 2, 3, 4, 5, 6, 7], [8, 9, 10, 11, 4, 5, 6, 7]],
+            materials: vec![mat(), mat()],
+        };
+        let removed = mesh.weld_nodes(1e-6);
+        assert_eq!(removed, 4, "the 4 duplicated shared-face nodes merge");
+        assert_eq!(mesh.nodes.len(), 8);
+        assert_eq!(mesh.elements[0][4], mesh.elements[1][4]);
+        assert_eq!(mesh.elements[0][7], mesh.elements[1][7]);
+        for el in &mesh.elements {
+            for c in el {
+                assert!((*c as usize) < mesh.nodes.len());
+            }
+        }
+    }
+
+    #[test]
+    fn weld_with_zero_tolerance_is_noop() {
+        let mut mesh = VoxelHexMesh {
+            nodes: vec![Vec3::ZERO, Vec3::ZERO],
+            elements: vec![[0, 0, 0, 0, 0, 0, 1, 1]],
+            materials: vec![ElementMaterial {
+                mean_hu: 0.0,
+                density: 1.0,
+                youngs_modulus: 1.0,
+                region: BoneRegion::Cortical,
+                poissons_ratio: 0.3,
+            }],
+        };
+        assert_eq!(mesh.weld_nodes(0.0), 0);
+        assert_eq!(mesh.nodes.len(), 2);
     }
 
     #[test]

@@ -12,6 +12,13 @@ changes for consumers of this crate.
 ## [Unreleased]
 
 ### Added
+- `EvidenceMetric` / `Acceptance` with
+  `VerificationActivity::{with_metric, metrics_adequate}`: **structured
+  evidence** — numeric metrics with mechanical acceptance bands, checked
+  automatically instead of reading `results` as prose.
+- `CredibilityAssessment::to_json`: deterministic JSON serialisation of the
+  assessment (goals, activities, verdict, unmet goals), so an assessment can
+  live inside a submission bundle next to the `tpt-med-fda` package.
 - Crate README with the full risk × influence → goal matrix tabulated, and a
   worked example (the femur stance-screening question at medium risk /
   significant influence) showing `evaluate()` returning empty.
@@ -19,12 +26,10 @@ changes for consumers of this crate.
 ### Planned
 - Per-component credibility rollup, so a large model assembled from small
   verified parts has a defined composite credibility.
-- Structured evidence: attach numeric metrics with acceptance criteria to a
   `VerificationActivity` or `ValidationActivity`, so adequacy can be checked
   mechanically rather than by reading `results` as prose.
 - Multi-question assessments with an explicit aggregation rule, for models
   used for several questions of interest.
-- Optional serialisation of an assessment to JSON, so it can live inside a
   submission bundle next to the `tpt-med-fda` package.
 
 ### Notes

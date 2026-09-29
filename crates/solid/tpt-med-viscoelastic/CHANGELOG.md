@@ -12,17 +12,23 @@ changes for consumers of this crate.
 ## [Unreleased]
 
 ### Added
+- `TemperatureShift` (`Wlf` / `Arrhenius`) with `shift_factor` and
+  `shifted_material`: master-curve shifting so `τᵢ(T) = τᵢ_ref · aT(T)` is
+  generated rather than supplied. No built-in material constants — C1/C2 or
+  Eₐ are the caller's cited values.
+- `PronyIntegrator`: the exact exponential internal-variable recurrence for
+  driving a Prony material inside an explicit FEM/CFD loop
+  (`step(gamma, dt) -> stress`), with the analytic ramp-response and
+  step-relaxation identities locked by tests.
 - Crate README documenting the Abaqus/FEBio **relative** Prony convention
   (`gᵢ = Gᵢ/G₀`, `Σgᵢ ≤ 1`) and why a relative series is preferred: a
   glass-modulus change does not invalidate a fitted series.
 
 ### Planned
-- Temperature shifting of relaxation times (WLF and Arrhenius relations), so
   `τᵢ` values can be generated rather than supplied.
 - Non-linear hyperviscoelastic formulations, applying the Prony series to the
   hyperelastic energy in finite strain rather than in the linear-viscoelastic
   regime.
-- A time-integration helper, so callers driving a finite-element inner loop do
   not each reimplement the recurrence.
 
 ### Notes

@@ -12,6 +12,14 @@ changes for consumers of this crate.
 ## [Unreleased]
 
 ### Added
+- `WearSchedule` + `WearModel::simulate_wear_with_schedule`: **run-in
+  excess wear** (linearly decaying multiplier over a run-in period) and
+  **activity-level bands**, integrated cycle-exactly — gait extrapolation is
+  no longer strictly linear in cycle count.
+- `WearUncertainty` + `WearModel::simulate_wear_uncertainty`: low/central/
+  high results over a stated `k` band plus a `relative_band` helper, so a
+  screening report can quantify wear-coefficient scatter instead of
+  silently picking one value.
 - Crate README stating that wear coefficients are **inputs, never defaults**,
   with the reasoning: coefficients in this domain span orders of magnitude
   between materials, bearing designs and test protocols, so a library-level
@@ -23,10 +31,8 @@ changes for consumers of this crate.
   captured.
 - A coupling helper to a contact solver, so pressures and sliding distances can
   be solved rather than supplied.
-- Uncertainty propagation over the wear coefficient, which scatters over orders
   of magnitude between studies and which a defensible screening study should
   quantify.
-- A run-in period and activity-level variation, so gait extrapolation is not
   strictly linear in cycle count.
 
 ### Notes

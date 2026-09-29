@@ -288,6 +288,21 @@ Tracked in `todo.md`. Summary of the user-visible change here:
 - `web/build-wasm.sh` — one-command engine build + wasm-bindgen glue
   generation (version-matched CLI); `web/README.md` run instructions.
 
+### Added — Backlog sweep (2026-09-29)
+Eighteen scoped items from the per-crate `Planned` backlog, delivered across
+ten crates with tests (see each crate's CHANGELOG for API detail):
+`tpt-med-audit` (forensic `verify_chain_detailed`), `tpt-med-meshing`
+(per-voxel modulus overrides, node welding), `tpt-med-viscoelastic`
+(WLF/Arrhenius shifting, `PronyIntegrator`), `tpt-med-wear` (run-in +
+activity schedule, `k`-uncertainty band), `tpt-med-bone` (`ModulusLaw`
+calibration hook, spatial `remodel_field`), `tpt-med-vv40` (structured
+evidence metrics, assessment JSON), `tpt-med-fda` (signature + reason
+policies with `checked_append`/`export_package_checked`),
+`tpt-med-cardiovascular` (`CoupledWindkessel`), `tpt-med-biomechanics`
+(per-DOF constraints, grid-convergence reporting), `tpt-med-orthopedics`
+(Gruen zones), `tpt-med-implant-sizing` (chart validation).
+`scripts/check-crate-docs.sh` now skips hidden worktrees (`.kilo`).
+
 ### Added — Cross-cutting
 - Golden reference datasets (`test-data/golden/{solid,fluid,devices,regulatory}`)
   with documented analytical or literature basis.

@@ -12,6 +12,14 @@ changes for consumers of this crate.
 ## [Unreleased]
 
 ### Added
+- `MedicalMesher::voxels_to_hex_mesh_with_overrides`: **per-voxel modulus
+  overrides** keyed by `(x, y, z)` — the direct hook for QCT-calibrated or
+  region-specific material assignment (`mean_hu`/`density` stay
+  informational). `voxels_to_hex_mesh` is unchanged.
+- `VoxelHexMesh::weld_nodes(tolerance)`: opt-in **node welding** across
+  coincident positions (disconnected components after smoothing, stale
+  imports), position-hashed, path-compressed, with averaged merged
+  positions and connectivity remap.
 - Crate README documenting the voxel-to-hex strategy, its trade-offs (a
   stair-step surface that `smooth_mesh` relaxes for display but that is
   meaningful for biomechanics), and the shared hex corner-ordering contract
@@ -29,9 +37,6 @@ changes for consumers of this crate.
   `tpt-med-nifti` (zero-dependency itself; the `gzip` feature stays off).
 
 ### Planned
-- Per-voxel material overrides, so a caller can supply a QCT-calibrated or
-  region-specific modulus instead of the default HU correlation.
-- Optional node deduplication across disconnected components.
 
 ### Notes
 - The **hex corner ordering** `[000, 100, 110, 010, 001, 101, 111, 011]` is a

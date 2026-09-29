@@ -65,6 +65,39 @@ pub struct BoneMaterial {
     pub anisotropy: Anisotropy,
 }
 
+/// A density → modulus relation, so a study can supply a calibrated law
+/// (e.g. fit from a QCT calibration phantom via
+/// `tpt-med-dicom::QctCalibration`) instead of the default power law.
+///
+/// Implementors receive the apparent density and the bone region the
+/// meshing pipeline classified the voxel into; the default [`PowerLaw`]
+/// reproduces the Morgan–Keaveny-style correlations.
+pub trait ModulusLaw {
+    /// Modulus (MPa) at the given apparent density.
+    fn modulus(&self, density: Density, region: BoneRegion) -> Modulus;
+}
+
+/// The default HU-correlation power law (cortical `10500 ρ²`,
+/// trabecular `6850 ρ^1.49`, MPa), as used by
+/// [`BoneMaterial::from_hu`].
+#[derive(Debug, Clone, Copy, Default)]
+pub struct PowerLaw;
+
+impl ModulusLaw for PowerLaw {
+    fn modulus(&self, density: Density, region: BoneRegion) -> Modulus {
+        HounsfieldMapper::density_to_youngs_modulus(density, region)
+    }
+}
+
+impl<F> ModulusLaw for F
+where
+    F: Fn(Density, BoneRegion) -> Modulus,
+{
+    fn modulus(&self, density: Density, region: BoneRegion) -> Modulus {
+        self(density, region)
+    }
+}
+
 impl BoneMaterial {
     /// Reference cortical femur properties (literature screening values:
     /// E ≈ 17 GPa, ν = 0.3, σy ≈ 110 MPa, σu ≈ 130 MPa).
@@ -97,13 +130,25 @@ impl BoneMaterial {
     /// Builds properties from a CT Hounsfield value using the
     /// [`HounsfieldMapper`] correlations and a density-based tissue split.
     pub fn from_hu(hu: f64, bone_type: BoneType, poissons_ratio: f64) -> Self {
+        Self::from_hu_with_law(hu, bone_type, poissons_ratio, &PowerLaw)
+    }
+
+    /// Like [`Self::from_hu`], but evaluates the caller's density → modulus
+    /// law instead of the default power law — the calibration hook for
+    /// studies with a phantom-fitted relation.
+    pub fn from_hu_with_law(
+        hu: f64,
+        bone_type: BoneType,
+        poissons_ratio: f64,
+        law: &impl ModulusLaw,
+    ) -> Self {
         let density = HounsfieldMapper::hu_to_density(hu);
         let region = if density.value() >= 1.3 {
             BoneRegion::Cortical
         } else {
             BoneRegion::Trabecular
         };
-        let e = HounsfieldMapper::density_to_youngs_modulus(density, region).to_mpa();
+        let e = law.modulus(density, region).to_mpa();
         Self {
             bone_type,
             tissue_class: match region {
@@ -187,6 +232,32 @@ impl Default for BoneRemodelingModel {
 }
 
 impl BoneRemodelingModel {
+    /// Spatial remodeling: drives a per-voxel density field from a solved
+    /// stimulus field (e.g. strain energy density per element from a
+    /// `tpt-med-biomechanics` result), advancing `dt_days` in lockstep.
+    /// Input slices are parallel (`densities[i]` pairs with `stimuli[i]`).
+    /// Viable-range clamping is applied per voxel.
+    pub fn remodel_field(
+        &self,
+        densities: &[Density],
+        stimuli: &[f64],
+        dt_days: f64,
+        viable: (f64, f64),
+    ) -> Vec<Density> {
+        assert_eq!(
+            densities.len(),
+            stimuli.len(),
+            "density and stimulus fields must pair"
+        );
+        densities
+            .iter()
+            .zip(stimuli)
+            .map(|(&rho, &stimulus)| {
+                crate::clamp_viable(self.update_density(rho, stimulus, dt_days), viable)
+            })
+            .collect()
+    }
+
     /// One-day density update for a given stimulus level (g/cm³).
     ///
     /// Response scales linearly with normalized over-/under-stimulus:
@@ -235,6 +306,41 @@ pub fn reference_modulus(tissue: TissueClass) -> Modulus {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn calibrated_law_replaces_power_law() {
+        // A phantom-fitted law: 20 GPa at 1.7 g/cm3 regardless of region.
+        let calibrated = |density: Density, _region: BoneRegion| {
+            tpt_med_units::Modulus::from_mpa(20_000.0 * density.value() / 1.7)
+        };
+        let m = BoneMaterial::from_hu_with_law(700.0, BoneType::Femur, 0.3, &calibrated);
+        assert!((m.youngs_modulus - 20_000.0).abs() < 1e-9);
+        // Default law gives 10500 * 1.7^2 = 30345 at 700 HU.
+        let default = BoneMaterial::from_hu(700.0, BoneType::Femur, 0.3);
+        assert!((default.youngs_modulus - 30_345.0).abs() < 1e-6);
+        // PowerLaw struct reproduces the default exactly.
+        let pl = BoneMaterial::from_hu_with_law(700.0, BoneType::Femur, 0.3, &PowerLaw);
+        assert_eq!(pl.youngs_modulus, default.youngs_modulus);
+    }
+
+    #[test]
+    fn remodel_field_drives_each_voxel_independently() {
+        let model = BoneRemodelingModel::default();
+        let densities = [
+            Density::from_gcm3(1.2),
+            Density::from_gcm3(1.2),
+            Density::from_gcm3(1.2),
+        ];
+        let stimuli = [0.02, 0.004, 0.0005]; // over / lazy / under
+        let out = model.remodel_field(&densities, &stimuli, 30.0, (0.02, 2.0));
+        assert_eq!(out.len(), 3);
+        assert!(out[0].value() > 1.2, "over-stimulated gains density");
+        assert_eq!(out[1].value(), 1.2, "lazy zone unchanged");
+        assert!(out[2].value() < 1.2, "under-stimulated loses density");
+        // Clamped at the viable ceiling.
+        let hot = model.remodel_field(&[Density::from_gcm3(1.9)], &[1.0], 400.0, (0.02, 2.0));
+        assert_eq!(hot[0].value(), 2.0);
+    }
 
     #[test]
     fn hu_assignment_matches_dicom_correlations() {

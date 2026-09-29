@@ -12,6 +12,11 @@ changes for consumers of this crate.
 ## [Unreleased]
 
 ### Added
+- `CoupledWindkessel`: a stateful boundary condition for lockstep coupling
+  with a `tpt-med-hemodynamics` time step — the CFD outlet flow advances
+  the 0-D model (RK4) and the returned pressure feeds back as the next
+  step's outlet value. Explicit coupling; the stability ratio against
+  `time_constant` is the caller's check.
 - Crate README stating the lumped-model limitation explicitly: a Windkessel
   boundary condition reproduces the *global* impedance of the distal tree, not
   the shape or timing of a reflected wave, so it is the wrong tool for
@@ -23,7 +28,6 @@ changes for consumers of this crate.
 - Waveform-based instantaneous-hyperbolic FFR, alongside the pressure-ratio
   definition implemented here.
 - Patient-specific waveform fitting, rather than the fixed analytic shapes.
-- A direct coupling helper so a `tpt-med-hemodynamics` solve can step the
   Windkessel state in lockstep with the CFD time step.
 
 ### Notes

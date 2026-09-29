@@ -168,6 +168,94 @@ fn escape(s: &str) -> String {
     out
 }
 
+/// Workflow discipline for signatures, enforced by
+/// [`AuditTrail::checked_append`] and [`AuditTrail::export_package_checked`].
+///
+/// The default [`SignaturePolicy::Permissive`] preserves today's behaviour:
+/// signing, appending and exporting in any order is permitted and the export
+/// records the ordering explicitly. `RequireSignatureAfterLastEdit` is the
+/// stricter §11.10 discipline — every append after the newest signature
+/// invalidates coverage, and a strict export refuses to emit a package whose
+/// signature does not cover the final entry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SignaturePolicy {
+    /// Sign, append and export in any order (records ordering only).
+    #[default]
+    Permissive,
+    /// The newest signature must post-date the final entry.
+    RequireSignatureAfterLastEdit,
+}
+
+/// Reason-for-change field policy. `Structured` requires the reason to be
+/// one of the listed codes (prefix match on the first whitespace-delimited
+/// token, case-sensitive), so a site can require reason codes rather than
+/// free text.
+#[derive(Debug, Clone, Default)]
+pub struct ReasonPolicy {
+    /// When set, reasons must start with one of these codes followed by a
+    /// space, end of string, or punctuation.
+    pub required_codes: Vec<String>,
+}
+
+impl ReasonPolicy {
+    /// A policy requiring one of the given codes.
+    pub fn structured(codes: impl IntoIterator<Item = impl Into<String>>) -> Self {
+        Self {
+            required_codes: codes.into_iter().map(Into::into).collect(),
+        }
+    }
+
+    /// Free-text policy (no codes required).
+    pub fn free_text() -> Self {
+        Self::default()
+    }
+
+    /// True when the reason satisfies the policy.
+    pub fn accepts(&self, reason: &str) -> bool {
+        if self.required_codes.is_empty() {
+            return true;
+        }
+        let token = reason
+            .split(|c: char| c.is_whitespace() || c == ':' || c == ',')
+            .next();
+        token.is_some_and(|t| self.required_codes.iter().any(|c| c == t))
+    }
+}
+
+/// A policy violation returned by [`AuditTrail::checked_append`] and
+/// [`AuditTrail::export_package_checked`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PolicyError {
+    /// Strict policy: entries were appended after the newest signature.
+    SignatureDoesNotCoverFinalEntry {
+        /// Entries in the trail.
+        entries: usize,
+        /// Entries covered by the newest signature (0 when unsigned).
+        covered: usize,
+    },
+    /// The reason failed the configured [`ReasonPolicy`].
+    ReasonPolicyViolation {
+        /// The rejected reason.
+        reason: String,
+    },
+}
+
+impl core::fmt::Display for PolicyError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            PolicyError::SignatureDoesNotCoverFinalEntry { entries, covered } => write!(
+                f,
+                "signature policy: newest signature covers {covered} of {entries} entries;                  sign again after the final edit"
+            ),
+            PolicyError::ReasonPolicyViolation { reason } => {
+                write!(f, "reason policy: rejected reason {reason:?}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for PolicyError {}
+
 /// The signed audit trail.
 #[derive(Debug, Clone)]
 pub struct AuditTrail {
@@ -178,6 +266,10 @@ pub struct AuditTrail {
     digest_index: Vec<String>,
     /// Reproducibility manifest, when the run recorded one.
     manifest: Option<ReproducibilityManifest>,
+    /// Signature discipline (default: permissive).
+    signature_policy: SignaturePolicy,
+    /// Reason-field policy (default: free text).
+    reason_policy: ReasonPolicy,
 }
 
 impl AuditTrail {
@@ -189,7 +281,67 @@ impl AuditTrail {
             signatures: Vec::new(),
             digest_index: Vec::new(),
             manifest: None,
+            signature_policy: SignaturePolicy::default(),
+            reason_policy: ReasonPolicy::default(),
         }
+    }
+
+    /// Sets the signature discipline.
+    pub fn set_signature_policy(&mut self, policy: SignaturePolicy) -> &mut Self {
+        self.signature_policy = policy;
+        self
+    }
+
+    /// Sets the reason-field policy.
+    pub fn set_reason_policy(&mut self, policy: ReasonPolicy) -> &mut Self {
+        self.reason_policy = policy;
+        self
+    }
+
+    /// How many entries the newest signature covers (0 when unsigned).
+    pub fn signed_entry_count(&self) -> usize {
+        if self.signatures.is_empty() {
+            0
+        } else {
+            self.entries.len()
+        }
+    }
+
+    /// Policy-checked append: validates the reason policy and, under
+    /// `RequireSignatureAfterLastEdit`, refuses to append entries silently
+    /// after a signature (the caller must re-sign; the error says so).
+    /// The plain [`Self::append`] keeps the permissive behaviour.
+    pub fn checked_append(&mut self, event: AuditEvent) -> Result<(), PolicyError> {
+        if !self.reason_policy.accepts(&event.reason) {
+            return Err(PolicyError::ReasonPolicyViolation {
+                reason: event.reason,
+            });
+        }
+        if self.signature_policy == SignaturePolicy::RequireSignatureAfterLastEdit
+            && !self.signatures.is_empty()
+        {
+            return Err(PolicyError::SignatureDoesNotCoverFinalEntry {
+                entries: self.entries.len() + 1,
+                covered: self.entries.len(),
+            });
+        }
+        self.append(event);
+        Ok(())
+    }
+
+    /// Export with signature-policy enforcement: under
+    /// `RequireSignatureAfterLastEdit`, refuses to emit a package whose
+    /// newest signature does not cover the final entry.
+    pub fn export_package_checked(&self, key: &[u8]) -> Result<(String, String), PolicyError> {
+        if self.signature_policy == SignaturePolicy::RequireSignatureAfterLastEdit
+            && self.signed_entry_count() < self.entries.len()
+        {
+            return Err(PolicyError::SignatureDoesNotCoverFinalEntry {
+                entries: self.entries.len(),
+                covered: self.signed_entry_count(),
+            });
+        }
+        Ok(self.export_package(key))
     }
 
     /// Appends an event; the timestamp is taken now. Signature re-computed
@@ -348,6 +500,86 @@ mod tests {
             action,
             "planning iteration",
         )
+    }
+
+    #[test]
+    fn strict_policy_rejects_unsigned_export_and_post_signature_edits() {
+        use super::*;
+        let mut trail = AuditTrail::new("run-strict");
+        trail.set_signature_policy(SignaturePolicy::RequireSignatureAfterLastEdit);
+        trail.append(event(AuditAction::Create, "sim-1"));
+
+        // Export before signing is refused under the strict policy.
+        let err = trail.export_package_checked(b"k").unwrap_err();
+        assert_eq!(
+            err,
+            PolicyError::SignatureDoesNotCoverFinalEntry {
+                entries: 1,
+                covered: 0
+            }
+        );
+
+        // Appending after signing is refused (the caller must re-sign).
+        trail.sign("reviewer:r1", SignatureMeaning::Reviewer, b"k");
+        let err = trail
+            .checked_append(event(AuditAction::Modify, "sim-1"))
+            .unwrap_err();
+        assert_eq!(
+            err,
+            PolicyError::SignatureDoesNotCoverFinalEntry {
+                entries: 2,
+                covered: 1
+            }
+        );
+
+        // Re-signing after the final edit restores coverage and export.
+        trail.append(event(AuditAction::Modify, "sim-1")); // permissive append path
+        trail.sign("reviewer:r1", SignatureMeaning::Approver, b"k");
+        assert_eq!(trail.signed_entry_count(), trail.len());
+        let (_, tag) = trail.export_package_checked(b"k").expect("covered");
+        assert!(!tag.is_empty());
+    }
+
+    #[test]
+    fn reason_policy_requires_a_structured_code() {
+        use super::*;
+        let mut trail = AuditTrail::new("run-codes");
+        trail.set_reason_policy(ReasonPolicy::structured(["REVIEW", "PARAM-CHANGE"]));
+
+        let ok = trail.checked_append(AuditEvent::new(
+            "op",
+            "sim",
+            "s1",
+            AuditAction::Modify,
+            "PARAM-CHANGE: vessel diameter updated",
+        ));
+        assert!(ok.is_ok());
+
+        let bad = trail.checked_append(AuditEvent::new(
+            "op",
+            "sim",
+            "s1",
+            AuditAction::Modify,
+            "changed my mind",
+        ));
+        assert_eq!(
+            bad.unwrap_err(),
+            PolicyError::ReasonPolicyViolation {
+                reason: "changed my mind".into()
+            }
+        );
+    }
+
+    #[test]
+    fn permissive_defaults_keep_legacy_behaviour() {
+        use super::*;
+        let mut trail = AuditTrail::new("run-permissive");
+        // No policies set: append after sign is allowed and export succeeds.
+        trail.append(event(AuditAction::Create, "s1"));
+        trail.sign("r", SignatureMeaning::Reviewer, b"k");
+        trail.append(event(AuditAction::Modify, "s1"));
+        let (_, _) = trail.export_package_checked(b"k").expect("permissive");
+        assert!(trail.verify_integrity());
     }
 
     #[test]

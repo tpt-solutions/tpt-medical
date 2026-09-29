@@ -12,6 +12,10 @@ changes for consumers of this crate.
 ## [Unreleased]
 
 ### Added
+- `SizeChart::validate` (+ `ChartError`): **schema validation for
+  caller-supplied charts** — non-empty, finite positive nominals in strict
+  ascending order, unique labels — so a mis-transcribed chart is caught at
+  load rather than silently producing recommendations.
 - Crate README documenting the two design decisions that matter: the size chart
   is **data, not code** (so a new implant system is data entry, and no
   vendor's proprietary table is embedded), and `select` returns the
@@ -28,7 +32,6 @@ changes for consumers of this crate.
   size leaves acceptable gap balancing. Sizing is necessary for a good plan and
   not sufficient.
 - Hip, shoulder and ankle sizing beyond the knee-specific `KneeLandmarks`.
-- Schema validation and reporting for a caller-supplied chart, so a
   mis-transcribed chart is caught rather than silently producing a
   recommendation.
 

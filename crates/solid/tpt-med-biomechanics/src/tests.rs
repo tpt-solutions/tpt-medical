@@ -197,3 +197,55 @@ fn rigid_translation_produces_no_stress_when_supported() {
         result.max_von_mises()
     );
 }
+
+#[test]
+fn roller_and_symmetry_constraints_give_a_clean_uniaxial_state() {
+    // 1x1x4 column, E=100, nu=0.3, uniform 1 N top load (sigma_zz = 1 MPa).
+    // Per-DOF constraints in their textbook role: x = 0 face constrained in
+    // x only and y = 0 face in y only (two symmetry planes — exact for this
+    // loading), base on z-rollers. All three are partial constraints; no
+    // node is fully fixed, so the Poisson contraction is unperturbed and
+    // the uniform state is exact.
+    let (nodes, elements) = grid_mesh(1, 1, 4, 1.0, 1.0, 1.0);
+    let model = BiomechanicsModel::from_parts(nodes, elements, 100.0, 0.3);
+    let mut bc = BoundaryConditions::default();
+    for (i, n) in model.nodes.iter().enumerate() {
+        if n.x < 1e-9 {
+            bc.constrain_dofs([i as u32], [true, false, false]);
+        }
+        if n.y < 1e-9 {
+            bc.constrain_dofs([i as u32], [false, true, false]);
+        }
+        if n.z < 1e-9 {
+            bc.constrain_dofs([i as u32], [false, false, true]);
+        }
+    }
+    let mut top = Vec::new();
+    for (i, n) in model.nodes.iter().enumerate() {
+        if n.z > 3.5 {
+            top.push(i as u32);
+        }
+    }
+    let per = 1.0 / top.len() as f64;
+    for &n in &top {
+        bc.add_force(n, Vec3::new(0.0, 0.0, -per));
+    }
+    let result = model.solve(&bc, 1e-10, 20_000).expect("solves");
+    // Exact axial response: uz(top) = FL/EA = 1*4/(1*100) = 0.04 mm.
+    let uz = top
+        .iter()
+        .map(|&n| -result.displacements[n as usize].z)
+        .fold(0.0f64, f64::max);
+    assert!((uz - 0.04).abs() < 1e-9, "uz {uz}");
+    // Zero lateral stress (traction-free sides, symmetry planes).
+    let lateral = result
+        .stresses
+        .iter()
+        .map(|e| e.stress[0].abs().max(e.stress[1].abs()))
+        .fold(0.0f64, f64::max);
+    assert!(lateral < 1e-9, "lateral {lateral}");
+    // sigma_zz uniform and exact: -1 MPa in compression.
+    for e in &result.stresses {
+        assert!((e.stress[2] + 1.0).abs() < 1e-9, "sigma_zz {}", e.stress[2]);
+    }
+}

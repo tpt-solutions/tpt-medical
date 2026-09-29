@@ -161,11 +161,24 @@ fn main() {
                 kind: VerificationType::CodeVerification,
                 description: "analytical uniaxial + patch tests (crate test suite)".into(),
                 results: "exact within 1e-9 mm".into(),
+                metrics: vec![tpt_med_vv40::EvidenceMetric {
+                    name: "patch_test_max_error_mm".into(),
+                    value: 1e-9,
+                    acceptance: tpt_med_vv40::Acceptance::at_most(1e-6),
+                }],
             },
             VerificationActivity {
                 kind: VerificationType::CalculationVerification,
                 description: "cantilever vs Euler-Bernoulli with locking band".into(),
                 results: "ratio 0.85 of analytical, inside documented band".into(),
+                metrics: vec![tpt_med_vv40::EvidenceMetric {
+                    name: "deflection_ratio_vs_analytic".into(),
+                    value: 0.85,
+                    acceptance: tpt_med_vv40::Acceptance {
+                        min: Some(0.5),
+                        max: Some(1.15),
+                    },
+                }],
             },
         ],
         validation: vec![ValidationActivity {

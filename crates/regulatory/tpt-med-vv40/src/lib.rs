@@ -103,6 +103,63 @@ pub struct VerificationActivity {
     pub description: String,
     /// Result summary (metric values, references to test ids).
     pub results: String,
+    /// Numeric metrics with acceptance criteria (checked mechanically by
+    /// [`VerificationActivity::metrics_adequate`]).
+    pub metrics: Vec<EvidenceMetric>,
+}
+
+/// A numeric evidence metric with a mechanical acceptance criterion, so
+/// adequacy is checked by comparison rather than by reading `results` as
+/// prose.
+#[derive(Debug, Clone)]
+pub struct EvidenceMetric {
+    /// Metric name (e.g. `"max_abs_error_mpa"`).
+    pub name: String,
+    /// Computed value.
+    pub value: f64,
+    /// Acceptance band: `value` must satisfy every bound present.
+    pub acceptance: Acceptance,
+}
+
+/// Acceptance bounds for an [`EvidenceMetric`].
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Acceptance {
+    /// `value <= max` (when present).
+    pub max: Option<f64>,
+    /// `value >= min` (when present).
+    pub min: Option<f64>,
+}
+
+impl Acceptance {
+    /// A band with only an upper bound.
+    pub fn at_most(max: f64) -> Self {
+        Self {
+            max: Some(max),
+            min: None,
+        }
+    }
+
+    /// True when every present bound is satisfied.
+    pub fn is_met_by(&self, value: f64) -> bool {
+        let max_ok = self.max.is_none_or(|m| value <= m);
+        let min_ok = self.min.is_none_or(|m| value >= m);
+        max_ok && min_ok
+    }
+}
+
+impl VerificationActivity {
+    /// True when every attached metric meets its acceptance band.
+    /// Activities with no metrics are trivially adequate (their evidence
+    /// lives in `results` prose).
+    pub fn metrics_adequate(&self) -> bool {
+        self.metrics.iter().all(|m| m.acceptance.is_met_by(m.value))
+    }
+
+    /// Attaches a numeric metric.
+    pub fn with_metric(&mut self, metric: EvidenceMetric) -> &mut Self {
+        self.metrics.push(metric);
+        self
+    }
 }
 
 /// One completed validation activity with its evidence.
@@ -247,6 +304,98 @@ impl CredibilityAssessment {
     }
 }
 
+impl CredibilityAssessment {
+    /// Serialises the assessment (goals, activities, evaluation verdict) to
+    /// JSON, so it can live inside a submission bundle next to the
+    /// `tpt-med-fda` package. The output is deterministic (no HashMap
+    /// iteration order) and contains no PHI by construction — activities
+    /// are described in study terms, not patient terms.
+    pub fn to_json(&self) -> String {
+        fn esc(s: &str) -> String {
+            let mut out = String::with_capacity(s.len() + 2);
+            for c in s.chars() {
+                match c {
+                    '"' => out.push_str("\\\""),
+                    '\\' => out.push_str("\\\\"),
+                    '\n' => out.push_str("\\n"),
+                    c => out.push(c),
+                }
+            }
+            out
+        }
+        let risk = match self.risk {
+            ModelRisk::Low => "low",
+            ModelRisk::Medium => "medium",
+            ModelRisk::High => "high",
+        };
+        let influence = match self.influence {
+            ModelInfluence::Contributing => "contributing",
+            ModelInfluence::Significant => "significant",
+            ModelInfluence::Direct => "direct",
+        };
+        let goals = self.goals();
+        let unmet = self.evaluate();
+        let mut out = String::new();
+        out.push_str("{\"question_of_interest\":\"");
+        out.push_str(&esc(&self.question_of_interest));
+        out.push_str("\",\"risk\":\"");
+        out.push_str(risk);
+        out.push_str("\",\"influence\":\"");
+        out.push_str(influence);
+        out.push_str("\",\"goals\":{");
+        out.push_str(&format!(
+            "\"min_verification_types\":{},\"min_validation_types\":{},\"quantitative_validation_required\":{},\"code_review_required\":{}",
+            goals.min_verification_types,
+            goals.min_validation_types,
+            goals.quantitative_validation_required,
+            goals.independent_code_review_required
+        ));
+        out.push_str("},\"verification\":[");
+        for (i, a) in self.verification.iter().enumerate() {
+            if i > 0 {
+                out.push(',');
+            }
+            out.push_str(&format!(
+                "{{\"type\":\"{}\",\"description\":\"{}\",\"results\":\"{}\",\"metrics_adequate\":{}}}",
+                a.kind.key(),
+                esc(&a.description),
+                esc(&a.results),
+                a.metrics_adequate()
+            ));
+        }
+        out.push_str("],\"validation\":[");
+        for (i, a) in self.validation.iter().enumerate() {
+            if i > 0 {
+                out.push(',');
+            }
+            let agreement = match a.agreement {
+                AgreementLevel::Quantitative => "quantitative",
+                AgreementLevel::Qualitative => "qualitative",
+                AgreementLevel::NotDemonstrated => "not_demonstrated",
+            };
+            out.push_str(&format!(
+                "{{\"type\":\"{}\",\"reference\":\"{}\",\"agreement\":\"{}\"}}",
+                a.kind.key(),
+                esc(&a.reference),
+                agreement
+            ));
+        }
+        out.push_str("],\"credible\":");
+        out.push_str(if unmet.is_empty() { "true" } else { "false" });
+        out.push_str(",\"unmet\":[");
+        for (i, u) in unmet.iter().enumerate() {
+            if i > 0 {
+                out.push(',');
+            }
+            out.push('"');
+            out.push_str(&esc(u));
+            out.push('"');
+        }
+        out.push_str("]}");
+        out
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -256,6 +405,7 @@ mod tests {
             kind,
             description: "performed".into(),
             results: "passed".into(),
+            metrics: Vec::new(),
         }
     }
 
@@ -266,6 +416,63 @@ mod tests {
             metrics: vec!["rmse".into()],
             agreement,
         }
+    }
+
+    #[test]
+    fn evidence_metrics_are_checked_mechanically() {
+        let mut a = activity(VerificationType::CalculationVerification);
+        assert!(a.metrics_adequate(), "no metrics = trivially adequate");
+        a.with_metric(EvidenceMetric {
+            name: "max_abs_error_mpa".into(),
+            value: 0.4,
+            acceptance: Acceptance::at_most(0.5),
+        });
+        assert!(a.metrics_adequate());
+        a.with_metric(EvidenceMetric {
+            name: "cg_iterations".into(),
+            value: 250.0,
+            acceptance: Acceptance {
+                min: Some(10.0),
+                max: Some(500.0),
+            },
+        });
+        assert!(a.metrics_adequate());
+        a.metrics[0].value = 0.6;
+        assert!(!a.metrics_adequate(), "breached upper bound must fail");
+    }
+
+    #[test]
+    fn json_serialization_round_trips_the_verdict() {
+        let a = CredibilityAssessment {
+            question_of_interest: "peak stress below yield?".into(),
+            risk: ModelRisk::Medium,
+            influence: ModelInfluence::Significant,
+            verification: vec![
+                activity(VerificationType::CodeVerification),
+                activity(VerificationType::CalculationVerification),
+            ],
+            validation: vec![validation(
+                ValidationType::InVitro,
+                AgreementLevel::Quantitative,
+            )],
+        };
+        let json = a.to_json();
+        assert!(json.contains("\"risk\":\"medium\""));
+        assert!(json.contains("\"influence\":\"significant\""));
+        assert!(json.contains("\"min_verification_types\":2"));
+        assert!(json.contains("\"credible\":true"));
+        assert!(json.contains("\"quantitative\""));
+        // A failing assessment carries its unmet goals.
+        let failing = CredibilityAssessment {
+            question_of_interest: "q".into(),
+            risk: ModelRisk::High,
+            influence: ModelInfluence::Direct,
+            verification: vec![],
+            validation: vec![],
+        };
+        let json = failing.to_json();
+        assert!(json.contains("\"credible\":false"));
+        assert!(json.contains("\"unmet\":["));
     }
 
     #[test]

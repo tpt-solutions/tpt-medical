@@ -129,6 +129,132 @@ pub mod tpt_med_tissue_link {
     pub use tpt_med_tissue::NeoHookeanParams as NeoHookeanForVis;
 }
 
+/// Temperature shift factor conventions (documented, single source).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum TemperatureShift {
+    /// Williams–Landel–Ferry: `log10 aT = −C1 (T − Tref) / (C2 + T − Tref)`.
+    /// Valid above Tg; the classic C1 = 17.4, C2 = 51.6 K are the caller's
+    /// to cite — this crate ships no silent material constants.
+    Wlf {
+        /// WLF C1 (dimensionless).
+        c1: f64,
+        /// WLF C2 (kelvin).
+        c2_kelvin: f64,
+    },
+    /// Arrhenius: `ln aT = (Ea/R) (1/T − 1/Tref)`, temperatures in kelvin.
+    Arrhenius {
+        /// Apparent activation energy (J/mol).
+        activation_energy_j_mol: f64,
+    },
+}
+
+impl TemperatureShift {
+    /// Shift factor `aT = τ(T)/τ(Tref)` at temperature `t` (same unit as
+    /// the reference temperature; kelvin for Arrhenius).
+    pub fn shift_factor(&self, t: f64, t_ref: f64) -> f64 {
+        match *self {
+            TemperatureShift::Wlf { c1, c2_kelvin } => {
+                let dt = t - t_ref;
+                10f64.powf(-c1 * dt / (c2_kelvin + dt))
+            }
+            TemperatureShift::Arrhenius {
+                activation_energy_j_mol,
+            } => {
+                const R: f64 = 8.314_462_618;
+                ((activation_energy_j_mol / R) * (1.0 / t - 1.0 / t_ref)).exp()
+            }
+        }
+    }
+
+    /// Master-curve shift: every Prony time constant becomes
+    /// `τᵢ(T) = τᵢ_ref · aT(T)`.
+    pub fn shifted_material(
+        &self,
+        material: &ViscoelasticMaterial,
+        t_ref: f64,
+        t: f64,
+    ) -> ViscoelasticMaterial {
+        let a = self.shift_factor(t, t_ref);
+        ViscoelasticMaterial {
+            g0: material.g0,
+            prony: material
+                .prony
+                .iter()
+                .map(|term| PronyTerm {
+                    g_i: term.g_i,
+                    tau_i: term.tau_i * a,
+                })
+                .collect(),
+        }
+    }
+}
+
+/// Time-integration helper for driving a Prony material inside an explicit
+/// FEM/CFD loop, so callers don't reimplement the internal-variable
+/// recurrence.
+///
+/// Each Maxwell element carries a partial (viscous) strain `εᵢ` updated by
+/// the exact exponential recurrence over the step
+/// `Δt`:
+///
+/// ```text
+/// εᵢⁿ⁺¹ = e^(−Δt/τᵢ) εᵢⁿ + (1 − e^(−Δt/τᵢ)) γⁿ⁺¹
+/// σⁿ⁺¹  = G∞ γⁿ⁺¹ + Σᵢ Gᵢ (γⁿ⁺¹ − εᵢⁿ⁺¹)
+/// ```
+///
+/// which is the standard uniaxial shear form; the update is exact for a
+/// strain that is linear over the step.
+#[derive(Debug, Clone)]
+pub struct PronyIntegrator {
+    /// The (temperature-shifted, if any) material being integrated.
+    material: ViscoelasticMaterial,
+    /// Per-element viscous (partially developed) strain.
+    viscous: Vec<f64>,
+    /// Held total strain.
+    strain: f64,
+}
+
+impl PronyIntegrator {
+    /// Fresh integrator at zero strain and zero partial strains.
+    pub fn new(material: &ViscoelasticMaterial) -> Self {
+        material.validate().expect("valid Prony series");
+        Self {
+            viscous: vec![0.0; material.prony.len()],
+            strain: 0.0,
+            material: material.clone(),
+        }
+    }
+
+    /// Advances one step to the new total strain `gamma`, returning the
+    /// shear stress (MPa). `dt <= 0` is treated as a no-op returning the
+    /// current stress.
+    pub fn step(&mut self, gamma: f64, dt: f64) -> f64 {
+        if dt > 0.0 {
+            for (term, eps_i) in self.material.prony.iter().zip(&mut self.viscous) {
+                let decay = (-dt / term.tau_i).exp();
+                *eps_i = decay * *eps_i + (1.0 - decay) * gamma;
+            }
+            self.strain = gamma;
+        }
+        self.stress()
+    }
+
+    /// Current stress at the held strain (MPa).
+    pub fn stress(&self) -> f64 {
+        let g_inf = self.material.equilibrium_modulus();
+        let mut sigma = g_inf * self.strain;
+        for (term, &eps_i) in self.material.prony.iter().zip(&self.viscous) {
+            sigma += self.material.g0 * term.g_i * (self.strain - eps_i);
+        }
+        sigma
+    }
+
+    /// Current total strain.
+    pub fn strain(&self) -> f64 {
+        self.strain
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -187,6 +313,98 @@ mod tests {
             .map(|w| m.loss_modulus(w))
             .fold(0.0f64, f64::max);
         assert!(peak > 0.1, "peak loss {peak}");
+    }
+
+    #[test]
+    fn wlf_shift_speeds_up_above_reference() {
+        let wlf = TemperatureShift::Wlf {
+            c1: 17.4,
+            c2_kelvin: 51.6,
+        };
+        let a_cold = wlf.shift_factor(25.0, 37.0);
+        let a_hot = wlf.shift_factor(60.0, 37.0);
+        assert!(a_hot < 1.0 && a_hot > 0.0);
+        assert!(a_cold > 1.0);
+        // WLF diverges as T approaches Tg (here Tref + -C2): sanity only.
+        let m = material();
+        let shifted = wlf.shifted_material(&m, 37.0, 60.0);
+        assert!(shifted.prony[0].tau_i < m.prony[0].tau_i);
+    }
+
+    #[test]
+    fn arrhenius_shift_increases_with_temperature() {
+        let arr = TemperatureShift::Arrhenius {
+            activation_energy_j_mol: 50_000.0,
+        };
+        let a_hot = arr.shift_factor(350.0, 300.0);
+        assert!(a_hot < 1.0, "higher T -> faster relaxation: {a_hot}");
+        assert!((arr.shift_factor(300.0, 300.0) - 1.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn integrator_reproduces_relaxation_then_recovery() {
+        // Stress relaxation under held strain must decay like G(t).
+        let m = material();
+        let mut it = PronyIntegrator::new(&m);
+        let dt = 1e-6;
+        let sigma0 = it.step(0.05, dt);
+        // The exponential recurrence reproduces G(dt) exactly for a step
+        // held from zero: sigma = gamma * G(dt).
+        assert!(
+            (sigma0 - 0.05 * m.relaxation_modulus(dt)).abs() < 1e-12,
+            "{} vs {}",
+            sigma0,
+            0.05 * m.relaxation_modulus(dt)
+        );
+        let mut t = 0.0;
+        for _ in 0..2000 {
+            t += 0.01;
+            it.step(0.05, 0.01);
+        }
+        let expected = 0.05 * m.relaxation_modulus(t);
+        assert!(
+            (it.stress() - expected).abs() < 5e-3 * expected.abs().max(1e-9),
+            "{} vs {expected}",
+            it.stress()
+        );
+        // Return to zero strain: stress must recover to zero. The slow
+        // mode (tau = 10 s) needs many time constants to vanish, so run
+        // 200 s and expect the residual below 1e-5 MPa.
+        for _ in 0..20_000 {
+            it.step(0.0, 0.01);
+        }
+        assert!(it.stress().abs() < 1e-5, "residual {}", it.stress());
+    }
+
+    #[test]
+    fn integrator_matches_analytic_constant_rate_response() {
+        // For a linear strain ramp at rate r, the analytic stress of the
+        // one-term line is G∞ r t + G g τ r (1 - e^(-t/τ)) / 1 — compare
+        // against the integrator within integration tolerance.
+        let m = ViscoelasticMaterial {
+            g0: 1.0,
+            prony: vec![PronyTerm {
+                g_i: 0.5,
+                tau_i: 2.0,
+            }],
+        };
+        let rate = 0.01;
+        let mut it = PronyIntegrator::new(&m);
+        let dt = 0.01;
+        let mut t = 0.0;
+        let mut last = 0.0;
+        for _ in 0..1000 {
+            t += dt;
+            last = it.step(rate * t, dt);
+        }
+        // Analytic ramp response: sigma(t) = G_inf * r * t
+        //                     + G0 * g * r * tau * (1 - e^(-t/tau)).
+        let g_inf = m.equilibrium_modulus();
+        let expected = g_inf * rate * t + m.g0 * 0.5 * rate * 2.0 * (1.0 - (-t / 2.0).exp());
+        assert!(
+            (last - expected).abs() < 1e-3 * expected.abs().max(1e-9),
+            "{last} vs {expected}"
+        );
     }
 
     #[test]

@@ -12,20 +12,24 @@ changes for consumers of this crate.
 ## [Unreleased]
 
 ### Added
+- `SignaturePolicy` (permissive vs `RequireSignatureAfterLastEdit`),
+  `ReasonPolicy` (free text vs structured reason codes), and the
+  policy-checked `checked_append` / `export_package_checked`: **workflow
+  discipline enforcement** — a site can require sign-after-final-edit and
+  structured reason codes, with `PolicyError` naming the violation. The
+  permissive default preserves the historic append/sign/export ordering.
 - Crate README with an explicit **regulatory mapping table** (§11.10(e), audit
   trail integrity, §11.50, §11.10(k)) and a statement that Part 11 compliance
   is a property of a *system* — procedures, training, retention, access
   control — and that no library can supply those.
 
 ### Planned
-- Enforce "sign after the final edit": today signing, appending and exporting
   is permitted and the export records the ordering, so a workflow requiring
   the stricter discipline must enforce it itself.
 - An append-only persistence layer with WORM semantics, so the trail survives a
   process restart without a caller-supplied store.
 - External anchoring of the detached tag (HSM, transparency log, RFC 3161) to
   close the non-repudiation gap identified in RFC 0003.
-- Reason-field policy enforcement, so a site can require a structured reason
   code rather than free text.
 
 ### Notes

@@ -301,7 +301,7 @@ while IFS= read -r manifest; do
     fi
   fi
 done <<EOF
-$(find . -name Cargo.toml -not -path './target/*' -not -path '*/target/*' | sort)
+$(find . -name Cargo.toml -not -path './target/*' -not -path '*/target/*' -not -path '*/.kilo/*' -not -path './.git/*' | sort)
 EOF
 
 printf '\nChecked %d workspace members.\n' "$checked"

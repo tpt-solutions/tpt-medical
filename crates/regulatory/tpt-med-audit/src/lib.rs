@@ -168,6 +168,71 @@ pub fn verify_chain(seed: &[u8], entries: &[String], digests: &[String]) -> bool
         .all(|(a, b)| a == b)
 }
 
+/// Per-index verdict for one chain link, from [`verify_chain_detailed`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LinkStatus {
+    /// The stored digest equals the recomputed digest. Note: because the
+    /// chain commits to the previous link, every link from the first
+    /// tampered entry onward is also reported [`LinkStatus::Broken`] — a
+    /// `Valid` link after a `Broken` one is impossible unless the seed (or
+    /// the whole tail) was replaced.
+    Valid,
+    /// The stored digest does not match the recomputation. The first
+    /// `Broken` index is the tampered entry.
+    Broken,
+    /// No stored digest exists at this index (truncated log).
+    Missing,
+}
+
+/// One link's forensic report: index, verdict, and the digests compared.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LinkReport {
+    /// Zero-based entry index.
+    pub index: usize,
+    /// Verdict for this link.
+    pub status: LinkStatus,
+    /// Recomputed digest (what the chain requires here).
+    pub expected: String,
+    /// Stored digest, when one exists at this index.
+    pub stored: Option<String>,
+}
+
+/// Walks the chain and reports each link individually, so a forensic tool
+/// can show *where* the log was broken rather than only that it fails.
+///
+/// Length mismatches are reported as [`LinkStatus::Missing`] links beyond
+/// the shorter side; the first `Broken` index is the first tampered entry
+/// (everything after it recomputes against a tampered prefix and therefore
+/// also reports `Broken`, unless the tail was regenerated wholesale).
+pub fn verify_chain_detailed(
+    seed: &[u8],
+    entries: &[String],
+    digests: &[String],
+) -> Vec<LinkReport> {
+    let mut prev = sha256(seed);
+    let mut reports = Vec::with_capacity(entries.len().max(digests.len()));
+    for i in 0..entries.len().max(digests.len()) {
+        let entry = entries.get(i);
+        let mut buf = prev.to_vec();
+        buf.extend_from_slice(entry.map_or(&[][..], |e| e.as_bytes()));
+        prev = sha256(&buf);
+        let expected = hex(&prev);
+        let stored = digests.get(i).cloned();
+        let status = match stored.as_deref() {
+            None => LinkStatus::Missing,
+            Some(s) if s == expected => LinkStatus::Valid,
+            Some(_) => LinkStatus::Broken,
+        };
+        reports.push(LinkReport {
+            index: i,
+            status,
+            expected,
+            stored,
+        });
+    }
+    reports
+}
+
 /// Constant-time equality for tag comparison (avoids timing oracles).
 pub fn ct_eq(a: &[u8], b: &[u8]) -> bool {
     if a.len() != b.len() {
@@ -253,6 +318,70 @@ mod tests {
 
         // A different seed produces a different chain.
         assert_ne!(hash_chain(b"other", &entries), digests);
+    }
+
+    #[test]
+    fn detailed_report_pins_the_first_broken_link() {
+        let seed = b"run-1";
+        let entries = vec!["a".into(), "b".into(), "c".into()];
+        let digests = hash_chain(seed, &entries);
+        assert!(verify_chain(seed, &entries, &digests));
+
+        // Tamper with entry 1: link 0 stays valid, 1 and 2 break (the chain
+        // commits to the previous link, so the tail cannot validate).
+        let mut forged = entries.clone();
+        forged[1] = "tampered".into();
+        let report = verify_chain_detailed(seed, &forged, &digests);
+        assert_eq!(report[0].status, LinkStatus::Valid);
+        assert_eq!(report[1].status, LinkStatus::Broken);
+        assert_eq!(report[2].status, LinkStatus::Broken);
+        assert_eq!(
+            report.iter().position(|r| r.status == LinkStatus::Broken),
+            Some(1),
+            "first broken index is the tampered entry"
+        );
+        // The report carries both sides of the comparison.
+        assert_ne!(
+            report[1].stored.as_deref(),
+            Some(report[1].expected.as_str())
+        );
+    }
+
+    #[test]
+    fn detailed_report_flags_truncation_as_missing() {
+        let seed = b"run-2";
+        let entries = vec!["a".into(), "b".into(), "c".into()];
+        let digests = hash_chain(seed, &entries);
+        // Truncated digest log: links without a stored digest are Missing.
+        let report = verify_chain_detailed(seed, &entries, &digests[..1]);
+        assert_eq!(report[0].status, LinkStatus::Valid);
+        assert_eq!(report[1].status, LinkStatus::Missing);
+        assert_eq!(report[2].status, LinkStatus::Missing);
+        assert!(report[1].stored.is_none());
+        assert!(!report[1].expected.is_empty());
+    }
+
+    #[test]
+    fn detailed_report_flags_entry_gap_as_broken() {
+        let seed = b"run-4";
+        let entries = vec!["a".into(), "b".into(), "c".into()];
+        let digests = hash_chain(seed, &entries);
+        // A missing *entry* under a present digest is a gap in the record
+        // itself — the recomputation cannot match, so it is Broken.
+        let report = verify_chain_detailed(seed, &entries[..1], &digests);
+        assert_eq!(report[0].status, LinkStatus::Valid);
+        assert_eq!(report[1].status, LinkStatus::Broken);
+        assert_eq!(report[2].status, LinkStatus::Broken);
+    }
+
+    #[test]
+    fn detailed_report_on_fully_consistent_chain() {
+        let seed = b"run-3";
+        let entries = vec!["x".into()];
+        let digests = hash_chain(seed, &entries);
+        let report = verify_chain_detailed(seed, &entries, &digests);
+        assert!(report.iter().all(|r| r.status == LinkStatus::Valid));
+        assert_eq!(report[0].stored.as_deref(), Some(digests[0].as_str()));
     }
 
     #[test]

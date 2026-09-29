@@ -143,6 +143,55 @@ impl FlowWaveform {
     }
 }
 
+/// A stateful Windkessel boundary condition for lockstep coupling with a
+/// `tpt-med-hemodynamics` time step: the CFD outlet `flow` advances the
+/// 0-D model, and the returned pressure feeds back as the outlet boundary
+/// value for the next step.
+///
+/// The coupling is explicit (pressure lags flow by one step), which is the
+/// standard stable choice when the 0-D time constant is large relative to
+/// the CFD step; `WindkesselModel::time_constant` is the number to check.
+#[derive(Debug, Clone)]
+pub struct CoupledWindkessel {
+    model: WindkesselModel,
+    pressure: f64,
+    steps: u64,
+}
+
+impl CoupledWindkessel {
+    /// Initialises the boundary at a steady pressure for `mean_flow`.
+    pub fn new(model: WindkesselModel, mean_flow: f64) -> Self {
+        Self {
+            model,
+            pressure: model.steady_state_pressure(mean_flow),
+            steps: 0,
+        }
+    }
+
+    /// Advances one CFD step of duration `dt` with the instantaneous outlet
+    /// flow, returning the new outlet pressure (MPa) to prescribe.
+    pub fn advance(&mut self, flow: f64, dt: f64) -> f64 {
+        self.pressure = self.model.step_rk4(self.pressure, flow, dt);
+        self.steps += 1;
+        self.pressure
+    }
+
+    /// Current outlet pressure (MPa).
+    pub fn pressure(&self) -> f64 {
+        self.pressure
+    }
+
+    /// Steps taken since initialisation.
+    pub fn steps(&self) -> u64 {
+        self.steps
+    }
+
+    /// The wrapped model (for time-constant checks at the call site).
+    pub fn model(&self) -> &WindkesselModel {
+        &self.model
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -153,6 +202,36 @@ mod tests {
             r_p: 0.001,
             c: 1000.0,
             p_out: 0.001,
+        }
+    }
+
+    #[test]
+    fn coupled_boundary_reaches_the_same_steady_state() {
+        let model = WindkesselModel {
+            r_c: 0.0002,
+            r_p: 0.001,
+            c: 1000.0,
+            p_out: 0.001,
+        };
+        let q = 100.0;
+        let mut bc = CoupledWindkessel::new(model, q);
+        let dt = 0.01;
+        let mut last = bc.pressure();
+        for _ in 0..2000 {
+            last = bc.advance(q, dt);
+        }
+        assert!(
+            (last - model.steady_state_pressure(q)).abs() < 1e-4,
+            "settled {last} vs steady {}",
+            model.steady_state_pressure(q)
+        );
+        assert_eq!(bc.steps(), 2000);
+        // Withheld flow: pressure decays toward p_out monotonically.
+        let mut prev = f64::INFINITY;
+        for _ in 0..500 {
+            let p = bc.advance(0.0, dt);
+            assert!(p < prev, "not decaying: {p} after {prev}");
+            prev = p;
         }
     }
 

@@ -12,6 +12,13 @@ changes for consumers of this crate.
 ## [Unreleased]
 
 ### Added
+- `verify_chain_detailed` / `LinkReport` / `LinkStatus`: per-index forensic
+  verification, so a tool can report **which** link broke (and show the
+  expected vs stored digests) instead of `verify_chain`'s all-or-nothing
+  `bool`. Truncated logs report `Missing` beyond the stored side; a missing
+  *entry* under a present digest reports `Broken` (the recomputation cannot
+  match a gap in the record). `verify_chain` is unchanged and remains the
+  right call for simple pass/fail checks.
 - Crate README stating plainly that this crate provides **primitives, not an
   audit trail**: the trail, schema, signatures with meaning, timestamps and
   export live in `tpt-med-fda`. It also records that `verify_chain` is
@@ -19,8 +26,6 @@ changes for consumers of this crate.
   workflow will want.
 
 ### Planned
-- A `verify_chain_detailed` returning per-index status, so a forensic tool can
-  report the first broken link rather than only that the chain fails.
 - Asymmetric signatures (Ed25519) for non-repudiation, behind a clearly named
   feature, alongside the existing symmetric HMAC path.
 - External anchoring helpers for RFC 3161 timestamping or a transparency log,

@@ -12,6 +12,11 @@ changes for consumers of this crate.
 ## [Unreleased]
 
 ### Added
+- `GruenZone`, `gruen_zone`, `gruen_zones_in_order`: **built-in Gruen
+  zone definitions** (Gruen, McNeice & Amstutz 1979) — geometric
+  classification of a point into zones 1-7 from the stem axis end points,
+  a mediolateral direction and a tip-band fraction, with stable
+  `gruen-N` keys for reports.
 - Crate README explaining that micromotion and stress shielding are properties
   of the implant–bone *system* rather than of the implant alone, which is why
   the interface is a first-class input instead of an assumed perfect bond.
@@ -21,7 +26,6 @@ changes for consumers of this crate.
   evaluated at a single static load.
 - A migration model, so the time-dependent consequence of micromotion can be
   followed rather than classified at a threshold.
-- Built-in zone definitions (Gruen, Paprosky) so callers are not left to
   invent one.
 - Continuum coupling, so an implant with realistic compliance can be
   evaluated rather than modelled as a rigid punch.
