@@ -265,6 +265,100 @@ pub fn sample_phantom_rods(
     Ok(results)
 }
 
+/// The result of [`detect_phantom_rotation`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RotationDetection {
+    /// Best-fit in-plane rotation (radians, wrapped to `[0, 2π)`).
+    pub rotation_rad: f64,
+    /// RMS residual (HU) of sampled-vs-known rod means at the best
+    /// rotation — the caller's confidence measure (a high residual means
+    /// the layout does not match the image at any rotation).
+    pub rms_residual_hu: f64,
+}
+
+/// Detects the phantom's in-plane rotation about an already-located
+/// `centroid` by sweeping candidate rotations and minimising the squared
+/// residual between sampled rod means and the model's known values, then
+/// refining the best coarse candidate with local grid-and-shrink rounds
+/// (the score's valley is flat-bottomed under pixel quantisation, which
+/// defeats ternary search).
+///
+/// Coarse step is `2π / coarse_steps` (≥ 8). The layout must be
+/// rotationally *distinctive* enough that the coarse score samples the
+/// global basin — a uniformly spaced ring of equal-value rods is
+/// undetectable by symmetry. The search stays in-plane and assumes the
+/// centroid; slice selection remains the caller's (RFC 0008's v0
+/// posture). This closes the mechanical part of the deferred "automatic
+/// rotation detection" follow-up; the named vendor-phantom library stays
+/// open, since it must come from manufacturer datasheets, not baked-in
+/// guesses.
+pub fn detect_phantom_rotation(
+    slices: &[DicomSlice],
+    model: &PhantomModel,
+    centroid: (f64, f64),
+    roi_fraction: f64,
+    coarse_steps: usize,
+) -> Result<RotationDetection> {
+    if coarse_steps < 8 {
+        return Err(DicomError::Phantom(format!(
+            "coarse_steps must be at least 8, got {coarse_steps}"
+        )));
+    }
+
+    let score = |rotation: f64| -> f64 {
+        match sample_phantom_rods(slices, model, centroid, rotation, roi_fraction) {
+            Ok(pairs) => pairs
+                .iter()
+                .map(|(mean, known)| (mean - known).powi(2))
+                .sum::<f64>(),
+            Err(_) => f64::INFINITY, // ROI fell off the slice: not a fit
+        }
+    };
+
+    let step = core::f64::consts::TAU / coarse_steps as f64;
+    let mut best_angle = 0.0f64;
+    let mut best_score = f64::INFINITY;
+    for k in 0..coarse_steps {
+        let angle = step * k as f64;
+        let s = score(angle);
+        if s < best_score {
+            best_score = s;
+            best_angle = angle;
+        }
+    }
+
+    // Grid-and-shrink refinement: dense local grids around the incumbent,
+    // shrinking the bracket — robust to flat-bottomed valleys.
+    let mut center = best_angle;
+    let mut width = step;
+    for _ in 0..8 {
+        let samples = 17;
+        let mut local_best = center;
+        let mut local_score = f64::INFINITY;
+        for k in 0..samples {
+            let t = center - width + 2.0 * width * k as f64 / (samples - 1) as f64;
+            let s = score(t);
+            if s < local_score {
+                local_score = s;
+                local_best = t;
+            }
+        }
+        center = local_best;
+        width *= 0.3;
+    }
+    let rotation = center.rem_euclid(core::f64::consts::TAU);
+
+    let pairs = sample_phantom_rods(slices, model, centroid, rotation, roi_fraction)?;
+    let mut sq = 0.0f64;
+    for (mean, known) in &pairs {
+        sq += (mean - known).powi(2);
+    }
+    Ok(RotationDetection {
+        rotation_rad: rotation,
+        rms_residual_hu: (sq / pairs.len() as f64).sqrt(),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -448,6 +542,74 @@ mod tests {
         let b = slice_with(40, 40, (1.0, 1.0), |_, _| 0.0);
         let model = two_rod_model();
         let err = sample_phantom_rods(&[a, b], &model, (30.0, 30.0), 0.0, 0.8).unwrap_err();
+        assert!(matches!(err, DicomError::Phantom(_)));
+    }
+
+    #[test]
+    fn detects_a_known_phantom_rotation() {
+        // The two-rod fixture rendered at a true rotation of 0.6 rad.
+        let true_rotation = 0.6f64;
+        let slice = slice_with(60, 60, (1.0, 1.0), |r, c| {
+            let mut hu = 0.0;
+            // Rod values equal the knowns: any ROI dilution with
+            // background moves the sampled mean away from the known value,
+            // so the residual minimum is sharp at the true rotation (a
+            // fixture with mismatched values would lure the detector into
+            // partially diluting the ROI — the honest behaviour of the
+            // least-squares objective).
+            for (radial, angle, value) in [(10.0, 0.0, 100.0), (10.0, std::f64::consts::PI, 200.0)]
+            {
+                let theta = angle + true_rotation;
+                let cr = 30.0 + radial * theta.sin();
+                let cc = 30.0 + radial * theta.cos();
+                if ((r as f64 - cr).powi(2) + (c as f64 - cc).powi(2)).sqrt() <= 3.0 {
+                    hu = value;
+                }
+            }
+            hu
+        });
+        let model = two_rod_model();
+        // roi_fraction 1.0 puts the ROI rim on the rod rim: the perfect-
+        // fit valley collapses to pixel-noise width. (At smaller fractions
+        // a whole range of rotations samples identically — the basin is
+        // the geometric slack between ROI and rod — and any basin point is
+        // a valid answer.)
+        let detection =
+            detect_phantom_rotation(&[slice], &model, (30.0, 30.0), 1.0, 24).expect("detects");
+        let wrapped = detection.rotation_rad.rem_euclid(std::f64::consts::TAU);
+        let err = (wrapped - true_rotation).abs();
+        assert!(
+            err < 0.02 || (err - std::f64::consts::TAU).abs() < 0.02,
+            "rotation {wrapped} vs true {true_rotation}"
+        );
+        // Residual is at the sampling noise floor.
+        assert!(
+            detection.rms_residual_hu < 1.0,
+            "rms {}",
+            detection.rms_residual_hu
+        );
+    }
+
+    #[test]
+    fn rotation_detection_reports_honest_residual_when_layout_does_not_match() {
+        // A uniform background cannot match any rod layout: the residual
+        // stays high, which is the caller's reject signal.
+        let slice = slice_with(60, 60, (1.0, 1.0), |_, _| 50.0);
+        let model = two_rod_model();
+        let detection = detect_phantom_rotation(&[slice], &model, (30.0, 30.0), 0.8, 16)
+            .expect("returns a best effort");
+        assert!(
+            detection.rms_residual_hu > 50.0,
+            "rms {}",
+            detection.rms_residual_hu
+        );
+    }
+
+    #[test]
+    fn rotation_detection_validates_coarse_steps() {
+        let slice = slice_with(60, 60, (1.0, 1.0), |_, _| 0.0);
+        let model = two_rod_model();
+        let err = detect_phantom_rotation(&[slice], &model, (30.0, 30.0), 0.8, 4).unwrap_err();
         assert!(matches!(err, DicomError::Phantom(_)));
     }
 

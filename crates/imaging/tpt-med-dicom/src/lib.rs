@@ -53,7 +53,10 @@ pub use bmd::{AshFraction, BmdConvention, BmdToApparentDensity, BmdToAshDensity}
 pub use error::DicomError;
 pub use hounsfield::{BoneRegion, HounsfieldMapper, QctCalibration};
 pub use parser::{DicomElement, DicomParser};
-pub use phantom::{locate_phantom_centroid, sample_phantom_rods, PhantomModel, PhantomRod};
+pub use phantom::{
+    detect_phantom_rotation, locate_phantom_centroid, sample_phantom_rods, PhantomModel,
+    PhantomRod, RotationDetection,
+};
 pub use series::{DicomSeries, DicomSlice};
 pub use tags::{TransferSyntax, Vr};
 

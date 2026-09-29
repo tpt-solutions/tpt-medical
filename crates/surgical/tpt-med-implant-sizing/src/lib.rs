@@ -370,6 +370,71 @@ pub fn size_from_measurements(
     })
 }
 
+/// The resection and component-thickness inputs of a planned total knee:
+/// how much bone each cut removes and how much implant each surface
+/// replaces. All values in millimetres.
+#[derive(Debug, Clone, Copy)]
+pub struct ResectionPlan {
+    /// Distal femoral resection (mm) — bone removed from the distal femur.
+    pub distal_femoral_resection: f64,
+    /// Posterior femoral resection (mm, per condyle) — bone removed from
+    /// the posterior condyles.
+    pub posterior_femoral_resection: f64,
+    /// Proximal tibial resection (mm).
+    pub tibial_resection: f64,
+    /// Distal femoral component thickness (mm) — what the implant adds
+    /// back at the distal femur.
+    pub femoral_distal_thickness: f64,
+    /// Posterior femoral condyle thickness (mm).
+    pub femoral_posterior_thickness: f64,
+    /// Total tibial component thickness (mm, insert + tray).
+    pub tibial_component_thickness: f64,
+}
+
+/// The flexion/extension gap assessment for a [`ResectionPlan`].
+#[derive(Debug, Clone, Copy)]
+pub struct GapReport {
+    /// Extension gap (mm): bone resected minus implant thickness at the
+    /// distal femur and tibia — the space left after seating the
+    /// components in extension. Negative means the components are
+    /// **overstuffed** (thicker than the bone removed).
+    pub extension_gap_mm: f64,
+    /// Flexion gap (mm): the same balance at the posterior condyles and
+    /// tibia.
+    pub flexion_gap_mm: f64,
+    /// `|flexion − extension|` (mm) — the imbalance a surgeon levels.
+    pub imbalance_mm: f64,
+    /// True when both gaps are non-negative (nothing overstuffed) and the
+    /// imbalance is within the tolerance.
+    pub is_balanced: bool,
+}
+
+/// Checks that a selected size leaves acceptable **gap balancing**: the
+/// screening arithmetic of TKA mechanics — the extension gap is the distal
+/// femoral and tibial resections minus the corresponding component
+/// thicknesses, the flexion gap the posterior resections minus theirs.
+/// A plan balances when neither gap went negative (an overstuffed
+/// component, which lifts the joint line and tightens the collateral) and
+/// the two gaps agree within `tolerance_mm` (a flexion/extension mismatch
+/// that a soft-tissue release should not have to paper over).
+///
+/// This is the *checkable geometric half* of soft-tissue assessment:
+/// actual ligament tension and stability need the soft-tissue structures
+/// themselves, which this crate does not model.
+pub fn check_gap_balance(plan: &ResectionPlan, tolerance_mm: f64) -> GapReport {
+    let extension_gap = (plan.distal_femoral_resection - plan.femoral_distal_thickness)
+        + (plan.tibial_resection - plan.tibial_component_thickness);
+    let flexion_gap = (plan.posterior_femoral_resection - plan.femoral_posterior_thickness)
+        + (plan.tibial_resection - plan.tibial_component_thickness);
+    let imbalance = (flexion_gap - extension_gap).abs();
+    GapReport {
+        extension_gap_mm: extension_gap,
+        flexion_gap_mm: flexion_gap,
+        imbalance_mm: imbalance,
+        is_balanced: extension_gap >= 0.0 && flexion_gap >= 0.0 && imbalance <= tolerance_mm,
+    }
+}
+
 /// Sizing recommendation bundle for a TKA case.
 #[derive(Debug, Clone, Copy)]
 pub struct TkaSizing {
@@ -555,6 +620,45 @@ mod tests {
         assert_eq!(s.femoral_size, 4);
         // Plateau 60 → between 55(2) and 60(3) → label 3.
         assert_eq!(s.tibial_size, 3);
+    }
+
+    #[test]
+    fn gap_balance_flags_overstuffing_and_flexion_mismatch() {
+        // Resections equal to component thicknesses: both gaps zero,
+        // balanced.
+        let plan = ResectionPlan {
+            distal_femoral_resection: 9.0,
+            posterior_femoral_resection: 10.0,
+            tibial_resection: 10.0,
+            femoral_distal_thickness: 9.0,
+            femoral_posterior_thickness: 10.0,
+            tibial_component_thickness: 10.0,
+        };
+        let ok = check_gap_balance(&plan, 2.0);
+        assert!((ok.extension_gap_mm - 0.0).abs() < 1e-12);
+        assert!((ok.flexion_gap_mm - 0.0).abs() < 1e-12);
+        assert!(ok.is_balanced);
+
+        // A thicker tibial insert stuffs both gaps negative.
+        let stuffed = ResectionPlan {
+            tibial_component_thickness: 13.0,
+            ..plan
+        };
+        let r = check_gap_balance(&stuffed, 2.0);
+        assert!(r.extension_gap_mm < 0.0 && r.flexion_gap_mm < 0.0);
+        assert!(!r.is_balanced, "overstuffed must fail");
+
+        // A posterior-heavy femoral resection opens the flexion gap
+        // relative to extension: flagged by the imbalance tolerance.
+        let flexion_open = ResectionPlan {
+            posterior_femoral_resection: 14.0,
+            ..plan
+        };
+        let r = check_gap_balance(&flexion_open, 2.0);
+        assert!((r.imbalance_mm - 4.0).abs() < 1e-12);
+        assert!(!r.is_balanced);
+        // …and accepted at a looser tolerance.
+        assert!(check_gap_balance(&flexion_open, 4.0).is_balanced);
     }
 
     #[test]

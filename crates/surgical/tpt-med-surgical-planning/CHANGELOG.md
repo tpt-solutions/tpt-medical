@@ -12,6 +12,17 @@ changes for consumers of this crate.
 ## [Unreleased]
 
 ### Added
+- `OsteotomyCut::kerf_width` and `WedgeCut` (+ `PlanStep::Wedge`,
+  `VirtualSurgery::wedge`): **saw-kerf width and multi-plane closed
+  wedges**. The kerf removes a slab of the given width centred on the
+  cutting plane (the kept boundary shifts outward by half the kerf, and
+  the resection measurement grows by the slab — depth is now measured past
+  the kept face, which also fixes `keep_negative` cuts reporting a depth
+  of 0). A wedge removes exactly the region on the discarded side of both
+  planes — the intersection two sequential single-sided cuts cannot
+  express — with its own `wedge:` audit label and measurement. Three new
+  tests (kerf slab + depth, exact wedge intersection through the plan,
+  kerf-offset wedges).
 - Crate README explaining why the audit trail is the point of this crate: the
   planning primitives are not hard, but producing the operation log *by
   construction* rather than reconstructing it from screenshots afterwards is.
@@ -35,7 +46,7 @@ changes for consumers of this crate.
   process.
 
 ### Planned
-- Curved and freeform resections, saw-kerf width, and multi-plane wedges.
+- Curved and freeform resections (kerf width and two-plane wedges are delivered).
 - Implant component placement with a bone–implant interface, and bone graft or
   defect reconstruction.
 - Soft-tissue structures, so a plan can be checked for collateral damage to
@@ -66,7 +77,7 @@ changes for consumers of this crate.
   process.
 
 ### Planned
-- Curved and freeform resections, saw-kerf width, and multi-plane wedges.
+- Curved and freeform resections (kerf width and two-plane wedges are delivered).
 - Implant component placement with a bone–implant interface, and bone graft or
   defect reconstruction.
 - Soft-tissue structures, so a plan can be checked for collateral damage to

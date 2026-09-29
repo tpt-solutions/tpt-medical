@@ -288,6 +288,15 @@ Tracked in `todo.md`. Summary of the user-visible change here:
 - `web/build-wasm.sh` — one-command engine build + wasm-bindgen glue
   generation (version-matched CLI); `web/README.md` run instructions.
 
+### Added — Backlog follow-up sweep (2026-10-01)
+The tractable remainder of the per-crate backlog: `tpt-med-tissue`
+(plane-strain/plane-stress wrappers over the full 3×3 `F`), 
+`tpt-med-surgical-planning` (saw-kerf width, two-plane closed wedges with
+audit labels), `tpt-med-implant-sizing` (the gap-balance check), and
+`tpt-med-dicom` (phantom rotation detection). Vendor-phantom data,
+ligament modelling, curved resections and the fem-adapter's mixed `u`-`p`
+formulation remain open with their blockers recorded in `todo.md`.
+
 ### Added — Backlog sweep (2026-09-30)
 Thirteen more scoped backlog items delivered across nine crates with tests
 (see each crate's CHANGELOG for API detail): `tpt-med-stents` (Level 2

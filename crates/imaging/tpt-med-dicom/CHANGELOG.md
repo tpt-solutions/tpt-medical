@@ -12,6 +12,17 @@ changes for consumers of this crate.
 ## [Unreleased]
 
 ### Added
+- `detect_phantom_rotation` / `RotationDetection`: **phantom rotation
+  detection** — the mechanical half of RFC 0008's deferred follow-up. A
+  coarse sweep (2π/`coarse_steps`, ≥ 8) over in-plane rotations scored by
+  the sampled-vs-known least squares, refined by grid-and-shrink rounds
+  (the score's valley is flat-bottomed under pixel quantisation, which
+  defeats ternary search). `rms_residual_hu` is the caller's reject
+  signal for a layout that matches nothing. The *named vendor-phantom
+  library* half of that item stays open deliberately: manufacturer
+  rod layouts must come from datasheets, not baked-in guesses. Three new
+  tests (known-rotation recovery at the fixture's resolution limit,
+  honest residual on a non-matching image, coarse-step validation).
 - **`jpeg2000` feature now covers JPEG 2000 Part 2 Multi-component**
   (`1.2.840.10008.1.2.4.92` Lossless Only, `.93` lossless-or-lossy) — two new
   `TransferSyntax` variants routed through the exact same `jpeg2000::decode_frame`

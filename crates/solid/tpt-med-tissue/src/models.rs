@@ -443,6 +443,131 @@ pub fn principal_stretches(f: &Mat3) -> [f64; 3] {
 /// Numeric tolerance used across the tissue crate tests.
 pub(crate) const EPS_F64: f64 = 1.0e-12;
 
+/// Reduced-dimensionality wrappers over the full 3×3 `F` interface: a
+/// caller working in 2D supplies the four in-plane gradient components and
+/// gets the in-plane first Piola back, with the out-of-plane stretch
+/// solved per the plane condition — **plane strain** (`F₃₃ = 1`) or
+/// **plane stress** (`P₃₃ = 0`, solved by robust bracketing on the scalar
+/// unknown `F₃₃`).
+#[derive(Debug, Clone)]
+pub struct ReducedPlaneModel {
+    model: TissueModel,
+    condition: PlaneCondition,
+}
+
+/// The out-of-plane condition of a reduced model.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlaneCondition {
+    /// `F₃₃ = 1`: thick section, no out-of-plane deformation.
+    PlaneStrain,
+    /// `P₃₃ = 0`: thin section, traction-free through-thickness faces.
+    PlaneStress,
+}
+
+/// The plane problem's solution: in-plane stress, the solved out-of-plane
+/// stretch, and the full 3-D first Piola it came from.
+#[derive(Debug, Clone, Copy)]
+pub struct PlaneSolution {
+    /// In-plane components of the first Piola, matching the input layout:
+    /// `p[i][j]` = `P_ij` for i, j in {0, 1}.
+    pub p_in_plane: [[f64; 2]; 2],
+    /// The out-of-plane stretch (1.0 for plane strain, solved for plane
+    /// stress).
+    pub f33: f64,
+    /// The full 3×3 first Piola at the completed gradient.
+    pub p_full: Mat3,
+}
+
+impl ReducedPlaneModel {
+    /// Wraps a full 3-D model under a plane condition.
+    pub fn new(model: TissueModel, condition: PlaneCondition) -> Self {
+        Self { model, condition }
+    }
+
+    /// The wrapped model.
+    pub fn model(&self) -> &TissueModel {
+        &self.model
+    }
+
+    /// The plane condition.
+    pub fn condition(&self) -> PlaneCondition {
+        self.condition
+    }
+
+    /// Solves the plane problem for the in-plane gradient
+    /// `[[F11, F12], [F21, F22]]`.
+    ///
+    /// Plane stress brackets `F₃₃` geometrically (positive, bounded away
+    /// from inversion, expanded until `P₃₃` changes sign) and bisects —
+    /// `P₃₃` is monotone decreasing in `F₃₃` for every law in this crate,
+    /// which is what makes the scalar bracket robust. Returns `None` when
+    /// no bracket exists within the expanded bounds (an inadmissible
+    /// in-plane gradient, e.g. volumetrically inverted).
+    pub fn solve(&self, in_plane: [[f64; 2]; 2]) -> Option<PlaneSolution> {
+        let f33 = match self.condition {
+            PlaneCondition::PlaneStrain => 1.0,
+            PlaneCondition::PlaneStress => self.solve_f33_plane_stress(&in_plane)?,
+        };
+        let mut full = Mat3::ZERO;
+        for (i, row) in in_plane.iter().enumerate() {
+            for (j, &v) in row.iter().enumerate() {
+                full.set(i, j, v);
+            }
+        }
+        full.set(2, 2, f33);
+        let p = self.model.first_piola(&full);
+        Some(PlaneSolution {
+            p_in_plane: [[p.at(0, 0), p.at(0, 1)], [p.at(1, 0), p.at(1, 1)]],
+            f33,
+            p_full: p,
+        })
+    }
+
+    /// Brackets and bisects the root of `P₃₃(F₃₃) = 0`.
+    fn solve_f33_plane_stress(&self, in_plane: &[[f64; 2]; 2]) -> Option<f64> {
+        let p33 = |f33: f64| {
+            let mut f = Mat3::ZERO;
+            for (i, row) in in_plane.iter().enumerate() {
+                for (j, &v) in row.iter().enumerate() {
+                    f.set(i, j, v);
+                }
+            }
+            f.set(2, 2, f33);
+            self.model.first_piola(&f).at(2, 2)
+        };
+        // Expand outward from a geometric bracket until P₃₃ changes sign.
+        let mut lo = 0.05f64;
+        let mut hi = 2.0f64;
+        let mut flo = p33(lo);
+        let mut fhi = p33(hi);
+        let mut guard = 0;
+        while flo * fhi > 0.0 {
+            guard += 1;
+            if guard > 60 {
+                return None;
+            }
+            lo *= 0.5;
+            hi *= 2.0;
+            flo = p33(lo);
+            fhi = p33(hi);
+        }
+        for _ in 0..80 {
+            let mid = 0.5 * (lo + hi);
+            let fm = p33(mid);
+            if fm == 0.0 {
+                return Some(mid);
+            }
+            if fm * flo < 0.0 {
+                hi = mid;
+            } else {
+                lo = mid;
+                flo = fm;
+            }
+        }
+        Some(0.5 * (lo + hi))
+    }
+}
+
 /// A named soft-tissue material: model + physical metadata.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SoftTissueMaterial {

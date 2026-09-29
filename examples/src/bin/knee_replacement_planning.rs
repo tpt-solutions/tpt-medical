@@ -62,6 +62,7 @@ fn main() {
         plane: Plane::from_point_normal(Vec3::new(0.0, 0.0, resection_z), Vec3::Z).expect("plane"),
         fragment_name: "distal_resection".into(),
         keep_positive: true,
+        kerf_width: 0.0,
     });
     plan.move_fragment(FragmentTransform {
         rotation_axis: Vec3::new(-1.0, 0.0, 0.0), // TEA (medial→lateral = +x; rotate about it)

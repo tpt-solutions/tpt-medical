@@ -59,6 +59,11 @@ voxel grid.
   voxel grid), and the total resection volume.
 - Voxel index `(z·ny + y)·nx + x`, matching `tpt-med-meshing`.
 
+- **Saw-kerf and wedges** — `OsteotomyCut::kerf_width` removes a slab
+  centred on the plane (kept boundary shifts by half the kerf); `WedgeCut`
+  removes exactly the two-plane intersection, the closed wedge that two
+  sequential single-sided cuts cannot express, with its own audit label.
+
 ## Conventions
 
 - `spacing` in **mm** per axis; `origin` is the patient-space position of
@@ -168,8 +173,8 @@ fn main() {
 
 ## Known Limitations
 
-- **Plane cuts only.** No freeform or curved resection, no saw-kerf width, no
-  multi-plane wedge. Real surgical planning wants all three.
+- **Planar resections only.** Kerf width and two-plane wedges are in; curved
+  and freeform resections (anatomically contoured surfaces) are not.
 - **Rigid fragments only.** No implant component placement with a bone-implant
   interface, no bone graft, no defect reconstruction.
 - **Measurements are voxel-quantised.** Resection volume counts discarded

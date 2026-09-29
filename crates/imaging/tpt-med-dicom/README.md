@@ -63,6 +63,11 @@ route for three reasons:
   both conversion stages refuse to construct without a citation string.
   `HounsfieldMapper::bmd_to_youngs_modulus` composes the result with the
   existing power laws.
+- **`detect_phantom_rotation`: rotation detection** — a least-squares sweep
+  over in-plane rotations (coarse grid + grid-and-shrink refinement)
+  matching sampled rod means to the model's known values, with the RMS
+  residual as the reject signal. Vendor rod layouts stay caller-supplied
+  with citations.
 - **`locate_phantom_centroid`/`sample_phantom_rods`/`PhantomModel`: phantom
   rod sampling** (`phantom.rs`), turning a CT scan of a calibration phantom
   into the `(HU, known_value)` pairs `QctCalibration::fit`/`BmdToAshDensity`
@@ -221,6 +226,7 @@ fn main() -> std::io::Result<()> {
 | `BmdConvention::{K2Hpo4Equivalent, HydroxyapatiteEquivalent}` | Which mineral-equivalent convention a BMD value uses |
 | `locate_phantom_centroid(&slice, background_max_hu, min_area_px)` | Manufacturer-agnostic phantom centroid, by intensity thresholding |
 | `sample_phantom_rods(&slices, &model, centroid, rotation_rad, roi_fraction)` | Per-rod `(mean_hu, known_value)` pairs from a `PhantomModel` |
+| `detect_phantom_rotation(&slices, &model, centroid, roi_fraction, coarse_steps)` | Best-fit in-plane rotation + RMS residual |
 | `PhantomModel::new(rods, source)`, `PhantomRod` | Cited rod layout (offset, angle, radius, known value) |
 | `BoneRegion::{Cortical, Trabecular}` | Which correlation applies |
 | `SyntheticCtBuilder` | Builder for synthetic series (dims, spacing, thickness, origin, patient id, arbitrary HU function) |

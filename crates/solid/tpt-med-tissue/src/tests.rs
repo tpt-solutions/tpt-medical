@@ -11,7 +11,8 @@
 
 use crate::hgo::HgoParams;
 use crate::models::{
-    MooneyRivlinParams, NeoHookeanParams, OgdenParams, SoftTissueMaterial, TissueModel, YeohParams,
+    MooneyRivlinParams, NeoHookeanParams, OgdenParams, PlaneCondition, ReducedPlaneModel,
+    SoftTissueMaterial, TissueModel, YeohParams,
 };
 use tpt_med_geometry::{Mat3, Vec3};
 
@@ -453,4 +454,88 @@ fn linearized_constants_match_the_closed_forms() {
     assert!(incompressible_limit
         .linearized_engineering_constants()
         .is_none());
+}
+
+#[test]
+fn plane_strain_pins_f33_and_delegates_to_the_full_law() {
+    let model = TissueModel::NeoHookean(NeoHookeanParams { c10: 0.5, d1: 0.5 });
+    let reduced = ReducedPlaneModel::new(model.clone(), PlaneCondition::PlaneStrain);
+    let in_plane = [[1.1, 0.05], [0.0, 0.95]];
+    let sol = reduced.solve(in_plane).expect("plane strain always solves");
+    assert_eq!(sol.f33, 1.0);
+    // Identical to evaluating the full 3-D law at the completed gradient.
+    let mut full = Mat3::ZERO;
+    for (i, row) in in_plane.iter().enumerate() {
+        for (j, &v) in row.iter().enumerate() {
+            full.set(i, j, v);
+        }
+    }
+    full.set(2, 2, 1.0);
+    let direct = model.first_piola(&full);
+    for i in 0..2 {
+        for j in 0..2 {
+            assert!((sol.p_in_plane[i][j] - direct.at(i, j)).abs() < 1e-15);
+        }
+    }
+}
+
+#[test]
+fn plane_stress_solves_the_traction_free_out_of_plane_stretch() {
+    // Incompressible-limit material: plane stress drives J → 1, so the
+    // analytic out-of-plane stretch is F33 = 1/det(in-plane F) — an
+    // independent closed form the bisection must land on.
+    let model = TissueModel::NeoHookean(NeoHookeanParams {
+        c10: 0.5,
+        d1: 1.0e-6,
+    });
+    let reduced = ReducedPlaneModel::new(model, PlaneCondition::PlaneStress);
+    let in_plane = [[1.3, 0.0], [0.0, 1.0]];
+    let sol = reduced.solve(in_plane).expect("bracket exists");
+    let expected_f33 = 1.0 / (1.3 * 1.0);
+    assert!(
+        (sol.f33 - expected_f33).abs() < 1e-4,
+        "F33 {} vs analytic {expected_f33}",
+        sol.f33
+    );
+    assert!(
+        sol.p_full.at(2, 2).abs() < 1e-6,
+        "P33 = {}",
+        sol.p_full.at(2, 2)
+    );
+    // Rotated in-plane gradient: same determinant, same F33.
+    let rotated = [[1.2, 0.2], [-0.1, 0.9]];
+    let sol2 = reduced.solve(rotated).expect("bracket exists");
+    let det: f64 = rotated[0][0] * rotated[1][1] - rotated[0][1] * rotated[1][0];
+    assert!((sol2.f33 - 1.0 / det).abs() < 1e-4);
+    assert!(sol2.p_full.at(2, 2).abs() < 1e-6);
+}
+
+#[test]
+fn compressible_plane_stress_stays_traction_free() {
+    // Compressible material: no closed-form F33, but the defining property
+    // (P33 = 0) must hold to bisection precision, and the solution must
+    // differ from the incompressible one.
+    let compressible = TissueModel::NeoHookean(NeoHookeanParams { c10: 0.5, d1: 0.5 });
+    let reduced = ReducedPlaneModel::new(compressible, PlaneCondition::PlaneStress);
+    let in_plane = [[1.3, 0.0], [0.0, 1.0]];
+    let sol = reduced.solve(in_plane).expect("bracket exists");
+    assert!(
+        sol.p_full.at(2, 2).abs() < 1e-9,
+        "P33 = {}",
+        sol.p_full.at(2, 2)
+    );
+    // Compressibility relaxes the out-of-plane contraction relative to the
+    // incompressible 1/1.3 ≈ 0.769.
+    assert!(sol.f33 > 1.0 / 1.3, "F33 {}", sol.f33);
+    // In-plane components are unaffected by the scalar solve: they equal
+    // the full law evaluated at the solved gradient.
+    let mut full = Mat3::ZERO;
+    for (i, row) in in_plane.iter().enumerate() {
+        for (j, &v) in row.iter().enumerate() {
+            full.set(i, j, v);
+        }
+    }
+    full.set(2, 2, sol.f33);
+    let direct = TissueModel::NeoHookean(NeoHookeanParams { c10: 0.5, d1: 0.5 }).first_piola(&full);
+    assert!((sol.p_in_plane[0][0] - direct.at(0, 0)).abs() < 1e-12);
 }

@@ -12,6 +12,13 @@ changes for consumers of this crate.
 ## [Unreleased]
 
 ### Added
+- `ResectionPlan` / `GapReport` / `check_gap_balance`: the **geometric
+  half of soft-tissue assessment** — extension and flexion gaps from
+  resection-vs-component-thickness arithmetic, flagged for overstuffed
+  components (negative gap) and flexion/extension imbalance beyond a
+  tolerance. Ligament tension itself stays out (needs soft-tissue
+  structures). Three-assertion test covering balanced, overstuffed and
+  flexion-open plans.
 - `size_from_measurements` + `MeasurementInput` / `MultiMeasurementDecision`
   / `Resolution` / `MeasurementVote`: **multi-measurement sizing with an
   explicit vendor precedence rule** — each measurement maps through the
@@ -38,8 +45,8 @@ changes for consumers of this crate.
 - Automatic landmark detection from a CT, which is the hard part of the problem
   and is not attempted here.
 
-- Soft-tissue and ligament balance assessment, and a check that the selected
-  size leaves acceptable gap balancing. Sizing is necessary for a good plan and
+- Ligament balance assessment proper (tension, stability): the gap-balance
+  check above is the geometric half. Sizing is necessary for a good plan and
   not sufficient.
 - Hip, shoulder and ankle sizing beyond the knee-specific `KneeLandmarks`.
 

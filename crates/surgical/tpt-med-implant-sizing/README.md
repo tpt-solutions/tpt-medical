@@ -69,6 +69,10 @@ throws away the information the surgeon uses to decide whether to upsize.
   vote. `femoral_measurements()` supplies the TEA → AP depth → posterior
   condylar offset triple; the PCO is a TEA-perpendicular screening proxy.
 
+- **Gap balance** — `check_gap_balance` runs the resection-vs-thickness
+  arithmetic for a `ResectionPlan` and flags overstuffed components
+  (negative gaps) and flexion/extension imbalance beyond tolerance.
+
 ## Conventions
 
 - All measurements in **millimetres**; angles in **degrees** (as returned by

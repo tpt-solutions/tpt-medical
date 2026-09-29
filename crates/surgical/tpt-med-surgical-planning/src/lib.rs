@@ -55,7 +55,10 @@ impl VoxelModel {
 }
 
 /// A plane cut: keeps the voxels on the `keep_side` side of `plane`
-/// (`signed_distance ≥ 0`).
+/// (`signed_distance ≥ 0`), with an optional **saw-kerf width** — material
+/// within `kerf_width / 2` of the plane is removed on both sides, so a
+/// kerf of 4 mm shifts the kept boundary 2 mm outward and the resection
+/// measurement grows by the slab.
 #[derive(Debug, Clone)]
 pub struct OsteotomyCut {
     /// Cutting plane.
@@ -64,6 +67,9 @@ pub struct OsteotomyCut {
     pub fragment_name: String,
     /// Keep the positive (normal-side) region; if false keep the negative.
     pub keep_positive: bool,
+    /// Saw-kerf width (mm): material within `kerf_width / 2` of the plane
+    /// is discarded from both sides. 0.0 (the default) is a pure plane cut.
+    pub kerf_width: f64,
 }
 
 impl OsteotomyCut {
@@ -97,10 +103,11 @@ impl OsteotomyCut {
                     }
                     let c = model.center(x, y, z);
                     let d = self.plane.signed_distance(c);
+                    let half_kerf = self.kerf_width * 0.5;
                     let keep = if self.keep_positive {
-                        d >= 0.0
+                        d >= half_kerf
                     } else {
-                        d <= 0.0
+                        d <= -half_kerf
                     };
                     if keep {
                         min[0] = min[0].min(x);
@@ -112,7 +119,15 @@ impl OsteotomyCut {
                     } else {
                         out.values[idx] = f64::NAN;
                         resected += 1;
-                        max_depth = max_depth.max(-d);
+                        // Depth past the kerf face on the kept side, not
+                        // past the plane (with kerf 0 this is the distance
+                        // past the plane on the discard side).
+                        let depth = if self.keep_positive {
+                            half_kerf - d
+                        } else {
+                            d + half_kerf
+                        };
+                        max_depth = max_depth.max(depth);
                     }
                 }
             }
@@ -163,7 +178,89 @@ fn compact(model: &mut VoxelModel, min: [usize; 3], max: [usize; 3]) {
     model.origin += Vec3::new(min[0] as f64 * sx, min[1] as f64 * sy, min[2] as f64 * sz);
 }
 
-/// A rigid fragment transform: rotation (axis-angle) about a pivot plus
+/// A **multi-plane wedge**: the closed wedge removed by two intersecting
+/// osteotomy planes — material on the discarded side of *both* planes
+/// (`d_a ≤ 0 ∧ d_b ≤ 0`, each offset by a half-kerf) is removed, and
+/// everything else is kept. Two sequential [`OsteotomyCut`]s cannot express
+/// this (each keeps only one side of one plane), which is why the wedge is
+/// its own step.
+#[derive(Debug, Clone)]
+pub struct WedgeCut {
+    /// First wedge plane (its negative side is removed where it overlaps
+    /// the second).
+    pub plane_a: Plane,
+    /// Second wedge plane.
+    pub plane_b: Plane,
+    /// Fragment name for the kept material (audit label).
+    pub fragment_name: String,
+    /// Saw-kerf width (mm), offsetting both planes outward into the kept
+    /// region symmetrically.
+    pub kerf_width: f64,
+}
+
+impl WedgeCut {
+    /// Applies the wedge; returns the kept model plus the step's
+    /// measurements (resection volume; cut depth measured to the nearer of
+    /// the two planes).
+    pub fn apply_measured(&self, model: &VoxelModel) -> (VoxelModel, CutMeasurement) {
+        let mut out = model.clone();
+        let (nx, ny, nz) = model.dims;
+        let voxel_volume = model.spacing.0 * model.spacing.1 * model.spacing.2;
+        let half_kerf = self.kerf_width * 0.5;
+        let mut min = [usize::MAX; 3];
+        let mut max = [0usize; 3];
+        let mut resected = 0usize;
+        let mut max_depth = 0.0f64;
+        for z in 0..nz {
+            for y in 0..ny {
+                for x in 0..nx {
+                    let Some(idx) = model.index(x, y, z) else {
+                        continue;
+                    };
+                    if model.values[idx].is_nan() {
+                        continue;
+                    }
+                    let c = model.center(x, y, z);
+                    let da = self.plane_a.signed_distance(c);
+                    let db = self.plane_b.signed_distance(c);
+                    // Keep whenever either plane's kept side is reached.
+                    let keep = da >= half_kerf || db >= half_kerf;
+                    if keep {
+                        min[0] = min[0].min(x);
+                        min[1] = min[1].min(y);
+                        min[2] = min[2].min(z);
+                        max[0] = max[0].max(x);
+                        max[1] = max[1].max(y);
+                        max[2] = max[2].max(z);
+                    } else {
+                        out.values[idx] = f64::NAN;
+                        resected += 1;
+                        // Depth into the wedge = distance past the nearer
+                        // kept face.
+                        max_depth = max_depth.max(half_kerf - da.max(db));
+                    }
+                }
+            }
+        }
+        let measurement = CutMeasurement {
+            fragment_name: self.fragment_name.clone(),
+            resection_volume_mm3: resected as f64 * voxel_volume,
+            max_depth_mm: max_depth,
+        };
+        if max[0] == 0 {
+            return (out, measurement);
+        }
+        compact(&mut out, min, max);
+        (out, measurement)
+    }
+
+    /// Applies the wedge without measurements.
+    pub fn apply(&self, model: &VoxelModel) -> VoxelModel {
+        self.apply_measured(model).0
+    }
+}
+
+/// A rigid fragment transform: rotation (axis-angle) about a pivot plus/// A rigid fragment transform: rotation (axis-angle) about a pivot plus
 /// translation (both in patient coordinates, mm / radians).
 #[derive(Debug, Clone)]
 pub struct FragmentTransform {
@@ -283,6 +380,8 @@ impl FragmentTransform {
 pub enum PlanStep {
     /// Plane osteotomy.
     Cut(OsteotomyCut),
+    /// Two-plane closed-wedge osteotomy.
+    Wedge(WedgeCut),
     /// Rigid fragment reposition.
     Move(FragmentTransform),
 }
@@ -348,6 +447,14 @@ impl VirtualSurgery {
         self
     }
 
+    /// Appends a two-plane closed-wedge step.
+    pub fn wedge(&mut self, cut: WedgeCut) -> &mut Self {
+        self.fragment_log
+            .push(format!("wedge:{}", cut.fragment_name));
+        self.steps.push(PlanStep::Wedge(cut));
+        self
+    }
+
     /// Appends a fragment transform step.
     pub fn move_fragment(&mut self, transform: FragmentTransform) -> &mut Self {
         self.fragment_log.push(format!(
@@ -384,6 +491,13 @@ impl VirtualSurgery {
                     let (next, m) = cut.apply_measured(&model);
                     total_resection += m.resection_volume_mm3;
                     log.push(format!("cut:{}", cut.fragment_name));
+                    measurements.push(StepMeasurement::Cut(m));
+                    model = next;
+                }
+                PlanStep::Wedge(cut) => {
+                    let (next, m) = cut.apply_measured(&model);
+                    total_resection += m.resection_volume_mm3;
+                    log.push(format!("wedge:{}", cut.fragment_name));
                     measurements.push(StepMeasurement::Cut(m));
                     model = next;
                 }
@@ -486,6 +600,7 @@ mod tests {
             plane,
             fragment_name: "proximal".into(),
             keep_positive: true,
+            kerf_width: 0.0,
         };
         let out = cut.apply(&model);
         // Positive-z side of the cube: z ∈ 0..=7 slices kept from the cube
@@ -505,6 +620,7 @@ mod tests {
             plane,
             fragment_name: "distal".into(),
             keep_positive: false,
+            kerf_width: 0.0,
         });
         // Negative-z fragment: z ∈ 2..5 (3 slices). Distract +2 mm in z.
         plan.move_fragment(FragmentTransform {
@@ -546,6 +662,7 @@ mod tests {
             plane: Plane::from_point_normal(Vec3::ZERO, Vec3::X).unwrap(),
             fragment_name: "lateral".into(),
             keep_positive: true,
+            kerf_width: 0.0,
         });
         assert_eq!(plan.fragments().len(), 1);
         assert_eq!(plan.base_model().dims, (10, 10, 10));
@@ -561,6 +678,7 @@ mod tests {
             plane: Plane::from_point_normal(Vec3::ZERO, Vec3::Z).unwrap(),
             fragment_name: "distal".into(),
             keep_positive: true,
+            kerf_width: 0.0,
         };
         let (out, m) = cut.apply_measured(&model);
         assert_eq!(out.count_above(50.0), 3 * 36);
@@ -573,6 +691,84 @@ mod tests {
         assert!((m.max_depth_mm - 5.0).abs() < 1e-9, "{}", m.max_depth_mm);
         // `apply` is the un-measured form of the same operation.
         assert_eq!(cut.apply(&model).count_above(50.0), out.count_above(50.0));
+    }
+
+    #[test]
+    fn saw_kerf_removes_a_symmetric_slab_and_grows_the_resection() {
+        let model = cube_model();
+        // Zero-kerf baseline: keep z ≥ 0.
+        let mut base = OsteotomyCut {
+            plane: Plane::from_point_normal(Vec3::ZERO, Vec3::Z).unwrap(),
+            fragment_name: "d".into(),
+            keep_positive: true,
+            kerf_width: 0.0,
+        };
+        let (kept0, m0) = base.apply_measured(&model);
+        assert_eq!(kept0.count_above(50.0), 3 * 36);
+        assert!((m0.max_depth_mm - 5.0).abs() < 1e-9);
+        // A 2 mm kerf removes the slab (−1, +1) around the plane: the
+        // kept boundary moves from centre 0 to centre +1, costing the
+        // slice at centre 0 (36 voxels of cube). Depth is measured past
+        // the kept face at +1 mm, so the deepest voxel (centre −5) sits
+        // 6 mm from it.
+        base.kerf_width = 2.0;
+        let (kept2, m2) = base.apply_measured(&model);
+        assert_eq!(kept2.count_above(50.0), 2 * 36);
+        assert!((m2.max_depth_mm - 6.0).abs() < 1e-9, "{}", m2.max_depth_mm);
+        // The slab is resected tissue: volume grows by the slice.
+        assert!((m2.resection_volume_mm3 - m0.resection_volume_mm3 - 100.0).abs() < 1e-9);
+        // The negative side with kerf: the slab is removed from there too.
+        base.keep_positive = false;
+        let (kept_neg, _) = base.apply_measured(&model);
+        assert_eq!(kept_neg.count_above(50.0), 3 * 36);
+    }
+
+    #[test]
+    fn wedge_removes_exactly_the_two_plane_intersection() {
+        let model = cube_model();
+        // Two planes through the origin, normals +x and +z: the wedge
+        // region is {x < 0 ∧ z < 0} — voxel centres with x ≤ −1 and z ≤ −1.
+        let wedge = WedgeCut {
+            plane_a: Plane::from_point_normal(Vec3::ZERO, Vec3::X).unwrap(),
+            plane_b: Plane::from_point_normal(Vec3::ZERO, Vec3::Z).unwrap(),
+            fragment_name: "wedge".into(),
+            kerf_width: 0.0,
+        };
+        let (out, m) = wedge.apply_measured(&model);
+        // Discarded: 5 x-slices × 5 z-slices of 10 = 250 voxels.
+        assert!(
+            (m.resection_volume_mm3 - 250.0).abs() < 1e-9,
+            "{}",
+            m.resection_volume_mm3
+        );
+        // A voxel in the kept region on plane A's positive side but plane
+        // B's negative side survives — the property two sequential cuts
+        // cannot express.
+        let survived = out.values.iter().filter(|v| !v.is_nan()).count();
+        assert_eq!(survived, 1000 - 250);
+        // Depth into the wedge is measured to the nearer face.
+        assert!(m.max_depth_mm > 0.0 && m.max_depth_mm <= 5.0 + 1e-9);
+        // The wedge integrates through the plan with its own log label.
+        let mut plan = VirtualSurgery::new(model);
+        plan.wedge(wedge);
+        let (_, report) = plan.execute_with_report();
+        assert!(report.step_log[0].starts_with("wedge:wedge"));
+        assert!((report.total_resection_volume_mm3 - 250.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn wedge_kerf_offsets_both_planes() {
+        let model = cube_model();
+        let wedge = WedgeCut {
+            plane_a: Plane::from_point_normal(Vec3::ZERO, Vec3::X).unwrap(),
+            plane_b: Plane::from_point_normal(Vec3::ZERO, Vec3::Z).unwrap(),
+            fragment_name: "w".into(),
+            kerf_width: 2.0,
+        };
+        let (_, m) = wedge.apply_measured(&model);
+        // Half-kerf offset: discard now includes centres with x ≤ 0 or
+        // z ≤ 0 in the overlap — strictly more than the zero-kerf wedge.
+        assert!(m.resection_volume_mm3 > 250.0);
     }
 
     #[test]
@@ -633,11 +829,13 @@ mod tests {
             plane: Plane::from_point_normal(Vec3::ZERO, Vec3::Z).unwrap(),
             fragment_name: "a".into(),
             keep_positive: true,
+            kerf_width: 0.0,
         });
         plan.cut(OsteotomyCut {
             plane: Plane::from_point_normal(Vec3::ZERO, Vec3::X).unwrap(),
             fragment_name: "b".into(),
             keep_positive: false,
+            kerf_width: 0.0,
         });
         let (_, report) = plan.execute_with_report();
         // First cut removes 5 slices of 100 (zero-valued tissue included);

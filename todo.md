@@ -480,7 +480,9 @@ here, so there is one checkbox per piece of work. Part 2 was spiked in
 `rfcs/0010-jpeg2000-part2-spike.md`, which recommends deferring it: the
 gating input is a purchase of ISO/IEC 15444-2, not engineering time.
 
-- [ ] **Automatic rotation detection and a small built-in library of named, cited `PhantomModel`s for common commercial phantoms — explicitly out of scope for `rfcs/0008-phantom-rod-sampling.md`'s v0 mechanism; see that RFC's Unresolved Questions.**
+- [x] **Automatic rotation detection and a small built-in library of named, cited `PhantomModel`s for common commercial phantoms — explicitly out of scope for `rfcs/0008-phantom-rod-sampling.md`'s v0 mechanism; see that RFC's Unresolved Questions.**
+  **Detection half delivered (2026-10-01): `detect_phantom_rotation` — least-squares sweep + grid-and-shrink refinement over in-plane rotations about the located centroid, RMS residual as the reject signal. The vendor-phantom library stays open below.**
+- [ ] **Built-in library of named, cited `PhantomModel`s for common commercial phantoms (the remaining half of the rotation-detection item) — must come from manufacturer datasheets with citations, not baked-in approximations.**
 
 ### `tpt-med-audit`
 
@@ -564,7 +566,9 @@ gating input is a purchase of ISO/IEC 15444-2, not engineering time.
 - [ ] **Automatic landmark detection from a CT, which is the hard part of the problem and is not attempted here.**
 - [x] **Multi-measurement charts, so a femoral decision can weigh TEA, AP depth and posterior condylar offset jointly, with a vendor-specific precedence rule.**
   **Done (2026-09-30): `size_from_measurements` — every measurement votes, disagreement resolves by lowest precedence rank (equal ranks up-size), every vote recorded with out-of-chart flags; `posterior_condylar_offset` + `femoral_measurements()` supply the TEA/AP/PCO triple (PCO as a documented TEA-perpendicular proxy).**
-- [ ] **Soft-tissue and ligament balance assessment, and a check that the selected size leaves acceptable gap balancing. Sizing is necessary for a good plan and not sufficient.**
+- [x] **Soft-tissue and ligament balance assessment, and a check that the selected size leaves acceptable gap balancing. Sizing is necessary for a good plan and not sufficient.**
+  **Gap-check half delivered (2026-10-01): `check_gap_balance` — extension/flexion gaps from resection-vs-thickness arithmetic, overstuffed and imbalance flags. Ligament tension proper stays open (needs soft-tissue structures).**
+- [ ] **Ligament balance assessment proper (tension and stability), split out of the delivered gap-balance check — needs soft-tissue structures the crate does not model.**
 - [ ] **Hip, shoulder and ankle sizing beyond the knee-specific `KneeLandmarks`.**
 - [x] **Schema validation and reporting for a caller-supplied chart, so a mis-transcribed chart is caught rather than silently producing a recommendation.**
   **Done (2026-09-29): `SizeChart::validate` + `ChartError` — empty/non-positive/unsorted/duplicate-label detection.**
@@ -605,6 +609,7 @@ gating input is a purchase of ISO/IEC 15444-2, not engineering time.
 - [ ] **Per-fragment addressing, so a `PlanStep::Move` can target a single named fragment rather than the whole assembled model. This is the largest known gap and needs an RFC.**
   **RFC drafted (2026-09-30): `rfcs/0011-per-fragment-addressing.md` (Draft) — fragment identity from the producing cut, `move_fragment_named`, split/keep semantics, `CutAfterMove` rejection. Implementation pending RFC acceptance.**
 - [ ] **Curved and freeform resections, saw-kerf width, and multi-plane wedges.**
+  **Kerf and wedges delivered (2026-10-01): `OsteotomyCut::kerf_width` (symmetric slab removal, boundary shifted by half the kerf, depth measured past the kept face) and `WedgeCut`/`PlanStep::Wedge` (the exact two-plane intersection sequential cuts cannot express). Curved/freeform resections remain open.**
 - [ ] **Implant component placement with a bone–implant interface, and bone graft or defect reconstruction.**
 - [ ] **Soft-tissue structures, so a plan can be checked for collateral damage to ligaments, capsules and neurovascular bundles.**
 - [x] **Measurement reporting: resection volumes, cut depths and achieved alignment errors, recorded alongside the steps in the audit log.**
@@ -614,7 +619,8 @@ gating input is a purchase of ISO/IEC 15444-2, not engineering time.
 
 - [x] **Second-order tangent moduli per model, which the nonlinear `tpt-fem` upgrade path needs for Newton convergence.**
   **Done (2026-09-30): `MaterialTangent` (`A[i][j](k,l) = ∂P_ij/∂F_kl`) via `material_tangent` — analytic for Neo-Hookean and Yeoh (the `q′` term needs a second `β`) and the model-independent `volumetric_tangent`; central differences for Mooney–Rivlin/Ogden/HGO (same split as `first_piola`). Verified by FD agreement, major symmetry `A_ij,kl = A_kl,ij` on all five models (the minor symmetry does not hold), and the volumetric FD cross-check.**
-- [ ] **Plane-stress and reduced-order wrappers over the full 3×3 `F` interface.**
+- [x] **Plane-stress and reduced-order wrappers over the full 3×3 `F` interface.**
+  **Done (2026-10-01): `ReducedPlaneModel` with `PlaneCondition::{PlaneStrain, PlaneStress}` — plane strain pins `F₃₃ = 1`; plane stress solves `P₃₃ = 0` by bracketed bisection on the scalar `F₃₃` (verified against the incompressible closed form `F₃₃ = 1/det F₂ₓ₂` and traction-freeness).**
 - [ ] **Fiber-family rotation in HGO (collagen crimp), and the two-family elastin/collagen parameterisation used in some literature.**
 
 ### `tpt-med-viscoelastic`
