@@ -288,6 +288,20 @@ Tracked in `todo.md`. Summary of the user-visible change here:
 - `web/build-wasm.sh` — one-command engine build + wasm-bindgen glue
   generation (version-matched CLI); `web/README.md` run instructions.
 
+- `rfcs/0012-mixed-up-formulation.md` (Draft): the mixed `u`-`p` design —
+  architecture constraints found by assessment (zero Lagrange diagonal
+  rules out element condensation; global pressure DOFs reach the shared
+  Newton loop), the deferred inf-sup pairing decided as Q1/P0 for
+  structured voxel meshes, and the verification strategy.
+- `rfcs/0011-per-fragment-addressing.md` gained an implementation-review
+  addendum: rule 2 (cuts split named fragments, remainder retained)
+  contradicts rule 4 (existing plans unchanged) because the executor
+  resects discarded sides — with resolution options and a recommendation,
+  blocking implementation until decided.
+- `tpt-med-cartilage`: the unconfined-compression equilibrium and
+  instantaneous limits (exact closed forms; the Bessel-series transient
+  stays out deliberately).
+
 ### Added — Backlog follow-up, continued (2026-10-01)
 `tpt-med-cartilage` (first-order shear: a closed form, the fluid never
 engages), `tpt-med-viscoelastic` (Fung-type quasi-linear viscoelasticity

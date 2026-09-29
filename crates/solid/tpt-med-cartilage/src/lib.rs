@@ -90,6 +90,29 @@ impl BiphasicMaterial {
         sigma0 / self.aggregate_modulus
     }
 
+    /// Unconfined-compression **equilibrium** modulus (MPa): the stress
+    /// at `t → ∞` per unit strain when the free-draining side has
+    /// depressurised and the solid matrix carries everything alone —
+    /// `E_s = H_A·(1+ν_s)(1−2ν_s)/(1−ν_s)`, the solid matrix's Young's
+    /// modulus. For the cartilage default `ν_s = 0` this equals `H_A`
+    /// exactly, so the confined and unconfined equilibria coincide.
+    /// `None` for `ν_s ≥ ½` (no valid linear modulus).
+    ///
+    /// The unconfined **transient** between the rigid instantaneous
+    /// response (fluid-supported, `u(0) = 0`) and this equilibrium is the
+    /// classical Bessel-series solution of the coupled radial/axial
+    /// problem and is deliberately not implemented here — its
+    /// coefficients are cited literature, not derivations to be
+    /// reproduced from memory. The two limits are exact and testable;
+    /// the transient needs the series.
+    pub fn unconfined_equilibrium_modulus(&self) -> Option<f64> {
+        let nu = self.poissons_ratio;
+        if nu < 0.0 || nu >= 0.5 {
+            return None;
+        }
+        Some(self.aggregate_modulus * (1.0 + nu) * (1.0 - 2.0 * nu) / (1.0 - nu))
+    }
+
     /// Solid-matrix shear modulus `G = H_A·(1−2ν_s)/(2(1−ν_s))` (MPa).
     ///
     /// First-order biphasic **shear carries no interstitial fluid
@@ -208,6 +231,36 @@ mod tests {
         }
         .solid_shear_modulus()
         .is_none());
+    }
+
+    #[test]
+    fn unconfined_equilibrium_matches_the_solid_matrix_modulus() {
+        let m = BiphasicMaterial::default();
+        // ν_s = 0: the unconfined equilibrium modulus is exactly H_A —
+        // the confined and unconfined long-time responses coincide.
+        assert!((m.unconfined_equilibrium_modulus().expect("valid ν") - 0.7).abs() < 1e-12);
+        // General ν_s: hand-checked E_s at ν = 0.25:
+        // H_A · 1.25 · 0.5 / 0.75.
+        let quarter = BiphasicMaterial {
+            poissons_ratio: 0.25,
+            ..m
+        };
+        let expected = 0.7 * 1.25 * 0.5 / 0.75;
+        assert!(
+            (quarter.unconfined_equilibrium_modulus().expect("valid ν") - expected).abs() < 1e-12
+        );
+        assert!(BiphasicMaterial {
+            poissons_ratio: 0.5,
+            ..quarter
+        }
+        .unconfined_equilibrium_modulus()
+        .is_none());
+        // For ν_s > 0 the unconfined modulus is softer than H_A, so the
+        // equilibrium strain exceeds the confined one (at ν_s = 0 the two
+        // coincide, as asserted above).
+        let confined_strain = 0.2 / 0.7;
+        let unconfined_strain = 0.2 / quarter.unconfined_equilibrium_modulus().expect("valid ν");
+        assert!(unconfined_strain > confined_strain);
     }
 
     #[test]

@@ -12,6 +12,13 @@ changes for consumers of this crate.
 ## [Unreleased]
 
 ### Added
+- `BiphasicMaterial::unconfined_equilibrium_modulus`: the **unconfined
+  equilibrium limit** — `E_s = H_A(1+ν_s)(1−2ν_s)/(1−ν_s)`, equal to
+  `H_A` at the cartilage default `ν_s = 0` (confined and unconfined
+  long-time responses coincide) and softer for `ν_s > 0`. Both analytic
+  limits (rigid instantaneous, this equilibrium) are exact and tested;
+  the transient between them remains the classical Bessel-series
+  solution, deliberately not reproduced from memory.
 - `BiphasicMaterial::solid_shear_modulus`: the **shear half of the
   unconfined-shear boundary-condition item** — first-order biphasic shear
   produces no volumetric strain, so the interstitial fluid never

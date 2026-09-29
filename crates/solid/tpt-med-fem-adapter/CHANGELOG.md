@@ -163,13 +163,12 @@ changes for consumers of this crate.
     drift apart. `solve_static`'s own signature and behaviour are unchanged.
 
 ### Planned
-- A mixed `u`-`p` formulation for **exact** incompressibility. The
-  deviatoric/volumetric split it requires now exists (see Added), so this is
-  "add a pressure unknown" rather than "redesign the trait". The remaining
-  decision is the inf-sup-stable element pairing — `Hex8`/constant pressure, or
-  the `Hex20`/`Hex8` pairing RFC 0009 named — which is a numerical-methods
-  call, not a mechanical one.
-
+- A mixed `u`-`p` formulation for exact incompressibility — now designed
+  in `rfcs/0012-mixed-up-formulation.md` (Draft): global pressure DOFs
+  (element-level condensation is impossible — the Lagrange block diagonal
+  is zero), the Q1/P0 pairing recommended for structured voxel hexes, and
+  a five-part verification strategy including the spurious-mode check.
+  Implementation pending acceptance.
 ## [0.1.0] - 2026-09-27
 
 Initial release: the 3-D `Hex8` nonlinear hyperelastic assembly and unilateral

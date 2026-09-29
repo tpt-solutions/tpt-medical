@@ -128,6 +128,42 @@ osteotomies as named rigid bodies with a scene graph; the naming here
 mirrors the crate's existing `fragment_name` so the API stays
 plan-as-data rather than growing a scene-graph abstraction.
 
+## Implementation review (2026-10-01): a contradiction found
+
+Preparing this RFC for implementation surfaced a genuine conflict between
+its own rules. **Rule 2** (a later cut *splits* every fragment it
+intersects: the kept side takes the cut's name, the remainder keeps its
+prior name) means the remainder of a *named* fragment is **retained**.
+But the executor's cut semantics — unchanged since v0 — **resect** the
+discarded side outright (`f64::NAN`, gone from the model). For any
+existing multi-cut plan, rule 2 would retain bone that today's executor
+removes, violating **rule 4** (existing plans unchanged). A concrete
+case: `[cut "distal" (keep z≤0), cut "flake" (keep x≥0)]` — today the
+second cut resects its negative side of everything; under rule 2 the
+portion belonging to named fragment `distal` would survive.
+
+Resolution options, for review:
+
+1. **Discard-for-the-unnamed-base only.** Cuts split named fragments
+   (rule 2 as drafted); the remainder is resected only when the
+   intersected fragment is the *unnamed base* — which reproduces today's
+   semantics exactly for every existing plan (their cuts all run on the
+   base, since nothing is named until a cut names its kept side). Cost:
+   the meaning of a cut depends on whether it hits named material, which
+   the audit log must then record.
+2. **Cuts always resect; fragment identity tracks kept sides only.**
+   Rule 2 is dropped: each cut's remainder is resected regardless of
+   names, and only kept sides become fragments. Preserves rule 4
+   trivially, but a plan can never hold two fragments simultaneously
+   unless a single cut's *kept side itself* is later split — which
+   discards material each time. That makes per-fragment addressing
+   nearly useless for real osteotomy planning, where both pieces are
+   kept and moved.
+
+Option 1 is the working recommendation: it is the only reading under
+which per-fragment addressing is useful *and* existing plans are
+untouched. Implementation waits on this being accepted.
+
 ## Unresolved questions
 
 - Should fragment names form a hierarchy (a cut splitting `distal` produces
@@ -135,3 +171,5 @@ plan-as-data rather than growing a scene-graph abstraction.
   name.
 - Does the FDA export need a per-fragment final-pose table? Likely yes for
   real submissions; deferred until the measurement report stabilises.
+- The rule-2/rule-4 contradiction above needs a maintainer decision
+  (option 1 recommended) before implementation starts.

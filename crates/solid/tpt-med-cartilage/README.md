@@ -53,6 +53,11 @@ than a finite-element code.
   fluid-free (no volumetric strain → no pressurisation → no transient),
   so the shear response is a closed form, not a boundary-condition solve.
 
+- **Unconfined limits** — `unconfined_equilibrium_modulus`: the long-time
+  solid-matrix modulus `E_s` (equal to `H_A` at `ν_s = 0`); the
+  instantaneous response is rigid. The transient between them is the
+  classical Bessel-series solution and is not implemented.
+
 ## Conventions
 
 - Aggregate modulus `H_A` in **MPa**; permeability `k` in **mm⁴/(N·s)**;

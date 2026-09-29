@@ -528,6 +528,7 @@ gating input is a purchase of ISO/IEC 15444-2, not engineering time.
 
 - [ ] **Additional boundary conditions: unconfined compression and shear.**
   **Shear half delivered (2026-10-01): `solid_shear_modulus` — first-order biphasic shear is volumetrically silent, so the fluid never pressurises and the response is a closed form at all times (permeability-independent; verified). Unconfined compression remains open above.**
+  **Unconfined limits delivered (2026-10-01): `unconfined_equilibrium_modulus` (E_s, equal to H_A at ν_s = 0) plus the documented rigid instantaneous response — both exact and tested. The transient itself remains the classical Bessel-series solution.**
 - [ ] **Nonlinear biphasic theory, and a coupling between permeability and strain.**
 - [ ] **A lubrication/repulsion term for the contact interface, so the model can be driven by a contact solver rather than a prescribed step load.**
 - [ ] **Fibrous-cartilage support (a fibre-reinforced solid matrix).**
@@ -553,6 +554,7 @@ gating input is a purchase of ISO/IEC 15444-2, not engineering time.
 ### `tpt-med-fem-adapter`
 
 - [ ] **A mixed `u`-`p` formulation for exact incompressibility. The deviatoric/volumetric split it requires now exists** (added for selective reduced integration, `tpt-med-tissue::TissueModel::volumetric_first_piola`), **so this is "add a pressure unknown" rather than "redesign the trait". The remaining decision is the inf-sup-stable element pairing — `Hex8`/constant pressure, or the `Hex20`/`Hex8` pairing RFC 0009 named — a numerical-methods call, not a mechanical one.**
+  **Designed (2026-10-01): `rfcs/0012-mixed-up-formulation.md` (Draft) — records why element-level condensation is impossible (zero Lagrange diagonal ⇒ global pressure DOFs through the shared Newton loop), recommends Q1/P0 on the existing Hex8 for structured voxel meshes, and lays out the five-part verification (closed-form incompressible uniaxial, patch test, locking benchmark vs SRI, spurious-mode check, SRI cross-validation). Implementation pending acceptance.**
 
 ### `tpt-med-hemodynamics`
 
