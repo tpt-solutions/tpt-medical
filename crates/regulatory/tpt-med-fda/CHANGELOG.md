@@ -23,14 +23,25 @@ changes for consumers of this crate.
   is a property of a *system* — procedures, training, retention, access
   control — and that no library can supply those.
 
+- `WormLog` / `WormError` (the new `worm` module): an **append-only
+  persistence layer with WORM semantics** for an `AuditTrail` — the journal
+  is created once (`create_new`, never reopened for a second lifetime),
+  each entry is appended with its running hash-chain digest and `fsync`ed
+  before the call returns, and `open` verifies the header, per-line chain
+  digests, and sequence continuity before handing the log back. A crash
+  mid-append leaves a line without its newline and is refused as
+  `TornTail` rather than silently truncated; a retroactive edit or a
+  record spliced from another run is refused as `ChainBroken` at the first
+  bad link. `into_trail` rebuilds a live, self-verifying trail (entries
+  keep their recorded timestamps; signatures and policies are trail-side
+  state re-applied by the caller). Seven new tests: round-trip into a
+  verifying trail, process-restart continuation, retroactive-edit
+  detection, torn-tail refusal, `create_new` on an existing path,
+  cross-run splice detection, and free-text escaping round-trip.
+
 ### Planned
-  is permitted and the export records the ordering, so a workflow requiring
-  the stricter discipline must enforce it itself.
-- An append-only persistence layer with WORM semantics, so the trail survives a
-  process restart without a caller-supplied store.
 - External anchoring of the detached tag (HSM, transparency log, RFC 3161) to
   close the non-repudiation gap identified in RFC 0003.
-  code rather than free text.
 
 ### Notes
 - **Changes to the canonical form, the export schema or the signing semantics
@@ -41,8 +52,9 @@ changes for consumers of this crate.
   deployment must ensure it carries no PHI. This is documented rather than
   enforced, because the correct policy is site-specific.
 - **Never commit PHI**, including in `reason` strings.
-- `AuditTrail` is in-memory only; serialisation and storage are the caller's.
-
+- In-memory trails are the caller's to persist or not; the `worm` module's
+  `WormLog` is the write-once journal when durability is wanted.
+
 ## [0.1.0] - 2026-09-22
 
 ### Added

@@ -22,15 +22,17 @@ changes for consumers of this crate.
 - Crate README with the full risk × influence → goal matrix tabulated, and a
   worked example (the femur stance-screening question at medium risk /
   significant influence) showing `evaluate()` returning empty.
-
-### Planned
-- Per-component credibility rollup, so a large model assembled from small
-  verified parts has a defined composite credibility.
-  `VerificationActivity` or `ValidationActivity`, so adequacy can be checked
-  mechanically rather than by reading `results` as prose.
-- Multi-question assessments with an explicit aggregation rule, for models
-  used for several questions of interest.
-  submission bundle next to the `tpt-med-fda` package.
+- `AssessmentRollup` / `RollupMember`: **per-component credibility rollup and
+  multi-question assessment aggregation** under one explicit, conservative
+  rule. Every member must meet its own goals (conjunction — there is no
+  majority vote on credibility); the composite risk/influence is the maximum
+  of the caller-declared rating and every member's (a declaration can raise
+  the composite above any single part, never undercut a member); and the
+  pooled evidence must meet those composite goals. Unmet goals are reported
+  member-prefixed so a failed part or question is named, plus
+  `to_json()` for submission bundles. Seven new tests (conjunction,
+  upward-only declaration, raised-composite failure, labelled member
+  failure, multi-question study, empty rollup, monotonicity).
 
 ### Notes
 - **Any change to the matrix bands is behaviour-changing and requires an RFC

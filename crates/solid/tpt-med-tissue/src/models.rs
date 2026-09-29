@@ -205,6 +205,180 @@ impl TissueModel {
         }
         p
     }
+
+    /// Second-order material tangent `A[i][j](k,l) = ∂P_ij/∂F_kl` — the
+    /// tensor a nonlinear Newton solver assembles the element stiffness
+    /// from.
+    ///
+    /// Delivery follows the same policy as [`Self::first_piola`]: analytic
+    /// for the Neo-Hookean and Yeoh families (which share the
+    /// `P_dev = 2β·q·G` structure) plus the model-independent volumetric
+    /// penalty; central differences through [`Self::first_piola`] for
+    /// Mooney–Rivlin, Ogden and HGO (whose analytic forms need eigenvector
+    /// derivatives). The numerical path for those three carries FD-of-FD
+    /// round-off (~1e-4 relative), which consumers should treat as the
+    /// tangent's own tolerance.
+    pub fn material_tangent(&self, f: &Mat3) -> MaterialTangent {
+        let f = *f;
+        match self {
+            TissueModel::NeoHookean(p) => {
+                let mut a = deviatoric_tangent_two_beta_q_g(f, p.c10, 0.0);
+                add_volumetric_tangent(&mut a, f, p.d1);
+                a
+            }
+            TissueModel::Yeoh(p) => {
+                let j = f.det();
+                let s = j.powf(-2.0 / 3.0) * invariant_i1(&f) - 3.0;
+                let q = p.c1 + 2.0 * p.c2 * s + 3.0 * p.c3 * s * s;
+                let q_prime = 2.0 * p.c2 + 6.0 * p.c3 * s;
+                let mut a = deviatoric_tangent_two_beta_q_g(f, q, q_prime);
+                add_volumetric_tangent(&mut a, f, p.d1);
+                a
+            }
+            _ => self.material_tangent_numerical(&f),
+        }
+    }
+
+    /// Central-difference reference for [`Self::material_tangent`]:
+    /// `A[i][j](k,l) = ΔP_ij / ΔF_kl` with the same step as
+    /// [`Self::first_piola_numerical`].
+    pub fn material_tangent_numerical(&self, f: &Mat3) -> MaterialTangent {
+        let f = *f;
+        const H: f64 = 1.0e-6;
+        let mut a = zero_tangent();
+        for i in 0..3 {
+            for j in 0..3 {
+                for k in 0..3 {
+                    for l in 0..3 {
+                        let mut fp = f;
+                        fp.set(k, l, fp.at(k, l) + H);
+                        let mut fm = f;
+                        fm.set(k, l, fm.at(k, l) - H);
+                        a[i][j].set(
+                            k,
+                            l,
+                            (self.first_piola(&fp).at(i, j) - self.first_piola(&fm).at(i, j))
+                                / (2.0 * H),
+                        );
+                    }
+                }
+            }
+        }
+        a
+    }
+
+    /// The volumetric part of the material tangent — `d/dF` of
+    /// [`Self::volumetric_first_piola`]:
+    ///
+    /// ```text
+    /// A_vol[ij,kl] = (2/d1)·J·[(2J−1)·F⁻¹_lk·F⁻¹_ji − (J−1)·F⁻¹_jk·F⁻¹_li]
+    /// ```
+    ///
+    /// All five models share the `(J−1)²/d1` penalty, so — exactly as with
+    /// `volumetric_first_piola` — this is one closed form for every model,
+    /// which is what a mixed `u`-`p` formulation needs from the tangent
+    /// side. Zero for `J <= 0`, matching the stress-side guard.
+    pub fn volumetric_tangent(&self, f: &Mat3) -> MaterialTangent {
+        let f = *f;
+        let d1 = self.volumetric_d1();
+        let mut a = zero_tangent();
+        if f.det() <= EPS_F64 {
+            return a;
+        }
+        add_volumetric_tangent(&mut a, f, d1);
+        a
+    }
+
+    /// The shared `d1` of the `(J−1)²/d1` penalty.
+    fn volumetric_d1(&self) -> f64 {
+        match self {
+            TissueModel::NeoHookean(p) => p.d1,
+            TissueModel::MooneyRivlin(p) => p.d1,
+            TissueModel::Yeoh(p) => p.d1,
+            TissueModel::Ogden(p) => p.d1,
+            TissueModel::HolzapfelGasserOgden(p) => p.d1,
+        }
+    }
+}
+
+/// Second-order material tangent: `A[i][j](k,l) = ∂P_ij/∂F_kl`, i.e.
+/// `A[i][j]` is the 3×3 matrix of derivatives of stress component `P_ij`
+/// with respect to the nine deformation-gradient components.
+pub type MaterialTangent = [[Mat3; 3]; 3];
+
+/// An all-zero tangent.
+pub(crate) fn zero_tangent() -> MaterialTangent {
+    [
+        [Mat3::ZERO, Mat3::ZERO, Mat3::ZERO],
+        [Mat3::ZERO, Mat3::ZERO, Mat3::ZERO],
+        [Mat3::ZERO, Mat3::ZERO, Mat3::ZERO],
+    ]
+}
+
+/// Analytic deviatoric tangent for the family `P_dev = 2β·q·G` with
+/// `β = J^{−2/3}`, `G = F − (Ī1/3)·F^{−T}`: `q = C10` (constant, `q′ = 0`)
+/// is Neo-Hookean; `q = q(Ī̄1)` with `q′` its derivative is Yeoh.
+///
+/// ```text
+/// A_dev[ij,kl] = 2β·[(−2/3·F⁻¹_lk·q + q′·(−2/3·Ī1·F⁻¹_lk + 2F_kl))·G_ij
+///                    + q·(δ_ik δ_jl − 2/3·F_kl·F⁻¹_ji + Ī1/3·F⁻¹_jk·F⁻¹_li)]
+/// ```
+fn deviatoric_tangent_two_beta_q_g(f: Mat3, q: f64, q_prime: f64) -> MaterialTangent {
+    let j = f.det();
+    let mut a = zero_tangent();
+    if j <= EPS_F64 {
+        return a; // matches the stress-side guard for inverted configurations
+    }
+    let Some(finv) = f.inverse() else {
+        return a;
+    };
+    let beta = j.powf(-2.0 / 3.0);
+    let i1 = invariant_i1(&f);
+    let g = f - (i1 / 3.0) * finv.transpose();
+    for i in 0..3 {
+        for j2 in 0..3 {
+            for k in 0..3 {
+                for l in 0..3 {
+                    let delta_ik = if i == k { 1.0 } else { 0.0 };
+                    let delta_jl = if j2 == l { 1.0 } else { 0.0 };
+                    // ∂(βq)/∂F_kl = β·[−(2/3)·Fi_lk·q + β·q′·(−(2/3)·Ī1·Fi_lk
+                    // + 2F_kl)]: the q′ term carries a second β because ∂s/∂F
+                    // has its own (the outer β is factored out below).
+                    let d_beta_q = -(2.0 / 3.0) * finv.at(l, k) * q
+                        + beta * q_prime * (-(2.0 / 3.0) * i1 * finv.at(l, k) + 2.0 * f.at(k, l));
+                    let d_g = delta_ik * delta_jl - (2.0 / 3.0) * f.at(k, l) * finv.at(j2, i)
+                        + (i1 / 3.0) * finv.at(j2, k) * finv.at(l, i);
+                    a[i][j2].set(k, l, 2.0 * beta * (d_beta_q * g.at(i, j2) + q * d_g));
+                }
+            }
+        }
+    }
+    a
+}
+
+/// Adds the analytic volumetric tangent (shared by every model) in place:
+/// `d/dF [2J(J−1)/d1·F^{−T}]`.
+fn add_volumetric_tangent(a: &mut MaterialTangent, f: Mat3, d1: f64) {
+    let j = f.det();
+    if j <= EPS_F64 {
+        return; // matches volumetric_first_piola's guard
+    }
+    let Some(finv) = f.inverse() else {
+        return;
+    };
+    for i in 0..3 {
+        for j2 in 0..3 {
+            for k in 0..3 {
+                for l in 0..3 {
+                    let term = (2.0 / d1)
+                        * j
+                        * ((2.0 * j - 1.0) * finv.at(l, k) * finv.at(j2, i)
+                            - (j - 1.0) * finv.at(j2, k) * finv.at(l, i));
+                    a[i][j2].set(k, l, a[i][j2].at(k, l) + term);
+                }
+            }
+        }
+    }
 }
 
 /// `I1 = tr(C)`, `C = Fᵀ F`.
@@ -252,5 +426,10 @@ impl SoftTissueMaterial {
     /// First Piola–Kirchhoff stress (see [`TissueModel::first_piola`]).
     pub fn first_piola(&self, f: &Mat3) -> Mat3 {
         self.model.first_piola(f)
+    }
+
+    /// Material tangent (see [`TissueModel::material_tangent`]).
+    pub fn material_tangent(&self, f: &Mat3) -> MaterialTangent {
+        self.model.material_tangent(f)
     }
 }

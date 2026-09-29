@@ -56,6 +56,17 @@ as a first-class input rather than assuming perfect bonding.
   shielded, the classic resorption-risk criterion.
 - **`micromotion_um`** — reports micromotion in micrometres, which is how the
   thresholds are actually published, using a typed `Length`.
+- **Cyclic (gait) loading** — `GaitCycle` supplies an ISO 14243-style
+  double-hump axial load profile (heel-strike and push-off peaks at
+  ≈2.6 × body weight), and `micromotion_over_cycle` evaluates the interface
+  across the whole cycle, reporting the peak displacement and the per-zone
+  motion *amplitude* (`max − min`) — the quantity cyclic loading actually
+  imposes.
+- **Migration model** — `MigrationModel` turns a motion amplitude into a
+  time line: a closed-form logarithmic migration curve (per-cycle rate
+  proportional to amplitude above a stability threshold, decaying as the
+  implant beds in), plus `velocity_per_year` / `is_at_risk` for the
+  RSA-style continued-migration (> 0.2 mm/year) flag.
 - Zero dependencies beyond `tpt-med-units`.
 
 ## Conventions
@@ -161,11 +172,14 @@ fn main() {
   representative `foundation_stiffness` and treat the result as a screen.
 - Zones are supplied by the caller. Defining them is the caller's job, and
   the zone convention (Gruen, Paprosky, or vendor-specific) is not imposed.
-- No cyclic or fatigue loading: micromotion is evaluated at a single static
-  load, not accumulated over a gait cycle. The loading *magnitude* is the
-  caller's choice; a peak-cycle value is not derived here.
-- No migration or bone-ingrowth model. The `RiskLevel` classification is a
-  threshold rule, not a mechanobiological simulation.
+- The cyclic path evaluates micromotion over the supplied load samples; it
+  does not itself resolve fatigue, debris generation or bone ingrowth. The
+  gait profile is an ISO 14243-*shaped* screening waveform, not a measured
+  patient gait.
+- `MigrationModel` is a screening law, not a mechanobiological simulation:
+  its constants must be stated in any study's methods, and the RSA-style
+  0.2 mm/year at-risk boundary is a population convention, not a device
+  requirement. The `RiskLevel` classification remains a threshold rule.
 
 ## Related Crates
 

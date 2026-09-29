@@ -16,15 +16,29 @@ changes for consumers of this crate.
   body-fitted mesh, no turbulence model — and directing high-fidelity users to
   `tpt-sci-cfd-core` / `tpt-sci-hemodynamics`.
 
+- `PressureSolver::{Sor, ConjugateGradient}` + `SolverConfig::pressure_solver`
+  (+ `HemodynamicsSolver::last_pressure_solve_iterations`): the pressure
+  projection can now run **Jacobi-preconditioned conjugate gradient** —
+  matrix-free on the masked grid, pinned unknowns (solid cells, Dirichlet
+  outlet layer) as identity rows — as an alternative to the default SOR
+  sweeps. Verified against a manufactured solution of the discrete
+  operator (which would catch a sign error: the SOR fixed point is the SPD
+  negative Laplacian, so the rhs enters CG negated), and by the full
+  Poiseuille march under CG (developed, concave, symmetric profile).
+  On the verification tube CG settles in ~40 iterations per projection
+  against SOR's 400-sweep cap. **The default remains SOR**, so existing
+  golden datasets and benchmark baselines are unchanged; switching a
+  production run to CG is a one-line config change and a golden re-run.
+
 ### Planned
-- Conjugate-gradient or multigrid pressure solve to replace the Jacobi sweeps,
-  which currently dominate the per-step cost.
 - Conjugate heat transfer and wall compliance, enabling a coupled
   fluid–structure boundary.
 - Optional local wall refinement, so peak WSS at a geometric corner stops being
   resolution dependent.
 - Coupling to `tpt-med-cardiovascular` for a driven, rather than prescribed,
   boundary condition.
+- Multigrid pressure solve (a level beyond the new CG option) if CG's
+  √-condition-number scaling is ever insufficient on production grids.
 
 ### Notes
 - **This crate is laminar only and must not be reported as if it were

@@ -4,7 +4,9 @@
 
 use std::time::Instant;
 
-use tpt_med_hemodynamics::{BloodModel, FluidDomain, HemodynamicsSolver, SolverConfig};
+use tpt_med_hemodynamics::{
+    BloodModel, FluidDomain, HemodynamicsSolver, PressureSolver, SolverConfig,
+};
 
 fn main() {
     let domain = FluidDomain::cylinder(24, 12, 4.5, 0.5, 0);
@@ -14,6 +16,7 @@ fn main() {
         include_convection: false,
         viscosity_relaxation: 0.2,
         density: 1.06e-3,
+        pressure_solver: PressureSolver::default(),
     };
     let mut solver = HemodynamicsSolver::new(
         domain,

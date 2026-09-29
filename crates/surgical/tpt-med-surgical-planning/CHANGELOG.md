@@ -16,6 +16,46 @@ changes for consumers of this crate.
   planning primitives are not hard, but producing the operation log *by
   construction* rather than reconstructing it from screenshots afterwards is.
 
+- `execute_with_report` + `SurgeryReport` (`CutMeasurement`,
+  `MoveMeasurement`, `StepMeasurement`): **measurement reporting** — each
+  cut records its resection volume (discarded voxels × voxel volume) and
+  cut depth (deepest discarded voxel centre below the plane); each move
+  records the prescribed vs achieved centroid displacement, whose
+  difference is the achieved alignment error (sub-voxel plans quantise
+  onto the grid, and the report is what surfaces that). The report is
+  index-aligned with the audit log and carries the total resection volume;
+  `OsteotomyCut::apply_measured` exposes the per-cut numbers standalone.
+  Three new tests (volume/depth on a plane cut, alignment error for a
+  grid-aligned and a sub-voxel translation, multi-cut totals).
+
+### Planned
+- Per-fragment addressing, so a `PlanStep::Move` can target a single named
+  fragment rather than the whole assembled model. This is the largest known gap
+  and needs an RFC.
+- Curved and freeform resections, saw-kerf width, and multi-plane wedges.
+- Implant component placement with a bone–implant interface, and bone graft or
+  defect reconstruction.
+- Soft-tissue structures, so a plan can be checked for collateral damage to
+  ligaments, capsules and neurovascular bundles.
+
+### Notes
+- `NaN` is the sentinel for a discarded voxel, and every operation skips `NaN`
+  voxels rather than treating them as zero. This is what keeps `count_above`
+  honest: a resected model reports the resected volume.
+- Discarded voxels are compacted to the bounding box of the kept region, so
+  fragment volumes stay correct rather than carrying a full-size field of dead
+  cells.
+- Fragment transforms are **rigid** (rotation plus translation). No scaling and
+  no shear — a plan that could scale bone would not be a surgical plan.
+- Adding a `PlanStep` variant is breaking for downstream exhaustive matches.
+
+## [Unreleased]
+
+### Added
+- Crate README explaining why the audit trail is the point of this crate: the
+  planning primitives are not hard, but producing the operation log *by
+  construction* rather than reconstructing it from screenshots afterwards is.
+
 ### Planned
 - Per-fragment addressing, so a `PlanStep::Move` can target a single named
   fragment rather than the whole assembled model. This is the largest known gap

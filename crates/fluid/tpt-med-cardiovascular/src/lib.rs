@@ -76,6 +76,129 @@ impl WindkesselModel {
     }
 }
 
+/// Four-element Windkessel: the 3-element model plus an **inertance** `L`
+/// (blood and wall inertia) in the series branch — the classic four-element
+/// form used for systemic circulation modelling, e.g. Stergiopoulos,
+/// Young & Westerhof (1999). Unlike the 3-element model, it is genuinely
+/// second-order, so it is **pressure-driven**: a prescribed inlet (aortic)
+/// pressure produces the flow, as state `(p, Q)`
+///
+/// ```text
+/// C dp/dt = Q − (p − p_out)/Rp          (parallel Rp‖C bank)
+/// L dQ/dt = p_in − p − Rc·Q             (series Rc + L branch)
+/// ```
+///
+/// `L` must be positive: at `L = 0` the flow becomes algebraic and this
+/// formulation is singular (use [`WindkesselModel`] for the flow-driven
+/// series branch). Steady state is exact and independent of `L`:
+/// `Q = (p_in − p_out)/(Rc + Rp)`, `p = p_in − Rc·Q`.
+#[derive(Debug, Clone, Copy)]
+pub struct FourElementWindkessel {
+    /// Characteristic (proximal) resistance, MPa·s/mm³.
+    pub r_c: f64,
+    /// Inertance of the series branch, MPa·s²/mm³.
+    pub l: f64,
+    /// Peripheral (distal) resistance, MPa·s/mm³.
+    pub r_p: f64,
+    /// Arterial compliance, mm³/MPa.
+    pub c: f64,
+    /// Outflow (venous) pressure, MPa.
+    pub p_out: f64,
+}
+
+impl FourElementWindkessel {
+    /// The four-element model as a 3-element [`WindkesselModel`] plus an
+    /// inertance.
+    pub fn new(base: WindkesselModel, inertance: f64) -> Self {
+        Self {
+            r_c: base.r_c,
+            l: inertance,
+            r_p: base.r_p,
+            c: base.c,
+            p_out: base.p_out,
+        }
+    }
+
+    /// State derivatives `(dp/dt, dQ/dt)` at `(p, Q)` for inlet pressure
+    /// `p_in`.
+    pub fn derivs(&self, p: f64, q: f64, p_in: f64) -> (f64, f64) {
+        let dp = (q - (p - self.p_out) / self.r_p) / self.c;
+        let dq = (p_in - p - self.r_c * q) / self.l;
+        (dp, dq)
+    }
+
+    /// Advances one RK4 step with `p_in` held constant over the step,
+    /// returning the new `(p, Q)`.
+    pub fn step_rk4(&self, p: f64, q: f64, p_in: f64, dt: f64) -> (f64, f64) {
+        let (k1p, k1q) = self.derivs(p, q, p_in);
+        let (k2p, k2q) = self.derivs(p + 0.5 * dt * k1p, q + 0.5 * dt * k1q, p_in);
+        let (k3p, k3q) = self.derivs(p + 0.5 * dt * k2p, q + 0.5 * dt * k2q, p_in);
+        let (k4p, k4q) = self.derivs(p + dt * k3p, q + dt * k3q, p_in);
+        (
+            p + dt / 6.0 * (k1p + 2.0 * k2p + 2.0 * k3p + k4p),
+            q + dt / 6.0 * (k1q + 2.0 * k2q + 2.0 * k3q + k4q),
+        )
+    }
+
+    /// Steady state `(p, Q)` for a constant inlet pressure `p_in`.
+    /// Independent of `L` and `C` — inertia and compliance only shape the
+    /// transient.
+    pub fn steady_state(&self, p_in: f64) -> (f64, f64) {
+        let q = (p_in - self.p_out) / (self.r_c + self.r_p);
+        (p_in - self.r_c * q, q)
+    }
+
+    /// Simulates `steps` of duration `dt` with a per-step inlet-pressure
+    /// callback, returning the `(p, Q)` state history.
+    pub fn simulate(
+        &self,
+        p0: f64,
+        q0: f64,
+        dt: f64,
+        steps: usize,
+        p_in: impl Fn(f64) -> f64,
+    ) -> Vec<(f64, f64)> {
+        let mut state = (p0, q0);
+        let mut history = Vec::with_capacity(steps);
+        for s in 0..steps {
+            state = self.step_rk4(state.0, state.1, p_in(s as f64 * dt), dt);
+            history.push(state);
+        }
+        history
+    }
+}
+
+/// Vascular waterfall (Starling-resistor) pressure–flow relation: a vessel
+/// that collapses once its transmural pressure falls below a critical
+/// closing pressure, after which flow is **independent of downstream
+/// pressure** (Permutt & Bromberger-Barnea; the "vascular waterfall" used in
+/// systemic and cerebral circulation modelling).
+///
+/// ```text
+/// Q = max(0, (p_upstream − p_collapse) / R)
+/// ```
+#[derive(Debug, Clone, Copy)]
+pub struct WaterfallResistor {
+    /// Resistance above the collapse threshold, MPa·s/mm³.
+    pub r: f64,
+    /// Critical closing (collapse) pressure, MPa.
+    pub p_collapse: f64,
+}
+
+impl WaterfallResistor {
+    /// Flow through the collapsible segment (mm³/s). `p_downstream` is
+    /// accepted for call-site clarity and deliberately unused: downstream
+    /// independence is the defining property of the waterfall.
+    pub fn flow(&self, p_upstream: f64, p_downstream: f64) -> f64 {
+        let _ = p_downstream;
+        if p_upstream <= self.p_collapse {
+            0.0
+        } else {
+            (p_upstream - self.p_collapse) / self.r
+        }
+    }
+}
+
 /// Fractional flow reserve.
 #[derive(Debug, Clone, Copy)]
 pub struct FractionalFlowReserve;
@@ -289,5 +412,125 @@ mod tests {
             let t = wf.cycle * i as f64 / 100.0;
             assert!(wf.flow(t) > 0.0, "Q(t={t}) = {}", wf.flow(t));
         }
+    }
+
+    fn wk4() -> FourElementWindkessel {
+        FourElementWindkessel::new(
+            WindkesselModel {
+                r_c: 0.0002,
+                r_p: 0.001,
+                c: 1000.0,
+                p_out: 0.001,
+            },
+            1.0e-5, // inertance: underdamped at ω ≈ 10 rad/s for these Rc/Rp/C
+        )
+    }
+
+    #[test]
+    fn four_element_settles_on_the_exact_steady_state() {
+        let w = wk4();
+        let p_in = 0.013; // ~13 kPa
+        let (p_ss, q_ss) = w.steady_state(p_in);
+        assert!((q_ss - (p_in - w.p_out) / (w.r_c + w.r_p)).abs() < 1e-15);
+        assert!((p_ss - (p_in - w.r_c * q_ss)).abs() < 1e-15);
+        let (p, q) = w
+            .simulate(0.0, 0.0, 0.005, 4000, |_| p_in)
+            .pop()
+            .expect("non-empty");
+        assert!(
+            (p - p_ss).abs() < 1e-6 && (q - q_ss).abs() < 1e-4,
+            "settled ({p}, {q}) vs steady ({p_ss}, {q_ss})"
+        );
+        // Steady state is independent of the inertance.
+        let no_inertia = FourElementWindkessel::new(
+            WindkesselModel {
+                r_c: 0.0002,
+                r_p: 0.001,
+                c: 1000.0,
+                p_out: 0.001,
+            },
+            1.0e-3,
+        );
+        let (p2, q2) = no_inertia.steady_state(p_in);
+        assert!((p2 - p_ss).abs() < 1e-15 && (q2 - q_ss).abs() < 1e-15);
+    }
+
+    #[test]
+    fn four_element_inertia_rings_down() {
+        // Underdamped: with Rc = 0 and L < 4·Rp²·C the flow overshoots the
+        // steady state and oscillates while decaying — the physics the
+        // inertance element exists for. The 3-element (first-order) model
+        // cannot do this.
+        let w = FourElementWindkessel::new(
+            WindkesselModel {
+                r_c: 0.0,
+                r_p: 0.001,
+                c: 1000.0,
+                p_out: 0.0,
+            },
+            1.0e-5,
+        );
+        let p_in = 0.01;
+        let q_ss = (p_in - w.p_out) / w.r_p;
+        let history = w.simulate(0.0, 0.0, 0.005, 300, |_| p_in);
+        let excess: Vec<f64> = history.iter().map(|&(_, q)| q - q_ss).collect();
+        // A sign change of q − q_ss is the overshoot; a second one is the ring.
+        let sign_changes = excess.windows(2).filter(|w| w[0] * w[1] < 0.0).count();
+        assert!(sign_changes >= 2, "no ring-down: {sign_changes} crossings");
+        // And the oscillation decays at the theoretical envelope rate:
+        // for Rc = 0 the envelope is e^{−t/(2·Rp·C)}, τ_env = 2 s, so peaks
+        // one ring apart (~1.26 s here) must fall to ≈ e^{−0.63} ≈ 0.53.
+        let peak_early = excess.iter().take(40).fold(0.0, |a, &x| x.abs().max(a));
+        let peak_late = excess
+            .iter()
+            .skip(260)
+            .take(40)
+            .fold(0.0, |a, &x| x.abs().max(a));
+        let ratio = peak_late / peak_early;
+        assert!(
+            (ratio - 0.53).abs() < 0.1,
+            "envelope ratio {ratio} (peaks {peak_early} -> {peak_late})"
+        );
+    }
+
+    #[test]
+    fn four_element_dc_gain_matches_the_resistance_divider() {
+        // For a linear system, the time-average of Q over full periods of a
+        // periodic p_in equals the response to the mean p_in — the DC gain
+        // (p̄_in − p_out)/(Rc + Rp). This checks the whole transient against
+        // superposition, not just the endpoint.
+        let w = wk4();
+        let p_mean = 0.013;
+        let amp = 0.002;
+        let period = 1.0;
+        let dt = 0.005;
+        let steps_per_cycle = (period / dt) as usize;
+        let settle = 20 * steps_per_cycle;
+        let average_over = 20 * steps_per_cycle;
+        let p_in = |t: f64| p_mean + amp * (2.0 * core::f64::consts::PI * t / period).sin();
+        let history = w.simulate(0.0, 0.0, dt, settle + average_over, p_in);
+        let mean_q = history[settle..].iter().map(|&(_, q)| q).sum::<f64>() / average_over as f64;
+        let expected = (p_mean - w.p_out) / (w.r_c + w.r_p);
+        assert!(
+            (mean_q - expected).abs() < 1e-5 * expected.abs(),
+            "mean flow {mean_q} vs DC gain {expected}"
+        );
+    }
+
+    #[test]
+    fn waterfall_flow_is_independent_of_downstream_pressure() {
+        let wf = WaterfallResistor {
+            r: 0.001,
+            p_collapse: 0.002,
+        };
+        // Above the collapse threshold: linear in upstream pressure…
+        assert!((wf.flow(0.012, 0.001) - 10.0).abs() < 1e-12);
+        assert!((wf.flow(0.013, 0.001) - 11.0).abs() < 1e-12);
+        // …and blind to the downstream pressure, even when it rises above
+        // the collapse pressure (the waterfall decouples the segments).
+        assert_eq!(wf.flow(0.012, 0.001), wf.flow(0.012, 0.005));
+        // Below the threshold: collapsed, zero flow regardless of suction.
+        assert_eq!(wf.flow(0.002, -1.0), 0.0);
+        assert_eq!(wf.flow(0.001, 0.0), 0.0);
     }
 }

@@ -27,8 +27,10 @@ use tpt_med_audit::{hash_chain, hex, hmac_sha256, verify_chain};
 use tpt_med_core::{AuditAction, AuditEvent};
 
 pub mod manifest;
+pub mod worm;
 
 pub use manifest::{InputArtifact, ReproducibilityManifest, MANIFEST_SCHEMA_VERSION, TOOL_ID};
+pub use worm::{WormError, WormLog};
 
 /// UTC timestamp: seconds + nanoseconds since the epoch, rendered as
 /// ISO-8601 `YYYY-MM-DDThh:mm:ssZ` (proleptic Gregorian; civil-date
@@ -278,6 +280,21 @@ impl AuditTrail {
         Self {
             run_id: run_id.into(),
             entries: Vec::new(),
+            signatures: Vec::new(),
+            digest_index: Vec::new(),
+            manifest: None,
+            signature_policy: SignaturePolicy::default(),
+            reason_policy: ReasonPolicy::default(),
+        }
+    }
+
+    /// Rebuilds a trail from persisted entries (crate-only: the WORM
+    /// journal reload path). Entries keep their recorded timestamps and
+    /// sequence numbers; the chain is recomputed by the caller.
+    pub(crate) fn from_entries(run_id: impl Into<String>, entries: Vec<AuditEntry>) -> Self {
+        Self {
+            run_id: run_id.into(),
+            entries,
             signatures: Vec::new(),
             digest_index: Vec::new(),
             manifest: None,

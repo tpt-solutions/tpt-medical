@@ -41,7 +41,8 @@ pub mod models;
 
 pub use hgo::HgoParams;
 pub use models::{
-    MooneyRivlinParams, NeoHookeanParams, OgdenParams, SoftTissueMaterial, TissueModel, YeohParams,
+    MaterialTangent, MooneyRivlinParams, NeoHookeanParams, OgdenParams, SoftTissueMaterial,
+    TissueModel, YeohParams,
 };
 
 #[cfg(test)]

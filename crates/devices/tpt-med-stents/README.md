@@ -59,6 +59,14 @@ vendor data**.
   `ElasticA` → `Forward` → `ElasticM` → `Reverse`. The branch is what makes
   the loop close: unloading follows a *different* path from loading, which is
   the definition of superelasticity.
+- **Foreshortening** — `StentModel::foreshortening(manufactured_length,
+  diameter, link_fraction)`: the axial shortening when the ring opens, from
+  a diamond-cell crown geometry with a `link_fraction` calibration for the
+  straight axial links (≈0.6–0.8 on real laser-cut designs).
+- **Non-uniform rings** — `simulate_deployment_with_crowns` takes a
+  per-crown stiffness slice (tapered or anomalous crowns) and reports the
+  per-crown force distribution plus the largest single-crown share, with
+  the ring-level metrics from the summed stiffness.
 
 ## Conventions
 
@@ -183,9 +191,15 @@ fn main() {
 
 ## Known Limitations
 
-- **Level-1 ring model.** Uniform ring, uniform stent, no taper, no
-  per-segment variation, no foreshortening, no 3D bending stiffness. The
-  `dogboning` output is structurally `0.0` here.
+- **Level-1 ring model.** Uniform ring radius, no taper between ring
+  groups, no 3D bending stiffness. The `dogboning` output is structurally
+  `0.0` here. Per-crown *stiffness* variation is supported
+  (`simulate_deployment_with_crowns`), but the ring still shares one radius,
+  so per-crown geometry variation is not resolved.
+- **Foreshortening is geometric, not structural.** The diamond-cell model
+  with a `link_fraction` calibration is a screening number to be checked
+  against the manufacturer's published foreshortening, not a strut-level
+  FEM prediction.
 - **No friction or contact mechanics.** Crowns are independent radial
   springs; there is no frictional interface, so wall contact is smooth.
 - **1D material.** The superelastic model is uniaxial; it does not resolve

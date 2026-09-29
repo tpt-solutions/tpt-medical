@@ -154,6 +154,189 @@ pub fn micromotion_um(result: &MicromotionResult) -> Length {
     Length::from_mm(result.max_micromotion * 1.0e3)
 }
 
+/// Result of a cyclic (gait) micromotion analysis.
+#[derive(Debug, Clone)]
+pub struct CyclicMicromotionResult {
+    /// Maximum interface displacement over the cycle (mm) — the peak
+    /// instantaneous value, classified as in the static case.
+    pub peak_micromotion: f64,
+    /// Per-zone motion *amplitude* over the cycle, `max − min` (mm): the
+    /// relative interface motion that cyclic loading actually imposes,
+    /// which is what fibrous-tissue screening keys on.
+    pub zone_amplitude: Vec<f64>,
+    /// Largest per-zone amplitude (mm).
+    pub peak_amplitude: f64,
+    /// Osseointegration risk classification, on the peak.
+    pub risk: RiskLevel,
+}
+
+/// Micromotion accumulated over one load cycle (e.g. a gait cycle) rather
+/// than at a single static load: the interface sees every load sample in
+/// turn, and both the peak motion and the per-zone motion amplitude are
+/// reported. Load samples are typically produced by
+/// [`GaitCycle::iso_double_hump`].
+pub fn micromotion_over_cycle(
+    interface: &InterfaceModel,
+    loads: &[Force],
+    tangential_fraction: f64,
+    zone_areas: &[f64],
+) -> CyclicMicromotionResult {
+    let mut peak = 0.0f64;
+    let mut zone_min = vec![f64::INFINITY; zone_areas.len()];
+    let mut zone_max = vec![f64::NEG_INFINITY; zone_areas.len()];
+    for load in loads {
+        let r = micromotion_analysis(interface, *load, tangential_fraction, zone_areas);
+        peak = peak.max(r.max_micromotion);
+        for ((zmin, zmax), z) in zone_min
+            .iter_mut()
+            .zip(zone_max.iter_mut())
+            .zip(r.zone_micromotion)
+        {
+            *zmin = zmin.min(z);
+            *zmax = zmax.max(z);
+        }
+    }
+    let zone_amplitude: Vec<f64> = zone_min
+        .iter()
+        .zip(&zone_max)
+        .map(|(lo, hi)| {
+            if *lo == f64::INFINITY {
+                f64::NAN // skipped (zero-area) zone
+            } else {
+                hi - lo
+            }
+        })
+        .collect();
+    let peak_amplitude = zone_amplitude
+        .iter()
+        .filter(|a| !a.is_nan())
+        .fold(0.0f64, |a, &x| a.max(x));
+    CyclicMicromotionResult {
+        peak_micromotion: peak,
+        peak_amplitude,
+        zone_amplitude,
+        risk: MicromotionResult::classify(peak),
+    }
+}
+
+/// A canonical axial gait loading profile, in the ISO 14243 (knee-wear
+/// testing) *shape*: a double hump — heel-strike peak, stance trough,
+/// push-off peak — normalised so the peak load is a multiple of body
+/// weight. This is a screening waveform, not a patient's measured gait;
+/// the standard's full force/alignment tables are not reproduced.
+#[derive(Debug, Clone, Copy)]
+pub struct GaitCycle {
+    /// Peak load as a multiple of body weight (ISO 14243-style: ≈ 2.6).
+    pub peak_bw: f64,
+    /// Cycle length (s). Only affects the reported sample times.
+    pub cycle_seconds: f64,
+    /// Body weight the profile scales to (N).
+    pub body_weight_n: f64,
+}
+
+impl GaitCycle {
+    /// The ISO 14243-style double hump: peak ≈ 2.6 × body weight.
+    pub fn iso_double_hump(body_weight_n: f64) -> Self {
+        Self {
+            peak_bw: 2.6,
+            cycle_seconds: 1.0,
+            body_weight_n,
+        }
+    }
+
+    /// Load samples over one cycle. `t ∈ [0, 1)` is cycle fraction: the
+    /// profile is two raised-cosine humps at 15 % and 45 % cycle fraction,
+    /// with a stance trough between them and swing unload after.
+    pub fn samples(&self, n: usize) -> Vec<(f64, Force)> {
+        let peak = self.peak_bw * self.body_weight_n;
+        let trough = 0.3 * peak;
+        let mut v = Vec::with_capacity(n);
+        for i in 0..n {
+            let t = i as f64 / n as f64;
+            let load = hump(t, 0.15, 0.18, peak)
+                .max(hump(t, 0.45, 0.18, peak))
+                .max(trough * 0.5);
+            v.push((t * self.cycle_seconds, Force::from_n(load)));
+        }
+        v
+    }
+
+    /// Force samples only (convenience for [`micromotion_over_cycle`]).
+    pub fn load_samples(&self, n: usize) -> Vec<Force> {
+        self.samples(n).into_iter().map(|(_, f)| f).collect()
+    }
+}
+
+// Raised-cosine hump centred at `centre` with half-width `width`, peak `peak`.
+fn hump(t: f64, centre: f64, width: f64, peak: f64) -> f64 {
+    let x = (t - centre) / width;
+    if x.abs() < 1.0 {
+        peak * 0.5 * (1.0 + (core::f64::consts::PI * x).cos())
+    } else {
+        0.0
+    }
+}
+
+/// Screening migration law: the time-dependent consequence of interface
+/// micromotion. Per-cycle migration accrues proportionally to the motion
+/// **amplitude** above a stability threshold, with the rate decaying
+/// exponentially as the implant beds in:
+///
+/// ```text
+/// dx/dN = k·(δ_amp − δ_th)·e^{−x/x_bed}   ⇒   x(N) = x_bed·ln(1 + k·(δ_amp − δ_th)·N / x_bed)
+/// ```
+///
+/// which reproduces the classic logarithmic migration curve seen in
+/// radiostereometric analysis (RSA): rapid early bedding-in, then a slow
+/// creep whose velocity is the at-risk discriminator.
+#[derive(Debug, Clone, Copy)]
+pub struct MigrationModel {
+    /// Per-cycle rate constant (mm per cycle, per mm of excess amplitude).
+    pub rate: f64,
+    /// Motion-amplitude stability threshold (mm): below it, no migration
+    /// accrues (the interface is in the osseointegration band).
+    pub threshold: f64,
+    /// Bedding-in length scale (mm) — the exponential decay of the rate
+    /// with accumulated migration.
+    pub bedding_in: f64,
+}
+
+impl MigrationModel {
+    /// Instantaneous per-cycle migration rate (mm/cycle) at a given motion
+    /// amplitude and accumulated migration.
+    pub fn rate_at(&self, amplitude: f64, migration: f64) -> f64 {
+        if amplitude <= self.threshold {
+            return 0.0;
+        }
+        let decay = (-(migration / self.bedding_in)).exp();
+        self.rate * (amplitude - self.threshold) * decay
+    }
+
+    /// Closed-form cumulative migration (mm) after `cycles` cycles at a
+    /// constant motion amplitude.
+    pub fn cumulative(&self, amplitude: f64, cycles: f64) -> f64 {
+        if amplitude <= self.threshold || cycles <= 0.0 {
+            return 0.0;
+        }
+        let a = self.rate * (amplitude - self.threshold);
+        self.bedding_in * (1.0 + a * cycles / self.bedding_in).ln()
+    }
+
+    /// Late migration velocity (mm/year) at a given accumulated migration —
+    /// the RSA discriminator: sustained velocity after the bedding-in year
+    /// flags at-risk fixation.
+    pub fn velocity_per_year(&self, amplitude: f64, migration: f64, cycles_per_year: f64) -> f64 {
+        self.rate_at(amplitude, migration) * cycles_per_year
+    }
+
+    /// RSA-style stability screening: `true` when the current migration
+    /// velocity exceeds 0.2 mm/year (continued migration after the first
+    /// year) — the at-risk band in RSA follow-up practice.
+    pub fn is_at_risk(&self, amplitude: f64, migration: f64, cycles_per_year: f64) -> bool {
+        self.velocity_per_year(amplitude, migration, cycles_per_year) > 0.2
+    }
+}
+
 /// Gruen zones for femoral stem fixation assessment (Gruen, McNeice &
 /// Amstutz 1979): seven periprosthetic regions — three lateral (1–3,
 /// proximal to distal), the distal tip (4), and three medial (5–7, distal
@@ -372,5 +555,123 @@ mod tests {
         let r = micromotion_analysis(&interface(), Force::from_n(1500.0), 0.25, &[800.0]);
         let um = micromotion_um(&r);
         assert!((um.to_mm() - r.max_micromotion * 1.0e3).abs() < 1e-9);
+    }
+
+    #[test]
+    fn gait_profile_is_a_double_hump() {
+        let gait = GaitCycle::iso_double_hump(750.0);
+        let samples = gait.samples(1000);
+        assert_eq!(samples.len(), 1000);
+        let peak = samples.iter().map(|(_, f)| f.to_n()).fold(0.0, f64::max);
+        assert!((peak - 2.6 * 750.0).abs() < 1e-6, "peak {peak}");
+        // Two distinct humps: local maxima in the stance window, separated
+        // by a trough.
+        let loads: Vec<f64> = samples.iter().map(|(_, f)| f.to_n()).collect();
+        let humps_at = |frac: f64| loads[(frac * 1000.0) as usize];
+        assert!(humps_at(0.15) > 2.0 * 750.0, "heel-strike hump");
+        assert!(humps_at(0.45) > 2.0 * 750.0, "push-off hump");
+        assert!(humps_at(0.30) < humps_at(0.15), "stance trough between");
+        assert!(humps_at(0.85) < 0.3 * peak, "swing unloads");
+        // Periodicity: loading at cycle end returns to unload.
+        assert!(loads[999] < 0.3 * peak);
+    }
+
+    #[test]
+    fn cyclic_micromotion_reports_peak_and_amplitude() {
+        let gait = GaitCycle::iso_double_hump(750.0);
+        let loads = gait.load_samples(200);
+        let cyclic = micromotion_over_cycle(&interface(), &loads, 0.3, &[800.0, 400.0]);
+        assert_eq!(cyclic.zone_amplitude.len(), 2);
+        // The peak equals the static analysis at the peak load…
+        let peak_load = loads.iter().copied().fold(0.0f64, |a, f| a.max(f.to_n()));
+        let static_at_peak =
+            micromotion_analysis(&interface(), Force::from_n(peak_load), 0.3, &[800.0, 400.0]);
+        assert!(
+            (cyclic.peak_micromotion - static_at_peak.max_micromotion).abs() < 1e-12,
+            "{:.6} vs {:.6}",
+            cyclic.peak_micromotion,
+            static_at_peak.max_micromotion
+        );
+        // …and every zone has positive amplitude under cyclic loading…
+        assert!(cyclic.zone_amplitude.iter().all(|a| *a > 0.0));
+        assert!(cyclic.peak_amplitude >= cyclic.peak_micromotion * 0.1);
+        // …and the risk class comes from the peak.
+        assert_eq!(
+            cyclic.risk,
+            MicromotionResult::classify(cyclic.peak_micromotion)
+        );
+    }
+
+    #[test]
+    fn migration_closed_form_matches_numerical_integration() {
+        let model = MigrationModel {
+            rate: 1.0e-4,
+            threshold: 0.05,
+            bedding_in: 0.4,
+        };
+        let amplitude = 0.3;
+        // Numeric integration of rate_at vs the closed form.
+        let mut x = 0.0;
+        let dt = 0.05f64;
+        let cycles = 5000.0;
+        let mut n = 0.0;
+        while n < cycles {
+            let h = dt.min(cycles - n);
+            x += model.rate_at(amplitude, x) * h;
+            n += h;
+        }
+        let closed = model.cumulative(amplitude, cycles);
+        assert!(
+            (x - closed).abs() < 0.02 * closed,
+            "numeric {x} vs closed form {closed}"
+        );
+        // Below the threshold amplitude: no migration ever.
+        assert_eq!(model.cumulative(0.05, 1.0e7), 0.0);
+        assert_eq!(model.rate_at(0.04, 0.0), 0.0);
+    }
+
+    #[test]
+    fn migration_velocity_decays_and_flags_risk() {
+        let model = MigrationModel {
+            rate: 1.0e-4,
+            threshold: 0.05,
+            bedding_in: 0.4,
+        };
+        let amplitude = 0.3;
+        let cycles_per_year = 1.0e6;
+        let v_new = model.velocity_per_year(amplitude, 0.0, cycles_per_year);
+        let v_late = model.velocity_per_year(
+            amplitude,
+            model.cumulative(amplitude, 2.0e6),
+            cycles_per_year,
+        );
+        assert!(v_new > 0.2, "fresh implant migrating fast: {v_new}");
+        assert!(
+            v_late < v_new * 0.5,
+            "bedding-in must slow migration: {v_new} -> {v_late}"
+        );
+        // The at-risk flag follows the 0.2 mm/year boundary.
+        assert!(model.is_at_risk(amplitude, 0.0, cycles_per_year));
+        let stable = MigrationModel {
+            threshold: 0.4, // amplitude below threshold → no migration at all
+            ..model
+        };
+        assert!(!stable.is_at_risk(amplitude, 0.0, cycles_per_year));
+        // Logarithmic growth: late doubling of the cycle count adds far
+        // less than the first doubling did, and successive late increments
+        // are nearly equal (the pure-log limit).
+        let x1 = model.cumulative(amplitude, 1.0e6);
+        let x2 = model.cumulative(amplitude, 2.0e6);
+        let x4 = model.cumulative(amplitude, 4.0e6);
+        assert!(
+            x2 - x1 < 0.5 * x1,
+            "late growth slower than early: {x1} {x2} {x4}"
+        );
+        let d1 = x2 - x1;
+        let d2 = x4 - x2;
+        assert!(
+            (d2 - d1).abs() < 0.02 * d1,
+            "log curve: nearly-equal late increments {d1} {d2}"
+        );
     }
 }

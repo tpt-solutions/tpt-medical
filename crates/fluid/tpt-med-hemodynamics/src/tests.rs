@@ -3,12 +3,21 @@
 
 use crate::blood::BloodModel;
 use crate::domain::FluidDomain;
-use crate::solver::{HemodynamicsSolver, SolverConfig};
+use crate::solver::{HemodynamicsSolver, PressureSolver, SolverConfig};
 use crate::wss::{extract_wss, OsiAccumulator};
 use tpt_med_geometry::Vec3;
 
 /// Straight tube verification run.
 fn poiseuille_run(mu: f64, mean_velocity: f64) -> (HemodynamicsSolver, crate::solver::SteadyStats) {
+    poiseuille_run_with(mu, mean_velocity, PressureSolver::Sor)
+}
+
+/// Same, with the pressure solver chosen.
+fn poiseuille_run_with(
+    mu: f64,
+    mean_velocity: f64,
+    pressure_solver: PressureSolver,
+) -> (HemodynamicsSolver, crate::solver::SteadyStats) {
     // Tube: radius 3.5 cells, 16 cells long, pitch 0.5 mm → R ≈ 1.75 mm.
     // Grid 16×10×10 = 1600 cells (kept small so debug-profile tests stay
     // fast). dt = 5e-4 s is within the explicit diffusion limit
@@ -21,6 +30,7 @@ fn poiseuille_run(mu: f64, mean_velocity: f64) -> (HemodynamicsSolver, crate::so
         include_convection: false,
         viscosity_relaxation: 0.2,
         density: 1.06e-3,
+        pressure_solver,
     };
     let mut solver = HemodynamicsSolver::new(domain, blood, mean_velocity, config);
     let stats = solver.run_steady(900, 1e-4);
@@ -136,6 +146,7 @@ fn shear_thinning_blood_increases_resistance() {
         include_convection: false,
         viscosity_relaxation: 0.2,
         density: 1.06e-3,
+        pressure_solver: PressureSolver::Sor,
     };
     let mut solver =
         HemodynamicsSolver::new(domain, BloodModel::CARREAU_YASUDA_BLOOD, 30.0, config);
@@ -166,4 +177,148 @@ fn osi_accumulator_over_synthetic_cycle() {
         steady.sample(Vec3::new(1.0, 0.1, 0.0), 0.01);
     }
     assert!(steady.osi() < 0.05, "osi {}", steady.osi());
+}
+
+#[test]
+fn cg_pressure_solve_reproduces_a_manufactured_solution() {
+    // Code verification of the CG Poisson solve against an exact solution:
+    // pick φ = sin(πi/nx) on interior fluid cells (0 on the Dirichlet
+    // outlet layer and on solids), form b = Aφ with the crate's own
+    // operator, solve, and require the iterate to reproduce φ. This is the
+    // check that would catch a sign error in the discretisation (the SOR
+    // fixed point is A = −∇², so the rhs enters negated).
+    let domain = FluidDomain::cylinder(16, 10, 3.5, 0.5, 0);
+    let config = SolverConfig {
+        pressure_solver: PressureSolver::ConjugateGradient,
+        ..SolverConfig::default()
+    };
+    let solver = HemodynamicsSolver::new(
+        domain,
+        BloodModel::Newtonian { viscosity: 0.0035 },
+        30.0,
+        config,
+    );
+    let (nx, _ny, _nz) = solver.domain.dims;
+    let n = solver.domain.mask.len();
+    let phi_exact: Vec<f64> = (0..n)
+        .map(|idx| {
+            let (i, _, _) = solver.domain.coords(idx);
+            if solver.domain.mask[idx] && i + 1 < nx {
+                (core::f64::consts::PI * i as f64 / nx as f64).sin()
+            } else {
+                0.0
+            }
+        })
+        .collect();
+    let mut b = vec![0.0; n];
+    solver.laplacian_apply(&phi_exact, &mut b);
+    // `solve_poisson` takes the projection's rhs (the equation ∇²φ = rhs);
+    // internally the SPD operator A = −∇² is used, so negate here.
+    for v in b.iter_mut() {
+        *v = -*v;
+    }
+
+    let (phi_cg, cg_iters) = solver.solve_poisson(&b);
+    assert!(cg_iters > 0);
+    let scale = phi_exact.iter().cloned().fold(0.0f64, f64::max);
+    let max_err = phi_cg
+        .iter()
+        .zip(&phi_exact)
+        .map(|(&a, &b)| (a - b).abs())
+        .fold(0.0f64, f64::max);
+    assert!(
+        max_err < 1e-4 * scale,
+        "CG manufactured solution: max err {max_err:.3e} vs scale {scale:.3e}"
+    );
+    // The pinned unknowns stay pinned.
+    for idx in 0..n {
+        let (i, _, _) = solver.domain.coords(idx);
+        if !solver.domain.mask[idx] || i + 1 == nx {
+            assert_eq!(phi_cg[idx], 0.0);
+        }
+    }
+}
+
+#[test]
+fn cg_projection_reproduces_the_poiseuille_verification() {
+    // The full march with the CG projection must satisfy the same physical
+    // checks as the SOR one: mass conservation and a concave, symmetric,
+    // constant-curvature profile.
+    let mu = 0.08;
+    let u_in = 30.0;
+    let (solver, stats) = poiseuille_run_with(mu, u_in, PressureSolver::ConjugateGradient);
+    assert!(
+        (stats.outlet_flow - stats.inlet_flow).abs() < 0.10 * stats.inlet_flow,
+        "inlet {:.1} vs outlet {:.1}",
+        stats.inlet_flow,
+        stats.outlet_flow
+    );
+    // Same developed-paraboloid checks as the SOR verification: concave,
+    // constant-curvature, symmetric — umax/mean = 2 does not hold on
+    // stair-step masks.
+    let (nx, ny, nz) = solver.domain.dims;
+    let i = nx / 2;
+    let kc = nz / 2;
+    let mut line: Vec<(usize, f64)> = Vec::new();
+    for j in 0..ny {
+        if solver.domain.is_fluid(i as i64, j as i64, kc as i64)
+            && solver.domain.is_fluid(i as i64 - 1, j as i64, kc as i64)
+        {
+            let u = 0.5 * (solver.u[solver.uid(i, j, kc)] + solver.u[solver.uid(i + 1, j, kc)]);
+            line.push((j, u));
+        }
+    }
+    assert!(line.len() >= 5);
+    let umax = line.iter().map(|(_, u)| *u).fold(0.0f64, f64::max);
+    assert!(
+        umax > 1.3 * u_in,
+        "umax {umax:.1} not developed beyond plug"
+    );
+    let second_diff = |k: usize| {
+        let (_, ua) = line[k];
+        let (_, ub) = line[k + 1];
+        let (_, uc) = line[k + 2];
+        ua - 2.0 * ub + uc
+    };
+    let n = line.len();
+    let d1 = second_diff(n / 2 - 1);
+    let d2 = second_diff(n / 2);
+    assert!(d1 < 0.0 && d2 < 0.0, "profile must be concave: {d1} {d2}");
+    let rel = (d1 - d2).abs() / d1.abs().max(1e-12);
+    assert!(rel < 0.10, "curvature not constant: {d1:.3} vs {d2:.3}");
+    let (jl, ul) = line[0];
+    let (jr, ur) = line[line.len() - 1];
+    assert!(
+        (ul - ur).abs() < 0.05 * umax,
+        "profile not symmetric: {ul:.2} vs {ur:.2}"
+    );
+    assert!(jl < ny / 2 && jr >= ny / 2);
+    assert!(solver.last_pressure_solve_iterations > 0);
+}
+
+#[test]
+fn cg_iterations_are_accounted_per_step() {
+    // The iteration counter must reflect the configured solver, not a
+    // stale value.
+    let domain = FluidDomain::cylinder(16, 10, 3.5, 0.5, 0);
+    let config = SolverConfig {
+        dt: 5.0e-4,
+        poisson_iterations: 400,
+        include_convection: false,
+        viscosity_relaxation: 0.2,
+        density: 1.06e-3,
+        pressure_solver: PressureSolver::ConjugateGradient,
+    };
+    let mut solver = HemodynamicsSolver::new(
+        domain,
+        BloodModel::Newtonian { viscosity: 0.08 },
+        30.0,
+        config,
+    );
+    assert_eq!(solver.last_pressure_solve_iterations, 0);
+    solver.step();
+    let after_one = solver.last_pressure_solve_iterations;
+    assert!(after_one > 0, "CG reported no iterations");
+    solver.step();
+    assert!(solver.last_pressure_solve_iterations > 0);
 }

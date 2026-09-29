@@ -304,6 +304,108 @@ pub fn simulate_deployment(
     }
 }
 
+/// Result of a deployment evaluation on a **non-uniform** ring.
+#[derive(Debug, Clone)]
+pub struct NonUniformDeployment {
+    /// Ring-level metrics: the uniform-radius equilibrium with the crown
+    /// stiffnesses summed.
+    pub ring: DeploymentResult,
+    /// Radial force carried by each crown (N), in input order. Zero in the
+    /// no-contact case.
+    pub crown_forces: Vec<f64>,
+    /// Largest single-crown share of the total radial force, `(0, 1]` under
+    /// contact — a tapered design or an anomalous crown shows up here.
+    pub peak_crown_fraction: f64,
+}
+
+/// Simulates radial equilibrium of a stent ring whose crowns do **not**
+/// share one stiffness (tapered designs, per-crown variation): the ring
+/// radius stays uniform in this model, so the ring-level metrics use the
+/// summed stiffness and the per-crown forces split proportionally to
+/// stiffness. An empty `crown_stiffness` slice falls back to
+/// `n_crowns` copies of [`StentModel::crown_stiffness`].
+pub fn simulate_deployment_with_crowns(
+    stent: &StentModel,
+    nitinol: &NitinolParams,
+    vessel_diameter_at_pressure: impl Fn(f64) -> f64,
+    vessel_pressure: Pressure,
+    crown_stiffness: &[f64],
+) -> NonUniformDeployment {
+    let stiffnesses: Vec<f64> = if crown_stiffness.is_empty() {
+        vec![stent.crown_stiffness; stent.n_crowns as usize]
+    } else {
+        crown_stiffness.to_vec()
+    };
+    let total_stiffness: f64 = stiffnesses.iter().sum();
+    let nominal = stent.expanded_diameter;
+    let lumen = vessel_diameter_at_pressure(vessel_pressure.to_mpa());
+    let compression = (nominal - lumen).max(0.0);
+
+    let mut ring =
+        simulate_deployment(stent, nitinol, vessel_diameter_at_pressure, vessel_pressure);
+    // Recompute the force with the summed stiffness (the uniform path uses
+    // n_crowns · crown_stiffness, which an explicit non-uniform slice with
+    // equal entries must reproduce exactly).
+    let crown_forces: Vec<f64> = stiffnesses.iter().map(|&k| k * compression).collect();
+    ring.radial_force = if compression > 0.0 {
+        total_stiffness * compression
+    } else {
+        0.0
+    };
+    ring.contact_pressure = if compression > 0.0 {
+        ring.radial_force / (core::f64::consts::PI * lumen * lumen)
+    } else {
+        0.0
+    };
+    let peak_crown_fraction = if total_stiffness > 0.0 && compression > 0.0 {
+        stiffnesses.iter().cloned().fold(0.0f64, f64::max) / total_stiffness
+    } else {
+        0.0
+    };
+    NonUniformDeployment {
+        ring,
+        crown_forces,
+        peak_crown_fraction,
+    }
+}
+
+impl StentModel {
+    /// Geometric **foreshortening** of a zig-zag crown ring: the axial
+    /// shortening when the ring opens from its delivery (crimped)
+    /// configuration to `diameter`, as a fraction
+    /// `(L_crimped − L)/L_crimped`.
+    ///
+    /// Each crown cell is modelled as a diamond: strut segment length is
+    /// fixed (developed material), so opening the cell's circumferential
+    /// width `πD/n_crowns` must reduce its axial height. `link_fraction` is
+    /// the share of the manufactured length held by straight axial links
+    /// that do not swing (real laser-cut designs ≈ 0.6–0.8; 0 is the pure
+    /// diamond-cell upper bound). Returns `NaN` when `diameter` exceeds the
+    /// developed-length limit, where the cell geometry cannot close.
+    pub fn foreshortening(
+        &self,
+        manufactured_length: f64,
+        diameter: f64,
+        link_fraction: f64,
+    ) -> f64 {
+        let n = self.n_crowns as f64;
+        // Full diamond cell built from the whole manufactured length.
+        let h_crimped_cell = manufactured_length / n;
+        let half_width_crimped = core::f64::consts::PI * self.crimped_diameter / (2.0 * n);
+        let segment =
+            (h_crimped_cell * h_crimped_cell + half_width_crimped * half_width_crimped).sqrt();
+        let half_width = core::f64::consts::PI * diameter / (2.0 * n);
+        if half_width >= segment {
+            return f64::NAN; // circumference exceeds developed strut length
+        }
+        let h_cell = (segment * segment - half_width * half_width).sqrt();
+        // Straight links keep their length; only the swinging share of the
+        // cell follows the diamond height ratio.
+        let axial_ratio = link_fraction + (1.0 - link_fraction) * (h_cell / h_crimped_cell);
+        1.0 - axial_ratio
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -401,5 +503,84 @@ mod tests {
             simulate_deployment(&stent, &nitinol, |_| 5.0, Pressure::from_mpa(0.013)).radial_force
         };
         assert!(f(5.5) < f(6.0) && f(6.0) < f(6.5));
+    }
+
+    #[test]
+    fn foreshortening_is_zero_at_the_crimped_diameter_and_grows_with_expansion() {
+        let stent = StentModel {
+            expanded_diameter: 6.0,
+            crimped_diameter: 1.8,
+            n_crowns: 12,
+            crown_stiffness: 0.5,
+        };
+        let length = 16.0;
+        assert_eq!(stent.foreshortening(length, 1.8, 0.7), 0.0);
+        // Monotone in diameter within the physical range…
+        let f4 = stent.foreshortening(length, 4.0, 0.7);
+        let f6 = stent.foreshortening(length, 6.0, 0.7);
+        let f8 = stent.foreshortening(length, 8.0, 0.7);
+        assert!(f4 > 0.0 && f6 > f4 && f8 > f6, "{f4} {f6} {f8}");
+        // …and with realistic straight links (0.7) a 6 mm deployment lands
+        // in the published few-percent band; the pure diamond cell (0.0) is
+        // the upper bound.
+        assert!((0.02..0.10).contains(&f6), "6 mm foreshortening {f6}");
+        assert!(stent.foreshortening(length, 6.0, 0.0) > f6);
+        // All-link ring never foreshortens.
+        assert_eq!(stent.foreshortening(length, 6.0, 1.0), 0.0);
+        // Beyond the developed-length limit the cell cannot close: NaN.
+        assert!(stent.foreshortening(length, 14.0, 0.7).is_nan());
+    }
+
+    #[test]
+    fn nonuniform_ring_splits_force_by_stiffness() {
+        let stent = StentModel {
+            expanded_diameter: 6.0,
+            crimped_diameter: 1.8,
+            n_crowns: 4,
+            crown_stiffness: 0.5,
+        };
+        let nitinol = NitinolParams::default();
+        let vessel = |_| 5.0f64;
+        let p = Pressure::from_mpa(0.013);
+        // Equal stiffnesses reproduce the uniform ring exactly.
+        let uniform = simulate_deployment(&stent, &nitinol, vessel, p);
+        let equal = simulate_deployment_with_crowns(&stent, &nitinol, vessel, p, &[0.5; 4]);
+        assert!((equal.ring.radial_force - uniform.radial_force).abs() < 1e-12);
+        assert!((equal.peak_crown_fraction - 0.25).abs() < 1e-12);
+        // Empty slice falls back to the uniform crown stiffness.
+        let fallback = simulate_deployment_with_crowns(&stent, &nitinol, vessel, p, &[]);
+        assert!((fallback.ring.radial_force - uniform.radial_force).abs() < 1e-12);
+        // One stiff crown carries proportionally more of the load.
+        let mixed =
+            simulate_deployment_with_crowns(&stent, &nitinol, vessel, p, &[0.5, 0.5, 0.5, 2.5]);
+        assert_eq!(mixed.crown_forces.len(), 4);
+        assert!((mixed.peak_crown_fraction - 2.5 / 4.0).abs() < 1e-12);
+        assert!(
+            (mixed.crown_forces[3].min(mixed.crown_forces[0]) / mixed.crown_forces[3] - 0.2).abs()
+                < 1e-12
+        );
+        // Crown forces sum to the ring total.
+        let sum: f64 = mixed.crown_forces.iter().sum();
+        assert!((sum - mixed.ring.radial_force).abs() < 1e-12);
+    }
+
+    #[test]
+    fn nonuniform_no_contact_carries_nothing() {
+        let stent = StentModel {
+            expanded_diameter: 4.0,
+            crimped_diameter: 1.5,
+            n_crowns: 8,
+            crown_stiffness: 0.5,
+        };
+        let out = simulate_deployment_with_crowns(
+            &stent,
+            &NitinolParams::default(),
+            |_| 6.0,
+            Pressure::from_mpa(0.01),
+            &[0.5, 1.5, 0.5, 1.5, 0.5, 1.5, 0.5, 1.5],
+        );
+        assert!(out.crown_forces.iter().all(|&f| f == 0.0));
+        assert_eq!(out.peak_crown_fraction, 0.0);
+        assert_eq!(out.ring.radial_force, 0.0);
     }
 }

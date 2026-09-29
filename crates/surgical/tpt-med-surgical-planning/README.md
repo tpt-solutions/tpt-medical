@@ -52,6 +52,11 @@ voxel grid.
   pre/post views and `fragments` for the recorded labels.
 - **Named fragments** — every cut carries a `fragment_name` so the audit log
   is readable by a human reviewer, not just parseable.
+- **Measurement reporting** — `execute_with_report` returns a
+  `SurgeryReport` index-aligned with the audit log: resection volume and
+  cut depth per cut, prescribed vs achieved centroid displacement per move
+  (the achieved alignment error — how a sub-voxel plan quantises onto the
+  voxel grid), and the total resection volume.
 - Voxel index `(z·ny + y)·nx + x`, matching `tpt-med-meshing`.
 
 ## Conventions
@@ -167,6 +172,11 @@ fn main() {
   multi-plane wedge. Real surgical planning wants all three.
 - **Rigid fragments only.** No implant component placement with a bone-implant
   interface, no bone graft, no defect reconstruction.
+- **Measurements are voxel-quantised.** Resection volume counts discarded
+  voxels (zero-valued tissue included — only NaN is empty), and the
+  alignment error is measured between the prescribed transform and the
+  nearest-neighbour scatter. Volumes are accurate to the voxel pitch; the
+  report is a screening record, not an intra-operative measurement.
 - **Fragment transforms act on the whole current model.** A `Move` applies to
   the assembled model rather than to a single named fragment, so a plan that
   repositions two different fragments independently needs two

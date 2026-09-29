@@ -21,12 +21,26 @@ changes for consumers of this crate.
   of the implant–bone *system* rather than of the implant alone, which is why
   the interface is a first-class input instead of an assumed perfect bond.
 
+- `GaitCycle` + `micromotion_over_cycle`: **cyclic loading** — micromotion
+  is evaluated across a full load cycle rather than at one static load, and
+  both the peak and the per-zone motion *amplitude* (`max − min`) are
+  reported, which is the quantity cyclic fibrous-tissue screening keys on.
+  `GaitCycle::iso_double_hump` supplies an ISO 14243-style double-hump axial
+  load profile (heel-strike and push-off peaks, ≈2.6 × body weight) as a
+  screening waveform.
+- `MigrationModel`: the **time-dependent consequence of micromotion** — a
+  closed-form logarithmic migration law `x(N) = x_bed·ln(1 +
+  k(δ_amp − δ_th)N/x_bed)`: per-cycle migration proportional to the motion
+  amplitude above a stability threshold, decaying exponentially as the
+  implant beds in. `velocity_per_year` / `is_at_risk` implement the
+  RSA-style > 0.2 mm/year continued-migration flag.
+- Four new tests: double-hump shape (two humps, trough, swing unload,
+  periodicity, peak 2.6 × BW), cyclic peak equal to the static result at
+  the peak load with positive per-zone amplitudes, closed form vs numerical
+  integration of the rate law, and the velocity decay/at-risk boundary/log
+  growth shape.
+
 ### Planned
-- Cyclic loading: micromotion accumulated over a gait cycle rather than
-  evaluated at a single static load.
-- A migration model, so the time-dependent consequence of micromotion can be
-  followed rather than classified at a threshold.
-  invent one.
 - Continuum coupling, so an implant with realistic compliance can be
   evaluated rather than modelled as a rigid punch.
 

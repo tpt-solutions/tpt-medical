@@ -11,7 +11,8 @@
 //! ```
 
 use tpt_med_hemodynamics::{
-    BloodModel, FluidDomain, HemodynamicsSolver, OsiAccumulator, SolverConfig, WssField,
+    BloodModel, FluidDomain, HemodynamicsSolver, OsiAccumulator, PressureSolver, SolverConfig,
+    WssField,
 };
 
 fn main() {
@@ -49,6 +50,7 @@ fn main() {
         include_convection: false,
         viscosity_relaxation: 0.2,
         density: 1.06e-3,
+        pressure_solver: PressureSolver::default(),
     };
     let mut solver =
         HemodynamicsSolver::new(domain, BloodModel::CARREAU_YASUDA_BLOOD, 30.0, config);

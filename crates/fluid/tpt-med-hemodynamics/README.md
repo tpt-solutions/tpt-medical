@@ -75,9 +75,18 @@ browser, in seconds, without a licence.
   meshing crate's `(z·ny+y)·nx+x`).
 - `SolverConfig::default()`: `dt = 2.0e-4 s`, `poisson_iterations = 400`,
   `include_convection = false`, `viscosity_relaxation = 0.2`,
-  `density = 1.06e-3`.
+  `density = 1.06e-3`, `pressure_solver = Sor`.
   Convection is **off by default**: for creeping arterial flow the term is
   small and disabling it converges faster and more robustly.
+- **Pressure solver choice** — `PressureSolver::Sor` (default, in-place
+  Gauss–Seidel with over-relaxation at ω = 1.9) or
+  `PressureSolver::ConjugateGradient` (Jacobi-preconditioned CG, matrix-free
+  on the masked grid). CG converges in ~40 iterations on the verification
+  tube where SOR burns its whole 400-sweep budget, and its iteration count
+  scales with √cond rather than the grid's graph diameter — the choice for
+  production grids. SOR stays the default so existing golden datasets and
+  benchmark baselines stay comparable; switching is a one-line config change
+  plus a golden re-run. `last_pressure_solve_iterations` reports the cost.
 
 ## Usage
 
@@ -138,7 +147,9 @@ fn main() {
 | `FluidDomain::from_mask(dims, spacing, mask, flow_axis, inlet_low)` | Real lumen geometry from a segmentation |
 | `FluidDomain::cylinder(n_axial, n_radius, radius_cells, spacing, flow_axis)` | Canonical verification geometry |
 | `FluidDomain::{index, is_fluid, fluid_stats}` | Mask accessors; `(fluid_count, volume)` |
-| `SolverConfig` | `dt`, `poisson_iterations`, `include_convection`, `viscosity_relaxation`, `density` |
+| `SolverConfig` | `dt`, `poisson_iterations`, `include_convection`, `viscosity_relaxation`, `density`, `pressure_solver` |
+| `PressureSolver::{Sor, ConjugateGradient}` | Pressure-Poisson method; CG is Jacobi-preconditioned and matrix-free |
+| `HemodynamicsSolver::last_pressure_solve_iterations` | Iterations the last projection used |
 | `HemodynamicsSolver::new(domain, blood, inlet_velocity, config)` | Construct over a domain |
 | `HemodynamicsSolver::apply_boundary()` | Impose inlet velocity, outlet pressure, no-slip walls |
 | `HemodynamicsSolver::step() -> f64` | One time step; returns the max velocity change |

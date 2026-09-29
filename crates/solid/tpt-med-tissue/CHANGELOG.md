@@ -39,9 +39,23 @@ changes for consumers of this crate.
   - This is also the prerequisite for a mixed `u`-`p` formulation, where the
     pressure unknown is exactly this term.
 
+- **`TissueModel::material_tangent` / `material_tangent_numerical` /
+  `volumetric_tangent` (+ `MaterialTangent`)**: **second-order material
+  tangents** `A[i][j](k,l) = ∂P_ij/∂F_kl` — the tensor a nonlinear Newton
+  solve assembles element stiffness from. Analytic for the Neo-Hookean and
+  Yeoh families (which share the `P_dev = 2β·q·G` structure; the `q′` term
+  carries a second `β` because `∂s/∂F` has its own) plus the
+  model-independent volumetric tangent of the shared `(J−1)²/d1` penalty;
+  central differences through `first_piola` for Mooney–Rivlin, Ogden and
+  HGO (same policy as `first_piola`'s analytic/numerical split; FD-of-FD
+  round-off ~1e-4 relative is the consumer's tolerance for those three).
+  Zero for `J <= 0`, matching the stress-side guards. Four new tests:
+  analytic-vs-FD agreement, major symmetry `A_ij,kl = A_kl,ij` for all five
+  models (the *minor* symmetry deliberately not asserted — `P` is not
+  symmetric), volumetric tangent vs FD of `volumetric_first_piola`, and
+  positivity/inverted-configuration guards.
+
 ### Planned
-- Second-order tangent moduli per model, which the nonlinear `tpt-fem` upgrade
-  path needs for Newton convergence.
 - Plane-stress and reduced-order wrappers over the full 3×3 `F` interface.
 - Fiber-family rotation in HGO (collagen crimp), and the two-family
   elastin/collagen parameterisation used in some literature.

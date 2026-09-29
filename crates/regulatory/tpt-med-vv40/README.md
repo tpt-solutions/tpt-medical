@@ -60,6 +60,11 @@ rather than about whether anyone remembered the matrix.
 - **`goals()`** — the matrix lookup.
 - **`evaluate() -> Vec<String>`** — the specific unmet goals, empty when
   credible. `is_credible()` is the boolean summary.
+- **`AssessmentRollup`** — an explicit, conservative aggregation of several
+  assessments: the per-component credibility rollup for a model assembled
+  from verified parts, and the multi-question assessment for one model asked
+  several questions. Members must each meet their own goals; the composite
+  rating (max of declared and member ratings) demands pooled evidence.
 - No dependencies, so the assessment can run in CI, in a WASM build, or in a
   submission bundle.
 
@@ -206,6 +211,10 @@ fn main() {
 | `::evaluate() -> Vec<String>` | Descriptions of the unmet goals; empty when credible |
 | `::is_credible() -> bool` | Boolean summary of `evaluate()` |
 | `CredibilityGoals` | `min_verification_types`, `min_validation_types`, `quantitative_validation_required`, `independent_code_review_required` |
+| `AssessmentRollup { name, declared, members }` | Explicit aggregation of several assessments (component rollup or multi-question study) |
+| `::composite_risk() / ::composite_influence() / ::composite_goals()` | The composite rating — max of the declared and member ratings — and its goals |
+| `::evaluate() -> Vec<String>` | Member-prefixed unmet goals plus composite unmet goals; empty when the rollup is credible |
+| `RollupMember { label, assessment }` | One named component or question inside the rollup |
 
 ## Verification
 
@@ -239,6 +248,13 @@ downstream credibility claim wrong in a way nobody would notice:
   `test-data/golden/regulatory/vv40_credibility_matrix.json`, the femur
   stance-screening question at medium risk / significant influence.
 
+- **Rollup aggregation** — a rollup of individually credible members is
+  credible at their maximum rating; a member failure is reported under its
+  own label; a declared composite rating above the members' maximum raises
+  the composite goals and can fail the pooled evidence; a below-member
+  declaration is clamped up; an empty rollup is not credible; and the
+  composite goals are monotone as members are added.
+
 ## Known Limitations
 
 - **Not the whole standard.** V&V 40 also covers credibility criteria beyond
@@ -257,11 +273,14 @@ downstream credibility claim wrong in a way nobody would notice:
   crate can check that an activity *exists* but not that its evidence is
   adequate. Attaching structured metrics to CI is the next step and is not
   done.
-- **No per-component credibility rollup.** A large model assembled from small
-  verified parts has no defined composite credibility here.
-- **Single question of interest.** One assessment covers one question. A model
-  used for three questions needs three assessments, and the crate does not
-  aggregate them.
+- **The rollup rule is fixed and conservative.**
+  [`AssessmentRollup`](#api-overview) aggregates by conjunction — every member
+  must meet its own goals, and the pooled evidence must meet the composite
+  goals derived from the maximum rating. There is no weighted or
+  majority-vote aggregation, by design: credibility is not a vote.
+- **Composite ratings can only be declared upward.** A declared composite
+  risk/influence below a member's is clamped up to the member's; the rollup
+  never lets a declaration undercut a part's own assessment.
 
 ## Related Crates
 

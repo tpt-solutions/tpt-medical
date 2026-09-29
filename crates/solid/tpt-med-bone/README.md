@@ -54,6 +54,15 @@ remodeling dynamics on top.
 - **Three stimulus measures** — strain energy density, principal strain, and
   damage accumulation rate, so the remodeler can be driven by whatever the
   solver actually produces.
+- **Disuse deadline** — `ResorptionDeadline` with
+  `update_density_with_deadline` / `remodel_field_with_deadline`: bone held
+  under-stimulated past a deadline (bed rest, implant shielding) is
+  resorbed at an accelerated rate, with the per-voxel disuse counter held by
+  the caller and reset by reloading.
+- **Load-rate sensitivity** — `RateAugmentation` scales the remodeling
+  stimulus by a log-saturated factor above a reference quasi-static rate,
+  so a dynamic loading case remodels where the same quasi-static load would
+  sit in the lazy zone.
 - Typed `Density`/`Modulus` from `tpt-med-units`, so the working unit set
   cannot drift.
 
@@ -157,8 +166,12 @@ fn main() {
 - Remodeling is a lumped, spatially uniform law per call — it does not
   distribute density across a mesh. Driving per-element remodeling from a
   solved strain energy density field is a caller-side loop.
-- No explicit disuse or resorption-deadline model; the lazy zone is the only
-  memory.
+- The disuse deadline's multiplier and the rate augmentation's
+  log-sensitivity are screening parameters, not identified constants; a
+  disuse study should state both in its methods and vary them in
+  sensitivity analysis. Temperature dependence of remodeling is not
+  modelled (mammalian core temperature varies too little to matter for the
+  screening cases this crate targets).
 - Default parameters are **Frost-style mechanostat screening values**:
   reference SED stimulus ≈0.004 mJ/mm³ with a ±35 % lazy zone
   `(0.0026, 0.0054)`, apposition 0.003 and resorption 0.002 g/cm³/day.

@@ -502,13 +502,15 @@ gating input is a purchase of ISO/IEC 15444-2, not engineering time.
 
 - [x] **Spatial remodeling: drive per-element density from a solved strain energy density field rather than the current single lumped value per call.**
   **Done (2026-09-29): `BoneRemodelingModel::remodel_field(densities, stimuli, dt, viable)` — per-voxel update with viable clamping.**
-- [ ] **A disuse/resorption-deadline model, and temperature- or load-rate-dependent remodeling.**
+- [x] **A disuse/resorption-deadline model, and temperature- or load-rate-dependent remodeling.**
+  **Done (2026-09-30): `ResorptionDeadline` (+ `update_density_with_deadline`/`remodel_field_with_deadline`) — caller-held per-voxel disuse counter, reset by reloading, multiplier past the deadline; and `RateAugmentation` — log-scaled, saturation-capped stimulus multiplier above a reference load rate. Temperature dependence documented out (immaterial at core temperature for screening cases).**
 - [x] **QCT phantom calibration hooks, so a study can supply a calibrated density→modulus relation instead of the default power law.**
   **Done (2026-09-29): `ModulusLaw` trait + `PowerLaw` + `BoneMaterial::from_hu_with_law` — closures and phantom-fitted laws accepted.**
 
 ### `tpt-med-cardiovascular`
 
-- [ ] **Four-element and non-linear pressure–flow relations for systemic circulation modelling.**
+- [x] **Four-element and non-linear pressure–flow relations for systemic circulation modelling.**
+  **Done (2026-09-30): `FourElementWindkessel` (inertance `L` in the pressure-driven two-state form — the formulation where the inertance adds ring-down physics; verified against the theoretical envelope decay and DC-gain superposition) + `WaterfallResistor` (Starling-resistor non-linear pressure–flow). Flow-driven CFD coupling stays 3-element, documented.**
 - [ ] **Waveform-based instantaneous-hyperbolic FFR, alongside the pressure-ratio definition implemented here.**
 - [ ] **Patient-specific waveform fitting, rather than the fixed analytic shapes.**
 - [x] **A direct coupling helper so a `tpt-med-hemodynamics` solve can step the Windkessel state in lockstep with the CFD time step.**
@@ -531,7 +533,8 @@ gating input is a purchase of ISO/IEC 15444-2, not engineering time.
 
 - [x] **Enforce "sign after the final edit": today signing, appending and exporting is permitted and the export records the ordering, so a workflow requiring the stricter discipline must enforce it itself.**
   **Done (2026-09-29): `SignaturePolicy::RequireSignatureAfterLastEdit` + `checked_append`/`export_package_checked` with `PolicyError`.**
-- [ ] **An append-only persistence layer with WORM semantics, so the trail survives a process restart without a caller-supplied store.**
+- [x] **An append-only persistence layer with WORM semantics, so the trail survives a process restart without a caller-supplied store.**
+  **Done (2026-09-30): `worm::WormLog` — write-once journal (`create_new`), per-entry chain digest + `fsync` per append, reopen verifies header/chain/sequence; torn tails refused as `TornTail`, retroactive edits and cross-run splices as `ChainBroken` at the first bad link; `into_trail` rebuilds a self-verifying trail. Signatures/policies remain trail-side state.**
 - [ ] **External anchoring of the detached tag (HSM, transparency log, RFC 3161) to close the non-repudiation gap identified in RFC 0003.**
 - [x] **Reason-field policy enforcement, so a site can require a structured reason code rather than free text.**
   **Done (2026-09-29): `ReasonPolicy::structured([...])` — code-prefix validation in `checked_append`.**
@@ -542,7 +545,8 @@ gating input is a purchase of ISO/IEC 15444-2, not engineering time.
 
 ### `tpt-med-hemodynamics`
 
-- [ ] **Conjugate-gradient or multigrid pressure solve to replace the Jacobi sweeps, which currently dominate the per-step cost.**
+- [x] **Conjugate-gradient or multigrid pressure solve to replace the Jacobi sweeps, which currently dominate the per-step cost.**
+  **Done (2026-09-30): `PressureSolver::ConjugateGradient` — Jacobi-preconditioned, matrix-free on the masked grid, verified against a manufactured solution of the discrete operator (which caught a real sign bug: the SOR fixed point is the SPD negative Laplacian, so CG's rhs enters negated) and by the full Poiseuille march under CG. ~40 iterations vs SOR's 400-sweep cap on the verification tube. Default stays SOR so golden datasets and the bench baseline are unchanged; multigrid remains future work.**
 - [ ] **Conjugate heat transfer and wall compliance, enabling a coupled fluid–structure boundary.**
 - [ ] **Optional local wall refinement, so peak WSS at a geometric corner stops being resolution dependent.**
 - [ ] **Coupling to `tpt-med-cardiovascular` for a driven, rather than prescribed, boundary condition.**
@@ -569,8 +573,10 @@ gating input is a purchase of ISO/IEC 15444-2, not engineering time.
 
 ### `tpt-med-orthopedics`
 
-- [ ] **Cyclic loading: micromotion accumulated over a gait cycle rather than evaluated at a single static load.**
-- [ ] **A migration model, so the time-dependent consequence of micromotion can be followed rather than classified at a threshold.**
+- [x] **Cyclic loading: micromotion accumulated over a gait cycle rather than evaluated at a single static load.**
+  **Done (2026-09-30): `micromotion_over_cycle` — peak plus per-zone motion amplitude (`max − min`) across a full load cycle; `GaitCycle::iso_double_hump` supplies an ISO 14243-style screening waveform (≈2.6 × BW double hump).**
+- [x] **A migration model, so the time-dependent consequence of micromotion can be followed rather than classified at a threshold.**
+  **Done (2026-09-30): `MigrationModel` — closed-form logarithmic migration `x(N) = x_bed·ln(1 + k(δ−δ_th)N/x_bed)` (bedding-in decay), verified against numerical integration; `velocity_per_year`/`is_at_risk` implement the RSA-style >0.2 mm/year flag.**
 - [x] **Built-in zone definitions (Gruen, Paprosky) so callers are not left to invent one.**
   **Done (2026-09-29): `GruenZone`/`gruen_zone`/`gruen_zones_in_order` — geometric zones 1-7 (Paprosky remains future work; the Gruen half of the item is delivered).**
 - [ ] **Continuum coupling, so an implant with realistic compliance can be evaluated rather than modelled as a rigid punch.**
@@ -579,7 +585,8 @@ gating input is a purchase of ISO/IEC 15444-2, not engineering time.
 
 - [ ] ****Level 2** — tapered ring groups, which would give `dogboning` a real value instead of the structural `0.0` it reports today.**
 - [ ] ****Level 3** — 3D superelastic FEM with frictional contact via `tpt-fem-hyperelastic` / `tpt-fem-contact`.**
-- [ ] **Foreshortening, and per-crown stiffness variation for a non-uniform ring.**
+- [x] **Foreshortening, and per-crown stiffness variation for a non-uniform ring.**
+  **Done (2026-09-30): `StentModel::foreshortening` — diamond-cell geometry with a `link_fraction` calibration landing in the published few-percent band (NaN beyond the developed-length limit); `simulate_deployment_with_crowns`/`NonUniformDeployment` — per-crown stiffness slice with proportional force split and peak-crown share (empty slice reproduces the uniform ring exactly).**
 - [ ] **Cyclic degradation of `ε_L` over 10⁶ cycles, to support fatigue and accelerated-dilation life claims.**
 - [ ] **Direct coupling to a `tpt-med-hemodynamics` solution in the same solve, rather than a prescribed vessel law.**
 
@@ -589,11 +596,13 @@ gating input is a purchase of ISO/IEC 15444-2, not engineering time.
 - [ ] **Curved and freeform resections, saw-kerf width, and multi-plane wedges.**
 - [ ] **Implant component placement with a bone–implant interface, and bone graft or defect reconstruction.**
 - [ ] **Soft-tissue structures, so a plan can be checked for collateral damage to ligaments, capsules and neurovascular bundles.**
-- [ ] **Measurement reporting: resection volumes, cut depths and achieved alignment errors, recorded alongside the steps in the audit log.**
+- [x] **Measurement reporting: resection volumes, cut depths and achieved alignment errors, recorded alongside the steps in the audit log.**
+  **Done (2026-09-30): `execute_with_report` → `SurgeryReport` with `CutMeasurement` (resection volume, cut depth) and `MoveMeasurement` (prescribed vs achieved centroid displacement = the alignment error, surfacing sub-voxel quantisation), index-aligned with the audit log plus total resection.**
 
 ### `tpt-med-tissue`
 
-- [ ] **Second-order tangent moduli per model, which the nonlinear `tpt-fem` upgrade path needs for Newton convergence.**
+- [x] **Second-order tangent moduli per model, which the nonlinear `tpt-fem` upgrade path needs for Newton convergence.**
+  **Done (2026-09-30): `MaterialTangent` (`A[i][j](k,l) = ∂P_ij/∂F_kl`) via `material_tangent` — analytic for Neo-Hookean and Yeoh (the `q′` term needs a second `β`) and the model-independent `volumetric_tangent`; central differences for Mooney–Rivlin/Ogden/HGO (same split as `first_piola`). Verified by FD agreement, major symmetry `A_ij,kl = A_kl,ij` on all five models (the minor symmetry does not hold), and the volumetric FD cross-check.**
 - [ ] **Plane-stress and reduced-order wrappers over the full 3×3 `F` interface.**
 - [ ] **Fiber-family rotation in HGO (collagen crimp), and the two-family elastin/collagen parameterisation used in some literature.**
 
@@ -607,10 +616,12 @@ gating input is a purchase of ISO/IEC 15444-2, not engineering time.
 
 ### `tpt-med-vv40`
 
-- [ ] **Per-component credibility rollup, so a large model assembled from small verified parts has a defined composite credibility.**
+- [x] **Per-component credibility rollup, so a large model assembled from small verified parts has a defined composite credibility.**
+  **Done (2026-09-30): `AssessmentRollup`/`RollupMember` — conjunction over members, composite rating = max of declared and member ratings (a declaration can only raise), pooled evidence vs composite goals, member-prefixed unmet goals + JSON.**
 - [x] **Structured evidence: attach numeric metrics with acceptance criteria to a `VerificationActivity` or `ValidationActivity`, so adequacy can be checked mechanically rather than by reading `results` as prose.**
   **Done (2026-09-29): `EvidenceMetric`/`Acceptance` + `metrics_adequate()` — mechanical acceptance-band checking.**
-- [ ] **Multi-question assessments with an explicit aggregation rule, for models used for several questions of interest.**
+- [x] **Multi-question assessments with an explicit aggregation rule, for models used for several questions of interest.**
+  **Done (2026-09-30): the same `AssessmentRollup` serves this shape — one named entry per question, each judged on its own risk/influence, the study credible only when all are and the pooled evidence meets the composite goals. No majority-vote aggregation, by design.**
 - [x] **Optional serialisation of an assessment to JSON, so it can live inside a submission bundle next to the `tpt-med-fda` package.**
   **Done (2026-09-29): `CredibilityAssessment::to_json` — deterministic JSON with goals, activities, verdict and unmet goals.**
 

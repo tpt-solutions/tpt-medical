@@ -85,6 +85,14 @@ impl FluidDomain {
         (i * ny + j) * nz + k
     }
 
+    /// Inverse of [`Self::index`]: `(i, j, k)` for a flat cell index.
+    pub fn coords(&self, idx: usize) -> (usize, usize, usize) {
+        let (_nx, ny, nz) = self.dims;
+        let k = idx % nz;
+        let j = (idx / nz) % ny;
+        (idx / (nz * ny), j, k)
+    }
+
     /// Fluid flag (out-of-bounds → wall).
     pub fn is_fluid(&self, i: i64, j: i64, k: i64) -> bool {
         let (nx, ny, nz) = self.dims;

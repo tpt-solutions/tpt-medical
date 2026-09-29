@@ -48,6 +48,16 @@ without a performance argument.
   `is_ischemic(ffr)` against the < 0.80 threshold.
 - **`FlowWaveform`** — `flow(t)` for the carotid and coronary beds
   (`carotid_default`, `coronary_default`), which drive pulsatile CFD runs.
+- **`FourElementWindkessel`** — the 3-element model plus an inertance `L` in
+  the series branch (Stergiopoulos, Young & Westerhof 1999), in its
+  **pressure-driven** form: a prescribed inlet pressure produces the flow
+  through the two-state system `C dp/dt = Q − (p − p_out)/Rp`,
+  `L dQ/dt = p_in − p − Rc·Q`. This is the formulation where the inertial
+  element adds physics — a genuinely second-order response with ring-down,
+  which the first-order 3-element model cannot produce.
+- **`WaterfallResistor`** — the vascular waterfall (Starling resistor)
+  non-linear pressure–flow relation: `Q = max(0, (p_up − p_collapse)/R)`,
+  flow independent of downstream pressure once the vessel collapses.
 
 ## Conventions
 
@@ -123,6 +133,14 @@ fn main() {
 | `FlowWaveform::flow(t) -> f64` | Instantaneous flow (mm³/s) at time `t` |
 | `FlowWaveform::carotid_default()` | Carotid-bed waveform |
 | `FlowWaveform::coronary_default()` | Coronary-bed waveform |
+| `FourElementWindkessel { r_c, l, r_p, c, p_out }` | 4-element parameters; `l` must be positive |
+| `::new(base, inertance)` | Built from a `WindkesselModel` plus inertance |
+| `::derivs(p, q, p_in) -> (f64, f64)` | `(dp/dt, dQ/dt)` at a state point |
+| `::step_rk4(p, q, p_in, dt) -> (f64, f64)` | RK4 step, `p_in` held over the step |
+| `::steady_state(p_in) -> (f64, f64)` | Exact `(p, Q)` fixed point, independent of `L` and `C` |
+| `::simulate(p0, q0, dt, steps, p_in) -> Vec<(f64, f64)>` | State history for a prescribed inlet-pressure waveform |
+| `WaterfallResistor { r, p_collapse }` | Vascular waterfall relation |
+| `WaterfallResistor::flow(p_up, p_down) -> f64` | `max(0, (p_up − p_collapse)/R)`, blind to `p_down` by construction |
 
 ## Verification
 
@@ -155,10 +173,14 @@ asserted:
   the *global* impedance of the distal tree; it does not reproduce wave
   reflection shape or the timing of the reflected wave, so it is the wrong
   tool for pulse-wave-velocity or augmentation-index work.
-- Two- and three-element only. The four-element (Windkessel– Westerhof with
-  characteristic impedance split) and the non-linear
-  pressure–flow relationships used in systemic circulation modelling are not
-  implemented.
+- The four-element Windkessel is pressure-driven only. That is where its
+  inertance adds physics (a prescribed flow would pass through `L` as
+  `L·dQ/dt` and never reach the parallel bank's dynamics), but it means there
+  is no flow-driven four-element boundary condition for CFD coupling; the
+  flow-driven `CoupledWindkessel` remains 3-element.
+- The only non-linear pressure–flow element is the vascular waterfall. Other
+  non-linear relations (power-law resistors, flow limitation, venous
+  capacitance curves) are not implemented.
 - FFR here is the *pressure-ratio* definition. The waveform-based
   instantaneous-hyperbolic FFR used in some catheter workflows is not
   implemented.

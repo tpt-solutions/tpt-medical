@@ -5,20 +5,36 @@
 //!    gradient outlet).
 //! 2. Explicit sub-step: `u* = u + dt(−(u·∇)u + ν∇²u)` on active faces
 //!    (both adjacent cells fluid); wall faces pinned to zero.
-//! 3. Projection: solve `∇²φ = ∇·u*/dt` by Jacobi with Neumann walls and
-//!    the mean φ removed each sweep to pin the gauge; `u = u* − dt ∇φ`,
-//!    `p += φ`.
+//! 3. Projection: solve `∇²φ = ∇·u*/dt` (Neumann walls, Dirichlet φ = 0
+//!    outlet layer) with the configured [`PressureSolver`] — SOR
+//!    (Gauss–Seidel with over-relaxation, the default) or Jacobi-
+//!    preconditioned conjugate gradient; `u = u* − dt ∇φ`, `p += φ`.
 //! 4. Non-Newtonian viscosity update from the local shear rate.
 
 use crate::blood::BloodModel;
 use crate::domain::FluidDomain;
+
+/// Pressure-Poisson solver choice. The discrete operator is identical for
+/// both: SOR sweeps it in place (cheap per iteration, slow convergence on
+/// large grids); conjugate gradient iterates matrix-free with Jacobi
+/// (diagonal) preconditioning and exits on a relative-residual criterion.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PressureSolver {
+    /// Red-black-style in-place Gauss–Seidel with over-relaxation (ω = 1.9).
+    #[default]
+    Sor,
+    /// Preconditioned conjugate gradient — the larger-grid choice: its
+    /// iteration count grows with √(condition number) rather than with the
+    /// grid's graph diameter.
+    ConjugateGradient,
+}
 
 /// Solver run configuration.
 #[derive(Debug, Clone)]
 pub struct SolverConfig {
     /// Physical time step (s).
     pub dt: f64,
-    /// Jacobi sweeps per projection.
+    /// Iteration cap for the pressure solve (SOR sweeps or CG iterations).
     pub poisson_iterations: usize,
     /// Include convective term (disable for Stokes-like creeping flows and
     /// faster convergence).
@@ -27,6 +43,8 @@ pub struct SolverConfig {
     pub viscosity_relaxation: f64,
     /// Density of blood (g/mm³ = kg/m³ × 1e-6; 1.06e-3 g/mm³ = 1060 kg/m³).
     pub density: f64,
+    /// Pressure-Poisson solve method.
+    pub pressure_solver: PressureSolver,
 }
 
 impl Default for SolverConfig {
@@ -37,6 +55,7 @@ impl Default for SolverConfig {
             include_convection: false,
             viscosity_relaxation: 0.2,
             density: 1.06e-3,
+            pressure_solver: PressureSolver::Sor,
         }
     }
 }
@@ -84,6 +103,9 @@ pub struct HemodynamicsSolver {
     pub mu: Vec<f64>,
     /// Inlet speed (mm/s).
     pub inlet_velocity: f64,
+    /// Iterations used by the most recent pressure solve (SOR sweeps or CG
+    /// iterations) — the number to watch when cost accounting a run.
+    pub last_pressure_solve_iterations: usize,
 }
 
 impl HemodynamicsSolver {
@@ -111,6 +133,7 @@ impl HemodynamicsSolver {
             blood,
             config,
             inlet_velocity,
+            last_pressure_solve_iterations: 0,
         }
     }
 
@@ -121,7 +144,7 @@ impl HemodynamicsSolver {
     }
 
     /// Active x-face: both adjacent cells are fluid.
-    fn ux_active(&self, i: usize, j: usize, k: usize) -> bool {
+    pub(crate) fn ux_active(&self, i: usize, j: usize, k: usize) -> bool {
         self.domain.is_fluid(i as i64, j as i64, k as i64)
             && self.domain.is_fluid(i as i64 - 1, j as i64, k as i64)
     }
@@ -206,7 +229,7 @@ impl HemodynamicsSolver {
     }
 
     /// Explicit advection+viscous sub-step; returns max change.
-    fn substep(&mut self) -> f64 {
+    pub(crate) fn substep(&mut self) -> f64 {
         let (nx, ny, nz) = self.domain.dims;
         let (dx, dy, dz) = self.domain.spacing;
         let dt = self.config.dt;
@@ -353,12 +376,180 @@ impl HemodynamicsSolver {
         div
     }
 
+    /// Pressure-Poisson solve for φ with Neumann walls and a Dirichlet
+    /// φ = 0 outlet layer, dispatching on
+    /// [`SolverConfig::pressure_solver`]. Returns `(φ, iterations_used)`.
+    pub(crate) fn solve_poisson(&self, rhs: &[f64]) -> (Vec<f64>, usize) {
+        match self.config.pressure_solver {
+            PressureSolver::Sor => self.solve_poisson_sor(rhs),
+            PressureSolver::ConjugateGradient => self.solve_poisson_cg(rhs),
+        }
+    }
+
+    /// Jacobi-preconditioned conjugate gradient on the same discrete
+    /// operator the SOR sweeps drive to their fixed point — the SPD
+    /// negative Laplacian `A = −∇²` (denom·φᵢ − Σ w·φ_nb), matrix-free, so
+    /// the mask needs no matrix assembly. Solid cells and the Dirichlet
+    /// outlet layer carry identity rows with zero right-hand side, so they
+    /// stay pinned at 0 (exactly what the SOR sweep enforces in place).
+    ///
+    /// Exits when the ℓ2 residual falls below `1e-6` of the right-hand
+    /// side's norm, or at the `poisson_iterations` cap.
+    fn solve_poisson_cg(&self, rhs: &[f64]) -> (Vec<f64>, usize) {
+        let n = rhs.len();
+        // The SOR sweep's fixed point is `denom·φ − Σ w·φ_nb = −rhs`, i.e.
+        // A = −∇²; CG must solve the same system, so the right-hand side
+        // enters negated.
+        let mut b: Vec<f64> = rhs.iter().map(|&v| -v).collect();
+        let (nx, _ny, _nz) = self.domain.dims;
+        // The outlet fluid layer is φ = 0: its equation is discarded, as
+        // the SOR path overwrites it each sweep.
+        for idx in 0..n {
+            let (i, _j, _k) = self.domain.coords(idx);
+            if i + 1 == nx {
+                b[idx] = 0.0;
+            }
+        }
+
+        let mut x = vec![0.0; n];
+        let mut r = b.clone();
+        let norm_b = r.iter().map(|&v| v * v).sum::<f64>().sqrt();
+        if norm_b == 0.0 {
+            return (x, 0);
+        }
+        let exit = 1e-6 * norm_b;
+
+        let z = self.jacobi_precondition(&r);
+        let mut p = z.clone();
+        let mut rz: f64 = r.iter().zip(&z).map(|(&a, &b)| a * b).sum();
+        let mut ap = vec![0.0; n];
+        let mut used = 0usize;
+        for _ in 0..self.config.poisson_iterations {
+            used += 1;
+            self.laplacian_apply(&p, &mut ap);
+            let pap: f64 = p.iter().zip(&ap).map(|(&a, &b)| a * b).sum();
+            if pap <= 0.0 || !pap.is_finite() {
+                break; // non-SPD breakdown; keep the current iterate
+            }
+            let alpha = rz / pap;
+            for ((xi, pi), &_api) in x.iter_mut().zip(&p).zip(&ap) {
+                *xi += alpha * pi;
+            }
+            let mut r_norm2 = 0.0f64;
+            for ((ri, _pi), &api) in r.iter_mut().zip(&p).zip(&ap) {
+                *ri -= alpha * api;
+                r_norm2 += *ri * *ri;
+            }
+            if r_norm2.sqrt() < exit {
+                break;
+            }
+            let z_next = self.jacobi_precondition(&r);
+            let rz_next: f64 = r.iter().zip(&z_next).map(|(&a, &b)| a * b).sum();
+            let beta = rz_next / rz;
+            for idx in 0..n {
+                p[idx] = z_next[idx] + beta * p[idx];
+            }
+            rz = rz_next;
+        }
+        (x, used)
+    }
+
+    /// Diagonal (Jacobi) preconditioner: interior fluid cells use their
+    /// stencil diagonal (including Neumann mirror weights); pinned rows
+    /// have diagonal 1.
+    pub(crate) fn jacobi_precondition(&self, r: &[f64]) -> Vec<f64> {
+        let (nx, ny, nz) = self.domain.dims;
+        let (dx, dy, dz) = self.domain.spacing;
+        let denom = 2.0 * (1.0 / (dx * dx) + 1.0 / (dy * dy) + 1.0 / (dz * dz));
+        r.iter()
+            .enumerate()
+            .map(|(idx, &v)| {
+                let (i, j, k) = self.domain.coords(idx);
+                if !self.domain.mask[idx] || i + 1 == nx {
+                    v
+                } else {
+                    let mut diag = denom;
+                    if i > 0 && !self.domain.mask[self.domain.index(i - 1, j, k)] {
+                        diag += 1.0 / (dx * dx);
+                    }
+                    if !self.domain.mask[self.domain.index(i + 1, j, k)] {
+                        diag += 1.0 / (dx * dx);
+                    }
+                    if j > 0 && !self.domain.mask[self.domain.index(i, j - 1, k)] {
+                        diag += 1.0 / (dy * dy);
+                    }
+                    if j + 1 < ny && !self.domain.mask[self.domain.index(i, j + 1, k)] {
+                        diag += 1.0 / (dy * dy);
+                    }
+                    if k > 0 && !self.domain.mask[self.domain.index(i, j, k - 1)] {
+                        diag += 1.0 / (dz * dz);
+                    }
+                    if k + 1 < nz && !self.domain.mask[self.domain.index(i, j, k + 1)] {
+                        diag += 1.0 / (dz * dz);
+                    }
+                    v / diag
+                }
+            })
+            .collect()
+    }
+
+    /// Matrix-free application of the masked Laplacian: `out = A·x` with
+    /// Neumann mirrors at wall faces and an explicit 0 beyond the Dirichlet
+    /// outlet layer.
+    pub(crate) fn laplacian_apply(&self, x: &[f64], out: &mut [f64]) {
+        let (nx, ny, nz) = self.domain.dims;
+        let (dx, dy, dz) = self.domain.spacing;
+        let denom = 2.0 * (1.0 / (dx * dx) + 1.0 / (dy * dy) + 1.0 / (dz * dz));
+        for idx in 0..x.len() {
+            let (i, j, k) = self.domain.coords(idx);
+            if !self.domain.mask[idx] || i + 1 == nx {
+                out[idx] = x[idx]; // identity rows on pinned unknowns
+                continue;
+            }
+            let m = &self.domain.mask;
+            let xm = if i > 0 && m[self.domain.index(i - 1, j, k)] {
+                x[self.domain.index(i - 1, j, k)]
+            } else {
+                x[idx]
+            };
+            let xp = if m[self.domain.index(i + 1, j, k)] {
+                x[self.domain.index(i + 1, j, k)]
+            } else {
+                x[idx]
+            };
+            let ym = if j > 0 && m[self.domain.index(i, j - 1, k)] {
+                x[self.domain.index(i, j - 1, k)]
+            } else {
+                x[idx]
+            };
+            let yp = if j + 1 < ny && m[self.domain.index(i, j + 1, k)] {
+                x[self.domain.index(i, j + 1, k)]
+            } else {
+                x[idx]
+            };
+            let zm = if k > 0 && m[self.domain.index(i, j, k - 1)] {
+                x[self.domain.index(i, j, k - 1)]
+            } else {
+                x[idx]
+            };
+            let zp = if k + 1 < nz && m[self.domain.index(i, j, k + 1)] {
+                x[self.domain.index(i, j, k + 1)]
+            } else {
+                x[idx]
+            };
+            out[idx] = denom * x[idx]
+                - (xm + xp) / (dx * dx)
+                - (ym + yp) / (dy * dy)
+                - (zm + zp) / (dz * dz);
+        }
+    }
+
     /// SOR (in-place Gauss–Seidel with over-relaxation) Poisson solve for
     /// φ with Neumann walls and a Dirichlet φ = 0 outlet layer. SOR at
     /// ω = 1.9 converges an order of magnitude faster than Jacobi on this
     /// grid, which is required to keep the post-projection divergence
-    /// near zero.
-    fn solve_poisson(&self, rhs: &[f64]) -> Vec<f64> {
+    /// near zero. Returns `(φ, sweeps_used)`.
+    fn solve_poisson_sor(&self, rhs: &[f64]) -> (Vec<f64>, usize) {
         let (nx, ny, nz) = self.domain.dims;
         let (dx, dy, dz) = self.domain.spacing;
         let mut phi = vec![0.0; nx * ny * nz];
@@ -369,7 +560,9 @@ impl HemodynamicsSolver {
         // a 1e-4 fraction of it (post-projection divergence ≪ gradients).
         let residual_exit = 1e-4 * rhs_scale / denom;
 
+        let mut sweeps = 0usize;
         for _ in 0..self.config.poisson_iterations {
+            sweeps += 1;
             let mut max_update = 0.0f64;
             for i in 0..nx {
                 for j in 0..ny {
@@ -434,7 +627,7 @@ impl HemodynamicsSolver {
                 break;
             }
         }
-        phi
+        (phi, sweeps)
     }
 
     /// One full step; returns max |velocity change| (mm/s).
@@ -446,7 +639,8 @@ impl HemodynamicsSolver {
         let div = self.divergence();
         let dt = self.config.dt;
         let rhs: Vec<f64> = div.iter().map(|&d| d / dt).collect();
-        let phi = self.solve_poisson(&rhs);
+        let (phi, iterations) = self.solve_poisson(&rhs);
+        self.last_pressure_solve_iterations = iterations;
 
         let (nx, ny, nz) = self.domain.dims;
         let (dx, dy, dz) = self.domain.spacing;

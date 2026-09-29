@@ -287,6 +287,126 @@ impl BoneRemodelingModel {
         }
         rho
     }
+
+    /// [`Self::update_density`] with disuse tracking: `disuse_days` is the
+    /// caller-held per-voxel counter of continuously under-stimulated days.
+    /// It accumulates while the stimulus is below the lazy zone, resets
+    /// when stimulation returns, and past
+    /// [`ResorptionDeadline::deadline_days`] the resorption rate is
+    /// multiplied by [`ResorptionDeadline::rate_multiplier`].
+    pub fn update_density_with_deadline(
+        &self,
+        current_density: Density,
+        stimulus: f64,
+        dt_days: f64,
+        disuse_days: &mut f64,
+        deadline: &ResorptionDeadline,
+    ) -> Density {
+        let (lower, upper) = self.lazy_zone;
+        if stimulus < lower {
+            *disuse_days += dt_days;
+        } else {
+            *disuse_days = 0.0;
+        }
+        let rho = current_density.value();
+        let delta = if stimulus > upper {
+            let over = stimulus / upper - 1.0;
+            self.apposition_rate * over.min(3.0) * dt_days
+        } else if stimulus < lower {
+            let under = 1.0 - stimulus / lower;
+            let multiplier = if *disuse_days > deadline.deadline_days {
+                deadline.rate_multiplier
+            } else {
+                1.0
+            };
+            -self.resorption_rate * multiplier * under.min(3.0) * dt_days
+        } else {
+            0.0
+        };
+        Density::from_gcm3(rho + delta)
+    }
+
+    /// [`Self::remodel_field`] with per-voxel disuse tracking: `disuse_days`
+    /// is updated in place (`disuse_days[i]` pairs with `densities[i]`) and
+    /// drives the [`ResorptionDeadline`] acceleration.
+    pub fn remodel_field_with_deadline(
+        &self,
+        densities: &[Density],
+        stimuli: &[f64],
+        disuse_days: &mut [f64],
+        dt_days: f64,
+        viable: (f64, f64),
+        deadline: &ResorptionDeadline,
+    ) -> Vec<Density> {
+        assert_eq!(
+            densities.len(),
+            stimuli.len(),
+            "density and stimulus fields must pair"
+        );
+        assert_eq!(
+            densities.len(),
+            disuse_days.len(),
+            "density and disuse-counter fields must pair"
+        );
+        densities
+            .iter()
+            .zip(stimuli)
+            .zip(disuse_days.iter_mut())
+            .map(|((&rho, &stimulus), days)| {
+                let updated =
+                    self.update_density_with_deadline(rho, stimulus, dt_days, days, deadline);
+                crate::clamp_viable(updated, viable)
+            })
+            .collect()
+    }
+}
+
+/// Disuse/resorption-deadline parameters: bone that has been continuously
+/// under-stimulated past a deadline (bed rest, spaceflight, implant
+/// shielding) is resorbed faster than acutely disused bone — disuse beyond
+/// the deadline is treated as a different remodelling regime, not just more
+/// of the same.
+#[derive(Debug, Clone, Copy)]
+pub struct ResorptionDeadline {
+    /// Days of continuous disuse (stimulus below the lazy zone) before the
+    /// accelerated regime engages.
+    pub deadline_days: f64,
+    /// Multiplier on [`BoneRemodelingModel::resorption_rate`] once the
+    /// deadline is exceeded.
+    pub rate_multiplier: f64,
+}
+
+/// Load-rate sensitivity of the remodeling stimulus (screening heuristic
+/// after Turner's loading-rule observations: the adaptive response grows
+/// with loading rate, saturating). The stimulus is augmented by a
+/// log-scaled factor above a reference (quasi-static) rate:
+/// `S_eff = S · min(1 + sensitivity·ln(rate/rate_ref), max_factor)`.
+#[derive(Debug, Clone, Copy)]
+pub struct RateAugmentation {
+    /// Reference (quasi-static) load rate, in the caller's rate measure.
+    /// Rates at or below it leave the stimulus unchanged.
+    pub reference_rate: f64,
+    /// Dimensionless log-sensitivity per e-fold above the reference.
+    pub sensitivity: f64,
+    /// Saturation cap on the augmentation factor.
+    pub max_factor: f64,
+}
+
+impl RateAugmentation {
+    /// Augmentation factor at a given load rate (≥ 1, capped).
+    pub fn factor(&self, load_rate: f64) -> f64 {
+        if self.reference_rate <= 0.0 || load_rate <= self.reference_rate {
+            return 1.0;
+        }
+        (1.0 + self.sensitivity * (load_rate / self.reference_rate).ln())
+            .min(self.max_factor)
+            .max(1.0)
+    }
+
+    /// The rate-augmented stimulus.
+    pub fn augment(&self, stimulus: f64, load_rate: f64) -> f64 {
+        stimulus * self.factor(load_rate)
+    }
 }
 
 /// Viable-density clamp used by remodeling pipelines.
@@ -400,5 +520,147 @@ mod tests {
     fn viable_clamp_bounds() {
         let rho = clamp_viable(Density::from_gcm3(5.0), (0.02, 2.0));
         assert_eq!(rho.value(), 2.0);
+    }
+
+    #[test]
+    fn resorption_deadline_accelerates_only_past_the_deadline() {
+        let model = BoneRemodelingModel::default();
+        let deadline = ResorptionDeadline {
+            deadline_days: 90.0,
+            rate_multiplier: 3.0,
+        };
+        let stimulus = 0.0005; // under-stimulated
+                               // Before the deadline: baseline resorption.
+        let mut days = 50.0;
+        let early = model.update_density_with_deadline(
+            Density::from_gcm3(1.2),
+            stimulus,
+            1.0,
+            &mut days,
+            &deadline,
+        );
+        assert_eq!(
+            early.value(),
+            model
+                .update_density(Density::from_gcm3(1.2), stimulus, 1.0)
+                .value()
+        );
+        // Past the deadline: multiplied resorption.
+        let mut days = 120.0;
+        let late = model.update_density_with_deadline(
+            Density::from_gcm3(1.2),
+            stimulus,
+            1.0,
+            &mut days,
+            &deadline,
+        );
+        let expected =
+            1.2 - model.resorption_rate * 3.0 * (1.0 - stimulus / model.lazy_zone.0).min(3.0);
+        assert!((late.value() - expected).abs() < 1e-12);
+        // Apposition ignores the deadline entirely.
+        let mut days = 120.0;
+        let over = model.update_density_with_deadline(
+            Density::from_gcm3(1.2),
+            0.02,
+            1.0,
+            &mut days,
+            &deadline,
+        );
+        assert_eq!(
+            over.value(),
+            model
+                .update_density(Density::from_gcm3(1.2), 0.02, 1.0)
+                .value()
+        );
+    }
+
+    #[test]
+    fn disuse_counter_resets_when_stimulation_returns() {
+        let model = BoneRemodelingModel::default();
+        let deadline = ResorptionDeadline {
+            deadline_days: 90.0,
+            rate_multiplier: 3.0,
+        };
+        let mut days = 120.0;
+        // Reload above the lazy zone resets the counter and drops the
+        // accelerated regime on the next disused step.
+        model.update_density_with_deadline(
+            Density::from_gcm3(1.2),
+            0.02,
+            1.0,
+            &mut days,
+            &deadline,
+        );
+        assert_eq!(days, 0.0);
+        let after = model.update_density_with_deadline(
+            Density::from_gcm3(1.2),
+            0.0005,
+            1.0,
+            &mut days,
+            &deadline,
+        );
+        assert_eq!(
+            after.value(),
+            model
+                .update_density(Density::from_gcm3(1.2), 0.0005, 1.0)
+                .value()
+        );
+        assert_eq!(days, 1.0);
+    }
+
+    #[test]
+    fn field_deadline_loss_exceeds_baseline_over_months() {
+        // A shielded voxel held in disuse for 180 days with a 90-day
+        // deadline loses strictly more density than the plain law.
+        let model = BoneRemodelingModel::default();
+        let deadline = ResorptionDeadline {
+            deadline_days: 90.0,
+            rate_multiplier: 3.0,
+        };
+        let mut days = [0.0];
+        let stimuli = [0.0005];
+        let mut plain = 1.2;
+        for _ in 0..180 {
+            let next = model.remodel_field_with_deadline(
+                &[Density::from_gcm3(plain)],
+                &stimuli,
+                &mut days,
+                1.0,
+                (0.02, 2.0),
+                &deadline,
+            );
+            plain = next[0].value();
+        }
+        let with_deadline = plain;
+        let baseline = model.simulate_days(Density::from_gcm3(1.2), 0.0005, 180);
+        assert!(
+            with_deadline < baseline.value(),
+            "deadline {with_deadline} must lose more than baseline {}",
+            baseline.value()
+        );
+    }
+
+    #[test]
+    fn rate_augmentation_grows_and_saturates() {
+        let aug = RateAugmentation {
+            reference_rate: 1.0,
+            sensitivity: 0.1,
+            max_factor: 2.0,
+        };
+        // At or below the reference rate: identity.
+        assert_eq!(aug.factor(1.0), 1.0);
+        assert_eq!(aug.factor(0.5), 1.0);
+        assert_eq!(aug.augment(0.004, 1.0), 0.004);
+        // Logarithmic growth above the reference, saturating at the cap.
+        assert!((aug.factor(core::f64::consts::E) - 1.1).abs() < 1e-12);
+        assert!(aug.factor(100.0) > aug.factor(10.0));
+        assert_eq!(aug.factor(1.0e12), 2.0, "capped at max_factor");
+        // The augmented stimulus can push a voxel out of the lazy zone.
+        let model = BoneRemodelingModel::default();
+        let static_step = model.update_density(Density::from_gcm3(1.2), 0.004, 30.0);
+        let dynamic_step =
+            model.update_density(Density::from_gcm3(1.2), aug.augment(0.004, 50.0), 30.0);
+        assert_eq!(static_step.value(), 1.2, "quasi-static stays lazy");
+        assert!(dynamic_step.value() > 1.2, "dynamic loading remodels");
     }
 }

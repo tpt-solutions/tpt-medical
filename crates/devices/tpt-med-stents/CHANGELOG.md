@@ -17,12 +17,29 @@ changes for consumers of this crate.
   on `tpt-fem` — and stating that the default parameters are literature-typical
   starting points, **not vendor data**.
 
+- `StentModel::foreshortening(manufactured_length, diameter, link_fraction)`:
+  **geometric foreshortening** — the axial shortening when a zig-zag crown
+  ring opens from its crimped configuration, from fixed strut segment
+  lengths in a diamond-cell model. `link_fraction` (straight axial links,
+  ≈0.6–0.8 for real laser-cut designs) calibrates the pure-geometry upper
+  bound to the published few-percent band; `NaN` beyond the
+  developed-length limit where the cell cannot close.
+- `simulate_deployment_with_crowns` + `NonUniformDeployment`: **per-crown
+  stiffness variation** for a non-uniform ring — ring-level metrics from the
+  summed stiffness, with the radial force split proportionally to per-crown
+  stiffness and the largest single-crown share reported (an empty slice
+  falls back to the uniform model exactly).
+- Two new test groups: foreshortening (zero at the crimped diameter,
+  monotone in diameter, few-percent band at realistic link fraction, upper
+  bound at `link_fraction = 0`, NaN limit) and non-uniform deployment
+  (equal stiffnesses reproduce the uniform ring, proportional force split,
+  forces summing to the ring total, no-contact carries nothing).
+
 ### Planned
 - **Level 2** — tapered ring groups, which would give `dogboning` a real value
   instead of the structural `0.0` it reports today.
 - **Level 3** — 3D superelastic FEM with frictional contact via
   `tpt-fem-hyperelastic` / `tpt-fem-contact`.
-- Foreshortening, and per-crown stiffness variation for a non-uniform ring.
 - Cyclic degradation of `ε_L` over 10⁶ cycles, to support fatigue and
   accelerated-dilation life claims.
 - Direct coupling to a `tpt-med-hemodynamics` solution in the same solve,

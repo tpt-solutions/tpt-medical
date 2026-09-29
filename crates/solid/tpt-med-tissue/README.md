@@ -65,6 +65,14 @@ the build fails.
   deliberately narrow first slice of substrate integration rather than a
   full 3D adapter (which the substrate does not yet provide at 0.1.0).
 
+- **Second-order material tangents** — `material_tangent` returns
+  `A[i][j](k,l) = ∂P_ij/∂F_kl`: analytic for Neo-Hookean and Yeoh (plus the
+  model-independent `volumetric_tangent` of the shared penalty), central
+  differences for Mooney–Rivlin/Ogden/HGO. This is the tensor a nonlinear
+  Newton stiffness assembly needs, verified against finite differences and
+  by the major symmetry `A_ij,kl = A_kl,ij` (the minor symmetry does not
+  hold — `P` is not symmetric).
+
 ## Conventions
 
 - `F` is the deformation gradient as a `Mat3` (right-handed, column-vector

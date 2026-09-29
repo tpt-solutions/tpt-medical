@@ -25,7 +25,7 @@ pub mod wss;
 
 pub use blood::BloodModel;
 pub use domain::FluidDomain;
-pub use solver::{HemodynamicsSolver, SolverConfig, SteadyStats};
+pub use solver::{HemodynamicsSolver, PressureSolver, SolverConfig, SteadyStats};
 pub use wss::{extract_wss, OsiAccumulator, WssField};
 
 #[cfg(test)]

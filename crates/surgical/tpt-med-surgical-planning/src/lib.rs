@@ -71,10 +71,21 @@ impl OsteotomyCut {
     /// discarded side are set to `f64::NAN` and compacted by `bounding_box`
     /// of the kept region.
     pub fn apply(&self, model: &VoxelModel) -> VoxelModel {
+        self.apply_measured(model).0
+    }
+
+    /// [`Self::apply`] plus the step's measurements: the **resection
+    /// volume** (discarded non-empty voxels × voxel volume) and the **cut
+    /// depth** (deepest discarded voxel centre below the plane, 0 when
+    /// nothing was discarded).
+    pub fn apply_measured(&self, model: &VoxelModel) -> (VoxelModel, CutMeasurement) {
         let mut out = model.clone();
         let (nx, ny, nz) = model.dims;
+        let voxel_volume = model.spacing.0 * model.spacing.1 * model.spacing.2;
         let mut min = [usize::MAX; 3];
         let mut max = [0usize; 3];
+        let mut resected = 0usize;
+        let mut max_depth = 0.0f64;
         for z in 0..nz {
             for y in 0..ny {
                 for x in 0..nx {
@@ -100,16 +111,34 @@ impl OsteotomyCut {
                         max[2] = max[2].max(z);
                     } else {
                         out.values[idx] = f64::NAN;
+                        resected += 1;
+                        max_depth = max_depth.max(-d);
                     }
                 }
             }
         }
+        let measurement = CutMeasurement {
+            fragment_name: self.fragment_name.clone(),
+            resection_volume_mm3: resected as f64 * voxel_volume,
+            max_depth_mm: max_depth,
+        };
         if max[0] == 0 {
-            return out; // empty cut result; leave as-is
+            return (out, measurement); // empty cut result; leave as-is
         }
         compact(&mut out, min, max);
-        out
+        (out, measurement)
     }
+}
+
+/// Measurements of one [`OsteotomyCut`], for the surgical report.
+#[derive(Debug, Clone)]
+pub struct CutMeasurement {
+    /// The cut's fragment label.
+    pub fragment_name: String,
+    /// Discarded tissue volume (mm³).
+    pub resection_volume_mm3: f64,
+    /// Deepest discarded voxel centre below the cutting plane (mm).
+    pub max_depth_mm: f64,
 }
 
 /// Crops the model to the voxel box `[min, max]` (inclusive).
@@ -258,6 +287,41 @@ pub enum PlanStep {
     Move(FragmentTransform),
 }
 
+/// Measurement of one [`PlanStep::Move`]: what the transform was prescribed
+/// to do to the fragment centroid vs what the voxel scatter achieved —
+/// their difference is the **achieved alignment error** (the quantisation
+/// of a sub-voxel plan onto the grid).
+#[derive(Debug, Clone)]
+pub struct MoveMeasurement {
+    /// Centroid displacement the prescribed transform implies (mm).
+    pub prescribed_centroid_translation: Vec3,
+    /// Centroid displacement actually realised by the scatter (mm).
+    pub achieved_centroid_translation: Vec3,
+    /// `|prescribed − achieved|` (mm).
+    pub alignment_error_mm: f64,
+}
+
+/// One measured step outcome, index-aligned with the step log.
+#[derive(Debug, Clone)]
+pub enum StepMeasurement {
+    /// Plane osteotomy measurements.
+    Cut(CutMeasurement),
+    /// Fragment reposition measurements.
+    Move(MoveMeasurement),
+}
+
+/// Measurements recorded alongside the audit log by
+/// [`VirtualSurgery::execute_with_report`].
+#[derive(Debug, Clone)]
+pub struct SurgeryReport {
+    /// Step descriptions in execution order (the audit log).
+    pub step_log: Vec<String>,
+    /// Per-step measurements, same order and length as `step_log`.
+    pub measurements: Vec<StepMeasurement>,
+    /// Summed resection volume over all cut steps (mm³).
+    pub total_resection_volume_mm3: f64,
+}
+
 /// A virtual surgery plan over a base model.
 #[derive(Debug, Clone)]
 pub struct VirtualSurgery {
@@ -300,21 +364,53 @@ impl VirtualSurgery {
     /// Executes the plan, returning the operated model and the audit log
     /// (step descriptions in execution order).
     pub fn execute(&self) -> (VoxelModel, Vec<String>) {
+        let (model, report) = self.execute_with_report();
+        (model, report.step_log)
+    }
+
+    /// [`Self::execute`] with the measurement report: resection volumes and
+    /// cut depths per cut, achieved-vs-prescribed centroid displacement per
+    /// move (the alignment error), and the total resection volume. The
+    /// report is index-aligned with the audit log, so a submission bundle
+    /// can attach the numbers to the steps they belong to.
+    pub fn execute_with_report(&self) -> (VoxelModel, SurgeryReport) {
         let mut model = self.base.clone();
         let mut log = Vec::with_capacity(self.steps.len());
+        let mut measurements = Vec::with_capacity(self.steps.len());
+        let mut total_resection = 0.0f64;
         for step in &self.steps {
             match step {
                 PlanStep::Cut(cut) => {
-                    model = cut.apply(&model);
+                    let (next, m) = cut.apply_measured(&model);
+                    total_resection += m.resection_volume_mm3;
                     log.push(format!("cut:{}", cut.fragment_name));
+                    measurements.push(StepMeasurement::Cut(m));
+                    model = next;
                 }
                 PlanStep::Move(m) => {
-                    model = m.apply_to_model(&model);
+                    let before = fragment_centroid(&model);
+                    let next = m.apply_to_model(&model);
+                    let after = fragment_centroid(&next);
+                    let achieved = after - before;
+                    let prescribed = m.apply_to_point(before) - before;
                     log.push(format!("move:{}", format_args!("{:?}", m.translation)));
+                    measurements.push(StepMeasurement::Move(MoveMeasurement {
+                        prescribed_centroid_translation: prescribed,
+                        achieved_centroid_translation: achieved,
+                        alignment_error_mm: (prescribed - achieved).norm(),
+                    }));
+                    model = next;
                 }
             }
         }
-        (model, log)
+        (
+            model,
+            SurgeryReport {
+                step_log: log,
+                measurements,
+                total_resection_volume_mm3: total_resection,
+            },
+        )
     }
 
     /// The pre-operative base model (for side-by-side planning views).
@@ -329,6 +425,33 @@ impl VirtualSurgery {
             .enumerate()
             .map(|(i, s)| (i, s.clone()))
             .collect()
+    }
+}
+
+/// Centroid of the non-empty (non-NaN) voxels of a model, in patient
+/// coordinates. `Vec3::ZERO` for an empty model.
+fn fragment_centroid(model: &VoxelModel) -> Vec3 {
+    let (nx, ny, nz) = model.dims;
+    let mut sum = Vec3::ZERO;
+    let mut count = 0usize;
+    for z in 0..nz {
+        for y in 0..ny {
+            for x in 0..nx {
+                let Some(idx) = model.index(x, y, z) else {
+                    continue;
+                };
+                if model.values[idx].is_nan() {
+                    continue;
+                }
+                sum += model.center(x, y, z);
+                count += 1;
+            }
+        }
+    }
+    if count == 0 {
+        Vec3::ZERO
+    } else {
+        sum / count as f64
     }
 }
 
@@ -426,5 +549,114 @@ mod tests {
         });
         assert_eq!(plan.fragments().len(), 1);
         assert_eq!(plan.base_model().dims, (10, 10, 10));
+    }
+
+    #[test]
+    fn cut_measurements_report_volume_and_depth() {
+        let model = cube_model();
+        // Keep z ≥ 0: every voxel with centre below the plane is resected —
+        // including zero-valued tissue (only NaN is empty) — 5 slices of
+        // 100 voxels, centres down to z = −5 mm below the plane.
+        let cut = OsteotomyCut {
+            plane: Plane::from_point_normal(Vec3::ZERO, Vec3::Z).unwrap(),
+            fragment_name: "distal".into(),
+            keep_positive: true,
+        };
+        let (out, m) = cut.apply_measured(&model);
+        assert_eq!(out.count_above(50.0), 3 * 36);
+        assert_eq!(m.fragment_name, "distal");
+        assert!(
+            (m.resection_volume_mm3 - 5.0 * 100.0).abs() < 1e-9,
+            "{}",
+            m.resection_volume_mm3
+        );
+        assert!((m.max_depth_mm - 5.0).abs() < 1e-9, "{}", m.max_depth_mm);
+        // `apply` is the un-measured form of the same operation.
+        assert_eq!(cut.apply(&model).count_above(50.0), out.count_above(50.0));
+    }
+
+    #[test]
+    fn move_measurements_report_alignment_error() {
+        let model = cube_model();
+        let mut plan = VirtualSurgery::new(model);
+        // Grid-aligned translation: the scatter achieves it exactly.
+        plan.move_fragment(FragmentTransform {
+            rotation_axis: Vec3::Z,
+            rotation_angle: 0.0,
+            pivot: Vec3::ZERO,
+            translation: Vec3::new(0.0, 0.0, 2.0),
+        });
+        // Sub-voxel translation: rounds to one voxel (1 mm) — the 0.3 mm
+        // shortfall is the alignment error the report exists to surface.
+        plan.move_fragment(FragmentTransform {
+            rotation_axis: Vec3::Z,
+            rotation_angle: 0.0,
+            pivot: Vec3::ZERO,
+            translation: Vec3::new(0.3, 0.0, 0.0),
+        });
+        let (operated, report) = plan.execute_with_report();
+        assert_eq!(report.measurements.len(), 2);
+        assert_eq!(report.step_log.len(), 2);
+        match &report.measurements[0] {
+            StepMeasurement::Move(m) => {
+                assert!((m.prescribed_centroid_translation.z - 2.0).abs() < 1e-9);
+                assert!((m.achieved_centroid_translation.z - 2.0).abs() < 1e-9);
+                assert!(m.alignment_error_mm < 1e-9, "grid-aligned move is exact");
+            }
+            other => panic!("expected a move measurement, got {other:?}"),
+        }
+        match &report.measurements[1] {
+            StepMeasurement::Move(m) => {
+                assert!((m.prescribed_centroid_translation.x - 0.3).abs() < 1e-9);
+                let achieved = m.achieved_centroid_translation.x;
+                assert!(
+                    achieved.abs() < 1e-9,
+                    "a 0.3 mm shift rounds back onto the same voxel grid: {achieved}"
+                );
+                assert!(
+                    (m.alignment_error_mm - 0.3).abs() < 1e-9,
+                    "{}",
+                    m.alignment_error_mm
+                );
+            }
+            other => panic!("expected a move measurement, got {other:?}"),
+        }
+        // No cut in this plan: the full 6³ cube survives both moves.
+        assert_eq!(operated.count_above(50.0), 216);
+    }
+
+    #[test]
+    fn report_totals_resection_across_cuts() {
+        let model = cube_model();
+        let mut plan = VirtualSurgery::new(model);
+        plan.cut(OsteotomyCut {
+            plane: Plane::from_point_normal(Vec3::ZERO, Vec3::Z).unwrap(),
+            fragment_name: "a".into(),
+            keep_positive: true,
+        });
+        plan.cut(OsteotomyCut {
+            plane: Plane::from_point_normal(Vec3::ZERO, Vec3::X).unwrap(),
+            fragment_name: "b".into(),
+            keep_positive: false,
+        });
+        let (_, report) = plan.execute_with_report();
+        // First cut removes 5 slices of 100 (zero-valued tissue included);
+        // the second keeps x ≤ 0 and discards the 4 positive-x columns of
+        // the 10×10×5 compacted remainder (200 voxels).
+        let cut_a = match &report.measurements[0] {
+            StepMeasurement::Cut(m) => m.resection_volume_mm3,
+            other => panic!("{other:?}"),
+        };
+        let cut_b = match &report.measurements[1] {
+            StepMeasurement::Cut(m) => m.resection_volume_mm3,
+            other => panic!("{other:?}"),
+        };
+        assert!((cut_a - 500.0).abs() < 1e-9, "{cut_a}");
+        assert!((cut_b - 200.0).abs() < 1e-9, "{cut_b}");
+        assert!((report.total_resection_volume_mm3 - (cut_a + cut_b)).abs() < 1e-9);
+        // Measurements are index-aligned with the step log.
+        assert!(report.step_log[0].starts_with("cut:a"));
+        assert!(report.step_log[1].starts_with("cut:b"));
+        assert!(matches!(report.measurements[1], StepMeasurement::Cut(_)));
     }
 }

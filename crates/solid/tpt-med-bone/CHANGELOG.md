@@ -24,11 +24,21 @@ changes for consumers of this crate.
   law owned here, and stating explicitly that the reference constants are
   literature-typical population values rather than patient-calibrated ones.
 
-### Planned
-  density field rather than the current single lumped value per call.
-- A disuse/resorption-deadline model, and temperature- or load-rate-dependent
-  remodeling.
-  density→modulus relation instead of the default power law.
+- `ResorptionDeadline` with
+  `BoneRemodelingModel::{update_density_with_deadline, remodel_field_with_deadline}`:
+  the **disuse/resorption-deadline model** — per-voxel days of continuous
+  disuse are tracked in a caller-held counter, reset by reloading, and past
+  the deadline resorption runs at a configurable multiplier. Apposition
+  ignores the deadline.
+- `RateAugmentation`: **load-rate-dependent remodeling** (screening
+  heuristic after Turner's loading-rule observations) — the stimulus is
+  multiplied by a log-scaled, saturation-capped factor above a reference
+  quasi-static rate. `update_density_with_deadline` composes with it at the
+  call site.
+- Four new tests: deadline gating (baseline before, ×multiplier after),
+  counter reset on reload, 180-day shielded-voxel field run losing strictly
+  more than the plain law, and rate augmentation (identity at/below
+  reference, log growth, cap, lazy-zone escape).
 
 ### Notes
 - Reference material constants are **screening values**. Changing any of them

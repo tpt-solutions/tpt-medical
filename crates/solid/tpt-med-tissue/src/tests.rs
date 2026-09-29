@@ -226,3 +226,180 @@ fn soft_tissue_material_delegates() {
     assert_eq!(m.strain_energy(&f), m.model.strain_energy(&f));
     assert_eq!(m.first_piola(&f), m.model.first_piola(&f));
 }
+
+/// A deformed, rotated gradient with J > 0: exercises all nine components
+/// (unlike the diagonal verification stretches above).
+fn rotated_stretch_f() -> Mat3 {
+    let stretch = Mat3::diagonal([1.15, 0.92, 1.06]);
+    let rotation = Mat3::rotation_axis_angle(Vec3::new(1.0, 2.0, 3.0), 0.4);
+    rotation * stretch
+}
+
+fn all_models() -> Vec<(&'static str, TissueModel)> {
+    vec![
+        (
+            "neo-hookean",
+            TissueModel::NeoHookean(NeoHookeanParams { c10: 0.5, d1: 0.5 }),
+        ),
+        (
+            "mooney-rivlin",
+            TissueModel::MooneyRivlin(MooneyRivlinParams {
+                c10: 0.3,
+                c01: 0.1,
+                d1: 0.5,
+            }),
+        ),
+        (
+            "yeoh",
+            TissueModel::Yeoh(YeohParams {
+                c1: 0.3,
+                c2: 0.05,
+                c3: 0.01,
+                d1: 0.5,
+            }),
+        ),
+        (
+            "ogden",
+            TissueModel::Ogden(OgdenParams {
+                mu: vec![0.4, 0.1],
+                alpha: vec![2.0, -2.0],
+                d1: 0.5,
+            }),
+        ),
+        (
+            "hgo",
+            TissueModel::HolzapfelGasserOgden(HgoParams {
+                c: 0.8,
+                k1: 5.0,
+                k2: 12.0,
+                kappa: 0.2,
+                fiber_directions: vec![Vec3::new(1.0, 1.0, 0.0), Vec3::new(-1.0, 1.0, 0.0)],
+                d1: 100.0,
+            }),
+        ),
+    ]
+}
+
+#[test]
+fn analytic_tangent_matches_central_differences() {
+    // The Neo-Hookean and Yeoh tangents are analytic; the finite-difference
+    // reference of the same P they differentiate must agree to FD accuracy.
+    let f = rotated_stretch_f();
+    for (name, model) in all_models() {
+        if !matches!(model, TissueModel::NeoHookean(_) | TissueModel::Yeoh(_)) {
+            continue;
+        }
+        let analytic = model.material_tangent(&f);
+        let reference = model.material_tangent_numerical(&f);
+        let mut scale = 0.0f64;
+        let mut max_err = 0.0f64;
+        for i in 0..3 {
+            for j in 0..3 {
+                for k in 0..3 {
+                    for l in 0..3 {
+                        scale = scale.max(reference[i][j].at(k, l).abs());
+                        max_err =
+                            max_err.max((analytic[i][j].at(k, l) - reference[i][j].at(k, l)).abs());
+                    }
+                }
+            }
+        }
+        assert!(
+            max_err < 1e-5 * scale.max(1e-12),
+            "{name}: analytic vs FD tangent err {max_err:.3e}, scale {scale:.3e}"
+        );
+    }
+}
+
+#[test]
+fn tangent_has_major_symmetry_for_every_model() {
+    // Hyperelasticity: ∂P_ij/∂F_kl = ∂P_kl/∂F_ij (W is twice differentiable).
+    // P itself is NOT symmetric, so only the major symmetry holds — the
+    // minor one (A_ij,kl = A_ji,kl) must not be asserted.
+    let f = rotated_stretch_f();
+    for (name, model) in all_models() {
+        let a = model.material_tangent(&f);
+        let mut max_asym = 0.0f64;
+        let mut scale = 0.0f64;
+        for i in 0..3 {
+            for j in 0..3 {
+                for k in 0..3 {
+                    for l in 0..3 {
+                        let fwd = a[i][j].at(k, l);
+                        let bwd = a[k][l].at(i, j);
+                        scale = scale.max(fwd.abs());
+                        max_asym = max_asym.max((fwd - bwd).abs());
+                    }
+                }
+            }
+        }
+        assert!(
+            max_asym < 1e-4 * scale.max(1e-12),
+            "{name}: major symmetry violated, asym {max_asym:.3e} vs scale {scale:.3e}"
+        );
+    }
+}
+
+#[test]
+fn volumetric_tangent_matches_fd_of_volumetric_first_piola() {
+    // The shared (J−1)²/d1 penalty means one closed form serves all models;
+    // verify it against central differences of volumetric_first_piola.
+    let f = rotated_stretch_f();
+    const H: f64 = 1.0e-6;
+    for (name, model) in all_models() {
+        let analytic = model.volumetric_tangent(&f);
+        let mut max_err = 0.0f64;
+        let mut scale = 0.0f64;
+        for i in 0..3 {
+            for j in 0..3 {
+                for k in 0..3 {
+                    for l in 0..3 {
+                        let mut fp = f;
+                        fp.set(k, l, fp.at(k, l) + H);
+                        let mut fm = f;
+                        fm.set(k, l, fm.at(k, l) - H);
+                        let fd = (model.volumetric_first_piola(&fp).at(i, j)
+                            - model.volumetric_first_piola(&fm).at(i, j))
+                            / (2.0 * H);
+                        scale = scale.max(fd.abs());
+                        max_err = max_err.max((analytic[i][j].at(k, l) - fd).abs());
+                    }
+                }
+            }
+        }
+        assert!(
+            max_err < 1e-5 * scale.max(1e-12),
+            "{name}: volumetric tangent err {max_err:.3e} vs scale {scale:.3e}"
+        );
+    }
+}
+
+#[test]
+fn tangent_stiffens_under_uniaxial_loading() {
+    // Directional sanity: the axial axial component must be positive and
+    // grow with stretch (strain stiffening), while the pure-dilatation
+    // tangent is governed by the volumetric penalty.
+    let model = TissueModel::NeoHookean(NeoHookeanParams { c10: 0.5, d1: 0.5 });
+    // A_1111 at fixed lateral components stays positive across the working
+    // range. (It is *not* the uniaxial stiffness — that follows the
+    // incompressible path with coupled lateral contraction — so monotone
+    // growth is not asserted.)
+    for lam in [1.05, 1.2, 1.4] {
+        let a1111 = model.material_tangent(&uniaxial_f(lam))[0][0].at(0, 0);
+        assert!(a1111 > 0.0, "A_1111 at λ={lam}: {a1111}");
+    }
+    // Inverted configuration: zero, matching the stress-side guard.
+    let inverted = Mat3::diagonal([-1.0, 1.0, 1.0]);
+    let a_inv = model.material_tangent(&inverted);
+    let mut max_abs = 0.0f64;
+    for i in 0..3 {
+        for j in 0..3 {
+            for k in 0..3 {
+                for l in 0..3 {
+                    max_abs = max_abs.max(a_inv[i][j].at(k, l).abs());
+                }
+            }
+        }
+    }
+    assert_eq!(max_abs, 0.0, "inverted tangent must be zero");
+}

@@ -22,19 +22,27 @@ changes for consumers of this crate.
   the shape or timing of a reflected wave, so it is the wrong tool for
   pulse-wave-velocity or augmentation-index work.
 
+- `FourElementWindkessel`: the **four-element Windkessel** — the 3-element
+  model plus an inertance `L` in the series branch (Stergiopoulos, Young &
+  Westerhof 1999) — in its pressure-driven form (state `(p, Q)`, prescribed
+  inlet pressure, RK4), which is the formulation where the inertial element
+  produces genuinely new (second-order, ring-down) dynamics. Steady state is
+  exact and independent of `L`. Four new tests: steady state (including
+  `L`-independence), underdamped ring-down against the theoretical envelope
+  decay, DC-gain/superposition of the whole transient, and the exact
+  `(p, Q)` steady values.
+- `WaterfallResistor`: the **vascular waterfall** (Starling-resistor)
+  non-linear pressure–flow relation — flow is independent of downstream
+  pressure once the vessel collapses below a critical closing pressure
+  (Permutt & Bromberger-Barnea), the standard non-linear element of systemic
+  and cerebral circulation modelling.
+
 ### Planned
-- Four-element and non-linear pressure–flow relations for systemic circulation
-  modelling.
 - Waveform-based instantaneous-hyperbolic FFR, alongside the pressure-ratio
   definition implemented here.
 - Patient-specific waveform fitting, rather than the fixed analytic shapes.
-  Windkessel state in lockstep with the CFD time step.
 
 ### Notes
-- These accessors return **degrees**, unlike the radian convention elsewhere
-  in the workspace. This is intentional: these values are read off a
-  surgeon's protractor and printed on a chart. It is called out in the README
-  so the discrepancy does not read as an oversight.
 - The FFR ischaemia threshold is `≤ 0.80`, and it is **inclusive**. The
   boundary is asserted explicitly, because an off-by-one here is a clinical
   misclassification.

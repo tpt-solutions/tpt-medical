@@ -74,6 +74,13 @@ detectable, and that is the scope here.
   the manifest hashes its inputs rather than embedding them, so a patient scan
   never enters the record.
 
+- **`WormLog`** — an append-only, write-once file journal for a trail:
+  every entry is stored with its running hash-chain digest and `fsync`ed
+  before the append returns; reopening verifies the header, every chain
+  link, and sequence continuity, refusing torn tails (`TornTail`), retroactive
+  edits and cross-run splices (`ChainBroken` at the first bad link).
+  `into_trail` rebuilds a live, self-verifying `AuditTrail`.
+
 ## Conventions
 
 - `sequence` is a **0-based monotonic counter** assigned at `append`.
@@ -234,9 +241,11 @@ fn main() {
 - **Signature coverage narrowing is recorded, not enforced.** Signing, then
   appending, then exporting is permitted and the export reflects the ordering.
   A workflow requiring "sign after the final edit" must enforce that itself.
-- **Not a persistence layer.** The trail is in memory; serialisation and
-  storage are the caller's, and an append-only store with WORM semantics is a
-  deployment concern.
+- **Persistence is entry-level, and local.** `WormLog` gives a write-once,
+  chain-verified file journal of the *entries* (per-line digests, `fsync`
+  per append, torn-tail and splice detection). It is a single local file:
+  no replication, no retention schedule, and signatures/policies remain
+  trail-side state the caller re-applies after a reload.
 - **No retention or archival policy**, no legal hold, no record retention
   schedule.
 - **Per-crate versions are the caller's job to populate correctly.**
