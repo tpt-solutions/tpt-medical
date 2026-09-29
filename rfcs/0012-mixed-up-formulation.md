@@ -113,6 +113,48 @@ loop).
    mixed mode must match the SRI result in the compliant limit (small
    `d1` → penalty ≈ constraint) — cross-validating the two paths.
 
+## Implementation attempt (2026-10-01): findings
+
+A working prototype of the Q1/P0 path was built and debugged to the point
+where the remaining blocker is precisely identifiable. Findings, all
+verified numerically on a single-element uniaxial problem:
+
+1. **The residual assembly is settled.** The constraint is the element-mean
+   volume `r_p = ∫(J − 1) dV`; the multiplier's constraint stress in the
+   `u` rows is `p·cof(F)` with the **pointwise** cofactor (it
+   differentiates the true-`J` term `p·(J−1)`); and the deviatoric stress
+   must be evaluated at the mean-dilatation-modified gradient
+   `F̄ = (J̄/J)^{1/3}F` — the finite-strain B-bar. Two bugs the prototype
+   hit and fixed are worth recording: `J̄` is the volume-weighted **mean**
+   (forgetting the division by `V` inflates every gradient by
+   `(V/J)^{1/3}` — a 100× Jacobian error caught by a
+   finite-difference-vs-assembled-Jacobian consistency check), and the
+   multiplier's constraint stress must NOT be evaluated at `F̄` (that
+   square-scales `K_up` by the same factor).
+
+2. **The pure-Lagrange saddle needs a pressure regularization and a
+   continuation strategy — this is the remaining blocker.** With
+   `K_pp = 0`, the first Newton step from a zero pressure guess has
+   `δp ~ δ_load/ε` (enormous for exact-incompressibility-scale ε), and
+   residual-norm line searches reject the consistent coupled step, after
+   which the iteration stalls short of convergence or drifts onto a
+   higher-energy inhomogeneous branch (observed: an hourglass-like mode
+   giving a 9× soft or 18% stiff nominal stress depending on the
+   deviatoric treatment). The candidate resolutions, in the order they
+   should be tried: (a) the **perturbed Lagrangian** with a compliance
+   scaled to the material (`J̄ − 1 = ε·p`, ε ~ 10⁻⁵–10⁻⁶·μ) plus
+   fine increments; (b) a **Uzawa/augmented** outer loop on the pressure
+   (inner penalty-type Newton at fixed p, then a multiplier update);
+   (c) an energy-line-search or trust-region Newton on the condensed
+   Schur complement. Each needs its own verification pass before the
+   closed-form uniaxial test can be asserted at exact-incompressibility
+   tolerances.
+
+3. **The Jacobian-consistency check is mandatory tooling.** The prototype's
+   finite-difference-vs-assembled comparison caught both assembly bugs in
+   seconds; it should ship as a permanent test of whatever implementation
+   lands, alongside the closed-form uniaxial verification.
+
 ## Drawbacks
 
 - The solver, load-path, contact and assembly all grow a DOF family —

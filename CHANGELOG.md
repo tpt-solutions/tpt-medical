@@ -311,6 +311,13 @@ Tracked in `todo.md`. Summary of the user-visible change here:
   during implementation is recorded in the RFC with the corrected
   resolution.
 
+- `rfcs/0012` gained an implementation-attempt section: the Q1/P0 residual
+  assembly is settled (mean-dilatation gradient, pointwise-cofactor
+  constraint stress, global pressure DOFs) with two assembly bugs and the
+  FD-vs-assembled consistency check that catches them recorded for the
+  eventual implementer; the remaining blocker is the saddle solver's
+  global convergence, with three ranked resolution strategies.
+
 ### Added — Backlog follow-up, continued (2026-10-01)
 `tpt-med-cartilage` (first-order shear: a closed form, the fluid never
 engages), `tpt-med-viscoelastic` (Fung-type quasi-linear viscoelasticity
