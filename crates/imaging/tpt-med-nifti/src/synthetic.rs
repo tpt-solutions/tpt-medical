@@ -7,7 +7,7 @@
 
 use tpt_med_geometry::Vec3;
 
-use crate::header::HEADER_LEN;
+use crate::header::{HEADER2_LEN, HEADER_LEN};
 
 /// Byte offset voxel data starts at when no header extensions are written:
 /// the 348-byte header plus the mandatory 4-byte extension-flag field.
@@ -151,6 +151,106 @@ impl SyntheticNiftiBuilder {
         (hdr, img)
     }
 
+    /// Builds a NIfTI-2 single-file (`.nii`, magic `n+2`) buffer: the
+    /// 540-byte `nifti_2_header` (i64 dims, f64 geometry and scaling,
+    /// i64 `vox_offset` — see `header::HEADER2_LEN`), then the extension
+    /// flag and the voxel data. Parses through
+    /// `NiftiVolume::parse_bytes` with `version == NiftiVersion::V2`.
+    pub fn build2(mut self) -> Vec<u8> {
+        let values = self
+            .values
+            .take()
+            .expect("SyntheticNiftiBuilder needs values");
+        let (datatype, bitpix) = values.bits();
+        // "n+2" NUL CR LF SUB LF — the 8-byte NIfTI-2 magic.
+        let magic: [u8; 8] = [b'n', b'+', b'2', 0, 0x0D, 0x0A, 0x1A, 0x0A];
+        let mut buf = self.write_header2(&magic, VOX2_OFFSET, datatype, bitpix);
+        buf.extend_from_slice(&[0u8; 4]); // mandatory extension-flag field
+        debug_assert_eq!(buf.len(), VOX2_OFFSET);
+
+        let (nx, ny, nz) = self.dims;
+        let expected_len = VOX2_OFFSET + nx * ny * nz * (bitpix as usize / 8);
+        values.append_to(&mut buf);
+        debug_assert_eq!(buf.len(), expected_len);
+        buf
+    }
+
+    /// Builds a NIfTI-2 dual-file (`.hdr`/`.img`, magic `ni2`) pair, the
+    /// NIfTI-2 counterpart of [`Self::build_dual`]: `vox_offset = 0` into
+    /// the `.img`.
+    pub fn build2_dual(mut self) -> (Vec<u8>, Vec<u8>) {
+        let values = self
+            .values
+            .take()
+            .expect("SyntheticNiftiBuilder needs values");
+        let (datatype, bitpix) = values.bits();
+        let magic: [u8; 8] = [b'n', b'i', b'2', 0, 0x0D, 0x0A, 0x1A, 0x0A];
+        let hdr = self.write_header2(&magic, 0, datatype, bitpix);
+        let mut img = Vec::new();
+        values.append_to(&mut img);
+        (hdr, img)
+    }
+
+    /// The fixed 540-byte NIfTI-2 header: same semantics as
+    /// [`Self::write_header`]'s NIfTI-1 layout at the `nifti_2_header`
+    /// offsets and widths.
+    fn write_header2(
+        &self,
+        magic: &[u8; 8],
+        vox_offset: usize,
+        datatype: i16,
+        bitpix: i16,
+    ) -> Vec<u8> {
+        let mut buf = vec![0u8; HEADER2_LEN];
+        write_i32(&mut buf, 0, HEADER2_LEN as i32); // sizeof_hdr
+        buf[4..12].copy_from_slice(magic);
+
+        write_i16(&mut buf, 12, datatype);
+        write_i16(&mut buf, 14, bitpix);
+        // dim[0..8] as i64.
+        write_i64(&mut buf, 16, 3);
+        write_i64(&mut buf, 24, self.dims.0 as i64);
+        write_i64(&mut buf, 32, self.dims.1 as i64);
+        write_i64(&mut buf, 40, self.dims.2 as i64);
+
+        // pixdim[0..8] as f64.
+        write_f64(
+            &mut buf,
+            104,
+            self.qform.as_ref().map_or(1.0, |q| q.qfac as f64),
+        );
+        write_f64(&mut buf, 112, self.spacing.0);
+        write_f64(&mut buf, 120, self.spacing.1);
+        write_f64(&mut buf, 128, self.spacing.2);
+
+        write_i64(&mut buf, 168, vox_offset as i64);
+        write_f64(&mut buf, 176, self.scl_slope as f64);
+        write_f64(&mut buf, 184, self.scl_inter as f64);
+
+        match &self.qform {
+            Some(q) => {
+                write_i32(&mut buf, 344, 1); // qform_code = SCANNER_ANAT
+                write_f64(&mut buf, 352, q.quatern_bcd.0 as f64);
+                write_f64(&mut buf, 360, q.quatern_bcd.1 as f64);
+                write_f64(&mut buf, 368, q.quatern_bcd.2 as f64);
+                write_f64(&mut buf, 376, self.origin.x);
+                write_f64(&mut buf, 384, self.origin.y);
+                write_f64(&mut buf, 392, self.origin.z);
+            }
+            None => {
+                // sform: identity rotation, spacing on the diagonal.
+                write_i32(&mut buf, 348, 1); // sform_code = SCANNER_ANAT
+                write_f64(&mut buf, 400, self.spacing.0); // srow_x[0]
+                write_f64(&mut buf, 424, self.origin.x); // srow_x[3]
+                write_f64(&mut buf, 440, self.spacing.1); // srow_y[1]
+                write_f64(&mut buf, 456, self.origin.y); // srow_y[3]
+                write_f64(&mut buf, 480, self.spacing.2); // srow_z[2]
+                write_f64(&mut buf, 488, self.origin.z); // srow_z[3]
+            }
+        }
+        buf
+    }
+
     /// The fixed 348-byte header with `magic` at offset 344 and
     /// `vox_offset` at offset 108; dimensions, geometry, datatype and
     /// scaling come from the builder's own fields.
@@ -217,6 +317,18 @@ impl SyntheticNiftiBuilder {
         buf[347] = 0; // 4th magic byte padded; the parser checks only 3
         buf
     }
+}
+
+/// Byte offset of the first voxel in a NIfTI-2 single file: the
+/// 540-byte header plus the 4-byte extension flag.
+const VOX2_OFFSET: usize = crate::header::HEADER2_LEN + 4;
+
+fn write_i64(buf: &mut [u8], offset: usize, v: i64) {
+    buf[offset..offset + 8].copy_from_slice(&v.to_le_bytes());
+}
+
+fn write_f64(buf: &mut [u8], offset: usize, v: f64) {
+    buf[offset..offset + 8].copy_from_slice(&v.to_le_bytes());
 }
 
 fn write_i16(buf: &mut [u8], offset: usize, v: i16) {

@@ -329,6 +329,16 @@ Tracked in `todo.md`. Summary of the user-visible change here:
   (foundation ⊕ interface layer `E/t`), the screening step from rigid
   punch toward compliant-implant evaluation.
 
+### Added — NIfTI-2 support (2026-10-01)
+`tpt-med-nifti` (RFC 0006 deferred NIfTI-2 "until a dataset needs it";
+delivered on direction to lift the gate, with the layout taken from the
+openly published `nifti2.h` reference documentation). Both format
+versions parse transparently at the same entry points — 348-byte NIfTI-1
+and 540-byte NIfTI-2 headers normalize into one shared decode path, the
+parsed `NiftiVersion` is recorded on the volume, i64 dimensions beyond
+NIfTI-1's 32767 limit are tested, and NIfTI-2's f64 geometry round-trips
+exactly where NIfTI-1's f32 could not.
+
 ### Added — Cartilage non-constant-k creep solver (2026-10-01)
 `tpt-med-cartilage` (`ConfinedCreepStepper`: 1-D confined-compression
 creep under an arbitrary `PermeabilityLaw`, adaptive-CFL explicit

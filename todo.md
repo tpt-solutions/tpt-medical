@@ -596,7 +596,7 @@ gating input is a purchase of ISO/IEC 15444-2, not engineering time.
 
 ### `tpt-med-nifti`
 
-- [ ] **NIfTI-2 (the 2011 540-byte header with 64-bit dimensions) — still out of scope per RFC 0006; revisit if a workspace dataset needs it.**
+- [x] **NIfTI-2 (the 2011 540-byte header with 64-bit dimensions) — was out of scope per RFC 0006 "until a workspace dataset needs it"; delivered (2026-10-01) on maintainer direction to lift the gate.** The layout came from the openly published `nifti2.h` reference documentation (TPCCLIB's NIFTI_2_HEADER table) rather than from memory: 540 bytes, magic `n+2`/`ni2` at offset 4, `dim` as i64, geometry/scaling as f64, `vox_offset` as i64. Both versions share one normalized decode path (checks and geometry recovery written once), wrong-entry-point mistakes name the right one, and the i64-dimension widening is tested at 40000 voxels where NIfTI-1's i16 tops out at 32767.
 
 ### `tpt-med-orthopedics`
 

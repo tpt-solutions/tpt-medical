@@ -45,9 +45,32 @@ records only what changes for consumers of this crate.
   a mask is interchangeable regardless of which format it came from. This
   crate gained no new dependency of its own.
 
+### Added
+- **NIfTI-2 support** — the 540-byte `nifti_2_header` (RFC 0006 deferred
+  it; now delivered). Both format versions parse transparently at the
+  same entry points (`parse_bytes`, `parse_dual_bytes`, `parse_file`,
+  `parse_dual_file`, and the `gzip` feature's `.nii.gz` path), with the
+  parsed [`NiftiVersion`] recorded on the volume. The versions'
+  semantics are identical for everything this crate reads, so NIfTI-2's
+  differences are all layout-level and normalized once: `dim` widened
+  to `i64` (dimensions beyond NIfTI-1's 32767 now parse — tested at
+  40000), geometry, scaling and quaternions widened to `f64` (a
+  non-f32-exact origin such as 1/3 round-trips exactly — tested),
+  `vox_offset` widened to `i64`, and the magic moved to offset 4 as an
+  8-byte value (`n+2`/`ni2` + the control-sequence tail). The two
+  versions' decode logic is one shared path over a normalized header
+  struct, so checks and geometry recovery cannot drift between them;
+  wrong-entry-point mistakes name the right one for either version.
+  Four new tests (sform round-trip with exact-f64 geometry, dual/qform
+  with scaling, the i64-dimension case, and both wrong-entry-point
+  pointers) plus the gzip path reworked to size its first phase from
+  the stream's own `sizeof_hdr`.
+- `NiftiVersion` (`V1`/`V2`) and `NiftiVolume::version` — which format
+  version a parsed volume came from.
+
 ### Planned
-- NIfTI-2 (the 2011 540-byte header with 64-bit dimensions) — still out
-  of scope per RFC 0006; revisit if a workspace dataset needs it.
+- (None: NIfTI-1, NIfTI-2, both layouts, and gzip are supported; further
+  datatypes beyond the eight supported ones remain caller demand-driven.)
 
 ### Notes
 - The dimension product and the voxel-data extent are now computed with

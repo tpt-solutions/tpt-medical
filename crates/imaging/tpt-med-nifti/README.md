@@ -77,8 +77,8 @@ is its own crate rather than a feature of `tpt-med-dicom`:
 
 ## Explicit Non-Features
 
-- **No NIfTI-2** (the 2011 header revision for volumes needing 64-bit
-  dimensions — no realistic CT/MR volume needs it).
+- **No acquisition metadata** (`descrip`, `aux_file`, `intent_*`,
+  slice-timing) — geometry and scaled values only, per RFC 0006's scope.
 
 ## Conventions
 
@@ -175,8 +175,9 @@ This crate cannot verify that assumption for you — NIfTI carries no
 
 | Item | Purpose |
 |---|---|
-| `NiftiVolume::{parse_file, parse_bytes}` | Parse a single-file NIfTI-1 volume (`.nii`, or `.nii.gz` with the `gzip` feature) |
-| `NiftiVolume::{parse_dual_file, parse_dual_bytes}` | Parse a dual-file `.hdr`/`.img` pair (either part gzippable with `gzip`) |
+| `NiftiVolume::{parse_file, parse_bytes}` | Parse a single-file NIfTI volume, version 1 or 2 (`.nii`, or `.nii.gz` with the `gzip` feature) |
+| `NiftiVolume::{parse_dual_file, parse_dual_bytes}` | Parse a dual-file `.hdr`/`.img` pair, either version (either part gzippable with `gzip`) |
+| `NiftiVolume::version` -> `NiftiVersion` | Which format version (`V1`/`V2`) the volume was parsed from |
 | `NiftiVolume::{dims, voxel_spacing, origin, rotation, datatype, values}` | Parsed geometry and data |
 | `NiftiVolume::value_at(i, j, k)` | Bounds-checked value access |
 | `NiftiVolume::voxel_position(i, j, k)` | RAS-mm position of a voxel centre |
