@@ -40,6 +40,26 @@ pub const RESCALE_INTERCEPT: Tag = (0x0028, 0x1052);
 pub const RESCALE_SLOPE: Tag = (0x0028, 0x1053);
 /// Pixel Data (7FE0,0010).
 pub const PIXEL_DATA: Tag = (0x7FE0, 0x0010);
+/// Number of Frames (0028,0008) — multi-frame objects (PS3.3 C.7.6.6).
+pub const NUMBER_OF_FRAMES: Tag = (0x0028, 0x0008);
+/// Shared Functional Groups Sequence (5200,9229) — attributes common to
+/// every frame of a multi-frame object (PS3.3 C.7.6.15).
+pub const SHARED_FUNCTIONAL_GROUPS: Tag = (0x5200, 0x9229);
+/// Per-frame Functional Groups Sequence (5200,9230) — one item per frame
+/// of a multi-frame object (PS3.3 C.7.6.16).
+pub const PER_FRAME_FUNCTIONAL_GROUPS: Tag = (0x5200, 0x9230);
+/// Plane Position Sequence (0020,9113) — a functional-group macro holding
+/// Image Position (Patient) for one frame.
+pub const PLANE_POSITION_SEQUENCE: Tag = (0x0020, 0x9113);
+/// Plane Orientation Sequence (0020,9116) — a functional-group macro
+/// holding Image Orientation (Patient).
+pub const PLANE_ORIENTATION_SEQUENCE: Tag = (0x0020, 0x9116);
+/// Pixel Measures Sequence (0028,9110) — a functional-group macro holding
+/// Pixel Spacing and Slice Thickness.
+pub const PIXEL_MEASURES_SEQUENCE: Tag = (0x0028, 0x9110);
+/// Pixel Value Transformation Sequence (0028,9145) — a functional-group
+/// macro holding Rescale Slope/Intercept.
+pub const PIXEL_VALUE_TRANSFORMATION_SEQUENCE: Tag = (0x0028, 0x9145);
 
 /// Value Representation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -344,9 +364,15 @@ pub fn implicit_vr(tag: Tag) -> Vr {
         | PIXEL_SPACING
         | RESCALE_INTERCEPT
         | RESCALE_SLOPE => Vr::Ds,
-        INSTANCE_NUMBER => Vr::Is,
+        INSTANCE_NUMBER | NUMBER_OF_FRAMES => Vr::Is,
         ROWS | COLUMNS | BITS_ALLOCATED | PIXEL_REPRESENTATION => Vr::Us,
         PIXEL_DATA => Vr::Ow,
+        SHARED_FUNCTIONAL_GROUPS
+        | PER_FRAME_FUNCTIONAL_GROUPS
+        | PLANE_POSITION_SEQUENCE
+        | PLANE_ORIENTATION_SEQUENCE
+        | PIXEL_MEASURES_SEQUENCE
+        | PIXEL_VALUE_TRANSFORMATION_SEQUENCE => Vr::Sq,
         _ => Vr::Un,
     }
 }

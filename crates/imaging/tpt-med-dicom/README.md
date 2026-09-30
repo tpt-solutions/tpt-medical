@@ -42,8 +42,14 @@ route for three reasons:
 - **Transfer syntaxes:** implicit VR little endian (`1.2.840.10008.1.2`) and
   explicit VR little endian (`1.2.840.10008.1.2.1`) — the two uncompressed
   syntaxes carried by the overwhelming majority of archive exports.
-- **Single-frame CT/MR slices.** Sequences are parsed and skipped safely,
-  including undefined-length sequences with depth tracking.
+- **Single-frame CT/MR slices, and multi-frame (Enhanced) objects for the
+  uncompressed syntaxes** — `parse_bytes_all`/`parse_file_all` return one
+  slice per frame, with the per-frame functional groups (PS3.3 C.7.6.6)
+  mapped onto the slice list: per-frame Plane Position (required), per-frame
+  orientation and rescale when present, Shared Functional Groups otherwise.
+  Sequences are resolved structurally (defined- and undefined-length) rather
+  than skipped; `parse_bytes`/`parse_file` refuse a multi-frame object by
+  naming the `_all` entry points rather than silently truncating to frame 0.
 - **Series assembly** — `DicomSeries::load_from_dir` sorts slices by projected
   position along the slice normal, which is the only robust ordering for
   oblique acquisitions; `from_slices` accepts an already-ordered vector.
@@ -125,10 +131,11 @@ data — a network protocol for streaming pixel data from a remote server,
 not a local format to decode at all — and any retired Process not listed
 above) still returns `DicomError::CompressedPixelData`, not garbage —
 decompress those at the archive boundary. That is a deliberate architectural
-line, not an oversight. Multi-frame objects, private tags with odd VRs,
+line, not an oversight. Multi-frame objects over the **compressed** syntaxes,
+private tags with odd VRs,
 DICOM networking (C-STORE, DICOMweb), and true multi-sample-per-pixel/color
 pixel data (of any transfer syntax, compressed or not) are likewise out of
-scope for v0.
+scope (uncompressed multi-frame objects are supported — see Features).
 
 ## Conventions
 
@@ -207,7 +214,8 @@ fn main() -> std::io::Result<()> {
 | `DicomSeries::{dims, hu_volume, hu_at}` | `(nx, ny, nz)`; flat HU volume; bounds-checked HU access |
 | `DicomSeries::{pixel_spacing, slices, modality}` | Geometry and per-slice metadata |
 | `DicomSlice::{hu_at, hu_plane, normal, frame}` | Per-slice HU, plane normal, and DICOM `ImageFrame` |
-| `DicomParser::{parse_file, parse_bytes}` | Parse one Part-10 file into a `DicomSlice` |
+| `DicomParser::{parse_file, parse_bytes}` | Parse one Part-10 file into a `DicomSlice` (single-frame; a multi-frame object is refused by name) |
+| `DicomParser::{parse_file_all, parse_bytes_all}` | Parse into one `DicomSlice` per frame — per-frame functional groups become per-slice geometry |
 | `DicomParser::encode_element_explicit(tag, vr, value)` | Byte-accurate explicit-VR element encoder |
 | `DicomElement::{as_us, as_is, as_ds_first, as_ds_vec, as_text}` | Typed accessors; each returns a typed `DicomError` on mismatch |
 | `TransferSyntax::from_uid`, `::implicit_vr(tag)` | Transfer syntax detection and implicit-VR tag lookup |
@@ -320,8 +328,11 @@ fn main() -> std::io::Result<()> {
   Near-Lossless, and whichever encoder wrote a `.91` JPEG 2000 stream lossily).
   A HU value derived from one of these is not the exact number the scanner
   produced. Treat it the same way you would treat any other lossy source.
-- **Single-frame only.** Enhanced multi-frame CT (a common Siemens/GE
-  representation) and MR object hierarchies are not supported.
+- **Multi-frame over compressed syntaxes only is unsupported.** Uncompressed
+  (implicit/explicit VR LE) multi-frame CT/MR objects parse fully; an
+  encapsulated multi-frame payload is a named rejection, because one decode
+  per payload cannot represent N frames and the Basic Offset Table path this
+  crate reserves would be the way to do it.
 - **Incomplete tag coverage.** Only the tags needed for geometry and HU
   mapping are decoded. Window/level, pixel padding, slice position sorting by
   `INSTANCE_NUMBER`, private tags and structured reports are not.

@@ -12,6 +12,41 @@ changes for consumers of this crate.
 ## [Unreleased]
 
 ### Added
+- **Multi-frame (Enhanced CT/MR) ingestion for the uncompressed syntaxes**
+  — RFC 0001's v1 roadmap item 2. `DicomParser::parse_bytes_all` /
+  `parse_file_all` return one `DicomSlice` **per frame**, mapping the
+  object's per-frame functional groups (PS3.3 C.7.6.6/C.7.6.16) onto the
+  slice list: per-frame Plane Position (required — it is what
+  distinguishes the frames), with Plane Orientation and Pixel Value
+  Transformation rescale honoured per frame when present and the Shared
+  Functional Groups (orientation, pixel measures, rescale) re-absorbed
+  through the very same match arms as top-level tags, so shared and
+  top-level encodings cannot drift. `DicomSeries::load_from_dir`
+  assembles multi-frame and single-frame files into one series
+  positionally. Sequence handling is now structural: items are resolved
+  into element lists (defined- and undefined-length alike, so the
+  dcm4che-style and GDCM-style encodings both parse) rather than skipped.
+  Guardrails: `parse_bytes`/`parse_file` refuse a multi-frame object with
+  an error naming the `_all` entry points rather than silently
+  truncating to frame 0; a declared `NumberOfFrames` that disagrees with
+  the per-frame item count, and a frame without a Plane Position, are
+  named `BadValue`s; multi-frame **encapsulated** pixel data remains a
+  named rejection (one decode per payload cannot represent N frames).
+  `DicomElement` gained `items` — the resolved sequence items. Eight new
+  tests: functional-group mapping (positions, shared geometry, per-frame
+  rescale, per-frame pixel payloads), undefined-length equivalence,
+  implicit-VR multi-frame, the `_all` refusal, the count mismatch, the
+  missing plane position, series assembly, and a single-frame
+  `NumberOfFrames = 1` file through the unchanged entry point.
+- **Fixed: Part-10 implicit-VR files failed to parse at all.** The file
+  meta-group loop read the first dataset element with explicit-VR
+  parsing, so an implicit dataset's 32-bit length header was
+  misinterpreted as a VR and rejected (`UnsupportedVr` on
+  `(0008,0005)`-shaped headers). The meta/dataset boundary is now found
+  by peeking the next tag's group (the existing per-element implicit
+  reader was already correct — the bug was only in the hand-over).
+  Found by the new implicit-VR multi-frame test, which real archive
+  exports would have hit.
 - `detect_phantom_rotation` / `RotationDetection`: **phantom rotation
   detection** — the mechanical half of RFC 0008's deferred follow-up. A
   coarse sweep (2π/`coarse_steps`, ≥ 8) over in-plane rotations scored by
@@ -152,7 +187,9 @@ changes for consumers of this crate.
     it is a network reference to pixel data held elsewhere, so it needs a
     transport story (resolved at the archive boundary) before decoding is even
     in scope. Still `DicomError::CompressedPixelData`.
-  - Multi-frame objects and DICOM networking (C-STORE, DICOMweb).
+  - DICOM networking (C-STORE, DICOMweb); multi-frame ingestion for the
+    **compressed** transfer syntaxes (the uncompressed syntaxes are done —
+    see Added above).
 - A built-in library of named, cited `PhantomModel`s for common commercial
   phantoms — the remaining half after the rotation detection delivered
   above (`detect_phantom_rotation`); the layouts and known values must come

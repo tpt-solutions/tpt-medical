@@ -329,6 +329,24 @@ Tracked in `todo.md`. Summary of the user-visible change here:
   (foundation ⊕ interface layer `E/t`), the screening step from rigid
   punch toward compliant-implant evaluation.
 
+### Added — Open-resource pass: Enhanced CT ingestion, unconfined bookends, squeeze-film lubrication (2026-10-01)
+`tpt-med-dicom` (**multi-frame/Enhanced CT for the uncompressed syntaxes**,
+RFC 0001 v1 item 2: `parse_bytes_all`/`parse_file_all` map per-frame
+functional groups onto the slice list — per-frame plane position
+required, orientation and rescale per frame when present, shared groups
+re-absorbed through the same arms as top-level tags; structural sequence
+resolution replaces sequence skipping; multi-frame encapsulated data
+stays a named rejection — plus a **real bug fix the new tests exposed**:
+Part-10 implicit-VR files failed to parse at all, because the meta-group
+loop read the first dataset element explicitly), `tpt-med-cartilage`
+(the exact `t → 0⁺` unconfined bookend `E(0⁺) = 3G`, its initial
+condition corroborated against the openly indexed Armstrong–Lai–Mow
+abstract; and `SqueezeFilm` — Stefan's squeeze-film lubrication as the
+first slice of the contact-interface lubrication item, verified against
+RK4 integration of its defining ODE). Web search remains the discovery
+tool for what is openly available before anything is treated as
+paywall-gated.
+
 ### Added — Backlog follow-up: curved resection, collagen crimp, tracker reconciliation (2026-10-01)
 `tpt-med-surgical-planning` (the first curved resection surface:
 `CylindricalCut` — core/annulus about an axis, with the plane cut's kerf,

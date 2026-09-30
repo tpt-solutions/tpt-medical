@@ -40,13 +40,37 @@ changes for consumers of this crate.
   response, and a purely elastic model gets the equilibrium roughly right and
   the timing completely wrong.
 
+- **`unconfined_instantaneous_modulus`** — the `t → 0⁺` bookend of the
+  unconfined transient: before any interstitial flow the mixture "deforms
+  without change in volume and behaves like an incompressible elastic
+  solid of the same shear modulus" (Armstrong, Lai & Mow 1984), so
+  `E(0⁺) = 3G`, against the `E(∞) = E_s` equilibrium bookend already
+  shipped. At the cartilage default `ν_s = 0` the wall relaxes from
+  `1.5·H_A` to `H_A`; the ratio `3/(2(1+ν_s))` diverges as `ν_s → ½`.
+  The time-resolved transient between the bookends stays deferred (its
+  Bessel-series coefficients are paywalled cited literature).
+- **`SqueezeFilm`** — squeeze-film lubrication of the contact interface,
+  the first slice of the lubrication/repulsion item: Stefan's equation
+  for a Newtonian film between parallel circular surfaces. The
+  contact-solver-facing term is `load_capacity(thickness, approach_rate)`
+  (approach rate in, carried load out); `film_thickness` and
+  `time_to_squeeze` are the step-load creep forms. The closed form is
+  verified against RK4 integration of its own defining ODE, and the
+  load-capacity round trip. Viscosity is caller-supplied (synovial fluid
+  is shear-rate dependent; the mechanism ships, the coefficient comes
+  from the caller's citation).
+
 ### Planned
-- Unconfined compression (its analytic transient needs the classical Bessel-series coefficients; shear, the other half, is delivered above as a closed form).
+- Unconfined compression (the equilibrium and instantaneous bookends and the
+  shear closed form are delivered; the analytic transient still needs the
+  classical Bessel-series coefficients from the paywalled source).
 - Nonlinear biphasic theory proper (the strain-dependent permeability
   hook is delivered; a full nonlinear solid matrix and a time-stepping
   solver for non-constant `k` remain).
-- A lubrication/repulsion term for the contact interface, so the model can be
-  driven by a contact solver rather than a prescribed step load.
+- (Lubrication, first slice delivered above: `SqueezeFilm` gives the
+  interface a film term — a contact solver evaluates `load_capacity`;
+  what remains is coupling that solver into the biphasic creep path
+  itself.)
 - Fibrous-cartilage support (a fibre-reinforced solid matrix).
 
 ### Notes

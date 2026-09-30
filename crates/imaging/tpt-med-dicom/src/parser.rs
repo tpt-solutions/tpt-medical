@@ -6,15 +6,22 @@ use crate::error::{DicomError, Result};
 use crate::tags::{implicit_vr, Tag, TransferSyntax, Vr};
 use crate::{tags, DICM_MAGIC};
 
-/// One decoded dataset element: tag, VR, and raw value bytes.
+/// One decoded dataset element: tag, VR, raw value bytes, and - for a
+/// sequence the parser resolved - its parsed items.
 #[derive(Debug, Clone)]
 pub struct DicomElement {
     /// Tag (group, element).
     pub tag: Tag,
     /// Value representation.
     pub vr: Vr,
-    /// Raw value bytes.
+    /// Raw value bytes (empty for a sequence whose items were resolved).
     pub value: Vec<u8>,
+    /// For a resolved sequence, the parsed items in order (each item is a
+    /// flat element list; nested sequences appear as elements with their
+    /// own `items`). Empty for non-sequence elements, and for sequences
+    /// the dataset encodes with an unknown VR - whose content stays raw
+    /// in `value` (implicit VR cannot identify an untabulated sequence).
+    pub items: Vec<Vec<DicomElement>>,
 }
 
 impl DicomElement {
@@ -86,13 +93,34 @@ pub struct DicomParser;
 
 impl DicomParser {
     /// Parses one DICOM Part-10 file from disk.
+    ///
+    /// Single-frame entry point: a multi-frame object is an
+    /// [`DicomError::InconsistentSeries`] naming
+    /// [`DicomParser::parse_file_all`], never a silently truncated read.
     pub fn parse_file(path: &Path) -> Result<crate::series::DicomSlice> {
-        let bytes = std::fs::read(path)?;
-        Self::parse_bytes(&bytes)
+        let slices = Self::parse_file_all(path)?;
+        Self::single(&slices)
     }
 
-    /// Parses one DICOM Part-10 file from memory.
+    /// Parses one DICOM Part-10 file from disk into every frame it holds:
+    /// one [`DicomSlice`](crate::series::DicomSlice) per frame, with a
+    /// multi-frame object's per-frame functional groups mapped onto the
+    /// slice list (PS3.3 C.7.6.6, RFC 0001 v1 item 2).
+    pub fn parse_file_all(path: &Path) -> Result<Vec<crate::series::DicomSlice>> {
+        let bytes = std::fs::read(path)?;
+        Self::parse_bytes_all(&bytes)
+    }
+
+    /// Parses one DICOM Part-10 file from memory (single-frame; see
+    /// [`Self::parse_file`]).
     pub fn parse_bytes(bytes: &[u8]) -> Result<crate::series::DicomSlice> {
+        let slices = Self::parse_bytes_all(bytes)?;
+        Self::single(&slices)
+    }
+
+    /// Parses one DICOM Part-10 file from memory into every frame it
+    /// holds (see [`Self::parse_file_all`]).
+    pub fn parse_bytes_all(bytes: &[u8]) -> Result<Vec<crate::series::DicomSlice>> {
         if bytes.len() < 132 || &bytes[128..132] != DICM_MAGIC {
             return Err(DicomError::NotDicom(Path::new("<memory>").to_path_buf()));
         }
@@ -100,18 +128,18 @@ impl DicomParser {
             data: bytes,
             pos: 132,
             encapsulated: false,
+            dataset_ts: TransferSyntax::ExplicitVrLittleEndian,
         };
 
         // File Meta Information is always explicit VR little endian
-        // (PS3.10 §7.1). Its last element hands us the transfer syntax.
+        // (PS3.10 §7.1); its last element hands us the transfer syntax.
+        // The meta/dataset boundary is found by peeking the next tag's
+        // group rather than by reading the element explicitly: an
+        // implicit-VR dataset's first element header is a 32-bit length,
+        // which an explicit read would misinterpret as a VR and reject.
         let mut transfer_syntax = None;
-        let mut pending_dataset_element = None;
-        while cursor.has_more() {
+        while cursor.has_more() && cursor.peek_tag()?.0 == 0x0002 {
             let el = cursor.next_explicit()?;
-            if el.tag.0 != 0x0002 {
-                pending_dataset_element = Some(el);
-                break;
-            }
             if el.tag == tags::TRANSFER_SYNTAX_UID {
                 transfer_syntax = Some(
                     TransferSyntax::from_uid(&el.as_text())
@@ -123,22 +151,25 @@ impl DicomParser {
         // Encapsulated syntaxes still carry an explicit-VR-LE dataset; only the
         // pixel data is compressed. Without this, an RLE file would be parsed
         // as implicit VR and every tag after the meta group would be garbage.
-        let dataset_ts = ts.dataset_encoding();
+        cursor.dataset_ts = ts.dataset_encoding();
         cursor.encapsulated = ts.is_encapsulated();
 
         let mut builder = crate::series::SliceBuilder::new(ts);
-        if let Some(el) = pending_dataset_element {
-            builder.absorb(el)?;
-        }
         while cursor.has_more() {
-            let el = if dataset_ts == TransferSyntax::ExplicitVrLittleEndian {
-                cursor.next_explicit()?
-            } else {
-                cursor.next_element(dataset_ts)?
-            };
+            let el = cursor.next_dataset_element()?;
             builder.absorb(el)?;
         }
         builder.build()
+    }
+
+    /// The single-slice view of a parsed frame list.
+    fn single(slices: &[crate::series::DicomSlice]) -> Result<crate::series::DicomSlice> {
+        match slices.len() {
+            1 => Ok(slices[0].clone()),
+            n => Err(DicomError::InconsistentSeries(format!(
+                "multi-frame object with {n} frames; use parse_bytes_all / parse_file_all"
+            ))),
+        }
     }
 }
 
@@ -147,8 +178,11 @@ struct Cursor<'a> {
     pos: usize,
     /// Whether pixel data arrives encapsulated. Decides whether an
     /// undefined-length PixelData is fragment data to collect or a sequence
-    /// to skip.
+    /// to resolve.
     encapsulated: bool,
+    /// The dataset's encoding (explicit or implicit VR LE), used for every
+    /// element below the file meta group.
+    dataset_ts: TransferSyntax,
 }
 
 /// Item (FFFE,E000).
@@ -161,6 +195,20 @@ const SEQ_DELIM: Tag = (0xFFFE, 0xE0DD);
 impl<'a> Cursor<'a> {
     fn has_more(&self) -> bool {
         self.pos < self.data.len()
+    }
+
+    /// The tag at the cursor without consuming it - the delimiter check
+    /// for the bounded readers below.
+    fn peek_tag(&self) -> Result<Tag> {
+        if self.pos + 4 > self.data.len() {
+            return Err(DicomError::UnexpectedEof {
+                offset: self.pos,
+                while_reading: "peek",
+            });
+        }
+        let g = u16::from_le_bytes([self.data[self.pos], self.data[self.pos + 1]]);
+        let e = u16::from_le_bytes([self.data[self.pos + 2], self.data[self.pos + 3]]);
+        Ok((g, e))
     }
 
     fn skip(&mut self, n: usize, what: &'static str) -> Result<()> {
@@ -222,49 +270,151 @@ impl<'a> Cursor<'a> {
         Ok((vr, len))
     }
 
-    /// Reads one element in explicit VR LE.
+    /// Reads one element in explicit VR LE (the file meta group's
+    /// encoding, and the dataset encoding of every syntax but implicit).
     fn next_explicit(&mut self) -> Result<DicomElement> {
         let g = self.u16_le("tag group")?;
         let e = self.u16_le("tag element")?;
         let tag = (g, e);
         let (vr, len) = self.read_explicit_header(tag)?;
-        let value = self.read_value(tag, vr, len)?;
-        Ok(DicomElement { tag, vr, value })
+        self.finish_element(tag, vr, len)
     }
 
     /// Reads one element in the dataset's transfer syntax.
-    fn next_element(&mut self, ts: TransferSyntax) -> Result<DicomElement> {
+    fn next_dataset_element(&mut self) -> Result<DicomElement> {
+        match self.dataset_ts {
+            TransferSyntax::ExplicitVrLittleEndian => self.next_explicit(),
+            TransferSyntax::ImplicitVrLittleEndian => self.next_implicit(),
+            _ => unreachable!("dataset_ts narrows to explicit or implicit VR LE"),
+        }
+    }
+
+    /// Reads one element in implicit VR LE.
+    fn next_implicit(&mut self) -> Result<DicomElement> {
         let g = self.u16_le("tag group")?;
         let e = self.u16_le("tag element")?;
         let tag = (g, e);
         let len = self.u32_le("length")?;
         let vr = implicit_vr(tag);
-        let value = if len == 0xFFFF_FFFF {
-            self.skip_undefined(ts)?;
-            Vec::new()
+        let len = if len == 0xFFFF_FFFF {
+            usize::MAX
         } else {
-            self.read_exact(len as usize, "element value")?.to_vec()
+            len as usize
         };
-        Ok(DicomElement { tag, vr, value })
+        self.finish_element(tag, vr, len)
     }
 
-    /// Reads an element value, handling both native and encapsulated forms.
+    /// Reads an element's value (and, for a sequence, its items), handling
+    /// native, encapsulated and both sequence length forms.
     ///
     /// An undefined-length value on a compressed syntax is the encapsulated
     /// pixel data: a run of (FFFE,E000) item fragments terminated by a
     /// sequence delimiter. Those fragments are returned so the caller can
-    /// decode them. On a native syntax an undefined length is a sequence
-    /// value, which is skipped and returned empty.
-    fn read_value(&mut self, tag: Tag, _vr: Vr, len: usize) -> Result<Vec<u8>> {
+    /// decode them. Any other undefined length is a sequence (PS3.5
+    /// reserves undefined length for SQ in implicit VR): its items are
+    /// resolved rather than skipped, because the multi-frame functional
+    /// groups carry the per-frame geometry. A defined-length SQ is parsed
+    /// from the bytes just as its undefined-length sibling would be, so
+    /// the two encodings of the same sequence cannot drift apart.
+    fn finish_element(&mut self, tag: Tag, vr: Vr, len: usize) -> Result<DicomElement> {
         if len == usize::MAX {
             if tag == tags::PIXEL_DATA && self.encapsulated {
-                return self.read_fragments();
+                let value = self.read_fragments()?;
+                return Ok(DicomElement {
+                    tag,
+                    vr,
+                    value,
+                    items: Vec::new(),
+                });
             }
-            self.skip_undefined(TransferSyntax::ExplicitVrLittleEndian)?;
-            return Ok(Vec::new());
+            let items = self.read_items()?;
+            return Ok(DicomElement {
+                tag,
+                vr,
+                value: Vec::new(),
+                items,
+            });
         }
-        let _ = tag;
-        Ok(self.read_exact(len, "element value")?.to_vec())
+        let value = self.read_exact(len, "element value")?.to_vec();
+        let items = if vr == Vr::Sq {
+            let mut sub = Cursor {
+                data: &value,
+                pos: 0,
+                encapsulated: false,
+                dataset_ts: self.dataset_ts,
+            };
+            sub.read_items()?
+        } else {
+            Vec::new()
+        };
+        Ok(DicomElement {
+            tag,
+            vr,
+            value,
+            items,
+        })
+    }
+
+    /// Reads the elements up to the next item/sequence delimiter or the
+    /// end of the enclosing defined-length scope. Delimiters are left for
+    /// the caller (they carry scope, not data).
+    fn read_elements(&mut self) -> Result<Vec<DicomElement>> {
+        let mut out = Vec::new();
+        while self.has_more() {
+            let tag = self.peek_tag()?;
+            if tag == ITEM || tag == ITEM_DELIM || tag == SEQ_DELIM {
+                break;
+            }
+            out.push(self.next_dataset_element()?);
+        }
+        Ok(out)
+    }
+
+    /// Reads the items of one sequence until its sequence delimiter (or
+    /// the end of the enclosing defined-length scope, for a
+    /// defined-length SQ parsed through a sub-cursor).
+    fn read_items(&mut self) -> Result<Vec<Vec<DicomElement>>> {
+        let mut items = Vec::new();
+        loop {
+            if !self.has_more() {
+                break;
+            }
+            let tag = self.peek_tag()?;
+            if tag == SEQ_DELIM {
+                self.skip(8, "sequence delimiter")?;
+                break;
+            }
+            if tag != ITEM {
+                return Err(DicomError::BadValue {
+                    tag,
+                    reason: "expected an item in a sequence".into(),
+                });
+            }
+            self.skip(4, "item tag")?;
+            let len = self.u32_le("item length")?;
+            if len == 0xFFFF_FFFF {
+                let content = self.read_elements()?;
+                if self.peek_tag()? != ITEM_DELIM {
+                    let t = self.peek_tag()?;
+                    return Err(DicomError::BadValue {
+                        tag: t,
+                        reason: "undefined-length item without an item delimiter".into(),
+                    });
+                }
+                self.skip(8, "item delimiter")?;
+                items.push(content);
+            } else {
+                let bytes = self.read_exact(len as usize, "item content")?;
+                let mut sub = Cursor {
+                    data: bytes,
+                    pos: 0,
+                    encapsulated: false,
+                    dataset_ts: self.dataset_ts,
+                };
+                items.push(sub.read_elements()?);
+            }
+        }
+        Ok(items)
     }
 
     /// Collects encapsulated pixel data fragments up to the sequence delimiter.
@@ -332,55 +482,6 @@ impl<'a> Cursor<'a> {
                 }
             }
         }
-    }
-
-    /// Consumes an undefined-length construct (sequence of items or
-    /// encapsulated pixel data) up to its matching delimiter, honouring
-    /// nesting. Items are encoded in the dataset's transfer syntax.
-    fn skip_undefined(&mut self, ts: TransferSyntax) -> Result<()> {
-        let mut depth = 1usize;
-        while depth > 0 && self.has_more() {
-            let g = self.u16_le("item tag group")?;
-            let e = self.u16_le("item tag element")?;
-            match (g, e) {
-                ITEM => {
-                    let len = self.u32_le("item length")?;
-                    if len == 0xFFFF_FFFF {
-                        depth += 1;
-                    } else {
-                        self.skip(len as usize, "item content")?;
-                    }
-                }
-                ITEM_DELIM | SEQ_DELIM => {
-                    let _len = self.u32_le("delimiter length")?;
-                    depth -= 1;
-                }
-                _ => {
-                    // Regular element inside an item, encoded per the
-                    // dataset's encoding. Every encapsulated syntax narrows
-                    // to `ExplicitVrLittleEndian` here (PS3.5 §A.4), so this
-                    // covers RLE/JPEG/JPEG-LS/JPEG 2000 without a match arm
-                    // per syntax.
-                    match ts.dataset_encoding() {
-                        TransferSyntax::ExplicitVrLittleEndian => {
-                            let (vr, len) = self.read_explicit_header((g, e))?;
-                            let _ = vr;
-                            if len == usize::MAX {
-                                depth += 1;
-                            } else {
-                                self.skip(len, "nested element")?;
-                            }
-                        }
-                        TransferSyntax::ImplicitVrLittleEndian => {
-                            let len = self.u32_le("nested length")?;
-                            self.skip(len as usize, "nested element")?;
-                        }
-                        _ => unreachable!("dataset_encoding narrows to explicit or implicit VR LE"),
-                    }
-                }
-            }
-        }
-        Ok(())
     }
 }
 

@@ -474,9 +474,14 @@ than inferred from a clean-looking list of completed phases.
 
 ### `tpt-med-dicom`
 
-The ingestion roadmap's own open items — Part 2 multi-component
-codestream decoding and JPIP — are tracked above rather than repeated
-here, so there is one checkbox per piece of work. Part 2 was spiked in
+Multi-frame (Enhanced) ingestion for the uncompressed syntaxes —
+RFC 0001's v1 item 2 — **delivered 2026-10-01** (`parse_bytes_all` maps
+per-frame functional groups onto the slice list; also found and fixed a
+pre-existing bug where Part-10 implicit-VR files failed to parse at
+all). The ingestion roadmap's own remaining open items — Part 2
+multi-component codestream decoding, JPIP, multi-frame over the
+compressed syntaxes, and DICOM networking — are tracked in the crate's
+CHANGELOG, so there is one checkbox per piece of work. Part 2 was spiked in
 `rfcs/0010-jpeg2000-part2-spike.md`, which recommends deferring it: the
 gating input is a purchase of ISO/IEC 15444-2, not engineering time.
 
@@ -528,10 +533,11 @@ gating input is a purchase of ISO/IEC 15444-2, not engineering time.
 
 - [ ] **Additional boundary conditions: unconfined compression and shear.**
   **Shear half delivered (2026-10-01): `solid_shear_modulus` — first-order biphasic shear is volumetrically silent, so the fluid never pressurises and the response is a closed form at all times (permeability-independent; verified). Unconfined compression remains open above.**
-  **Unconfined limits delivered (2026-10-01): `unconfined_equilibrium_modulus` (E_s, equal to H_A at ν_s = 0) plus the documented rigid instantaneous response — both exact and tested. The transient itself remains the classical Bessel-series solution: the crate's docs rule out reproducing Armstrong–Lai–Mow's eigen-coefficients from memory, and the paper is paywalled — the same gating-input pattern as the JPEG 2000 Part 2 spike (`rfcs/0010`), deferred rather than faked.**
+  **Unconfined limits delivered (2026-10-01): `unconfined_equilibrium_modulus` (E_s, equal to H_A at ν_s = 0) and, after locating the paper's abstract on an open index (Scilit), `unconfined_instantaneous_modulus` — the exact `t → 0⁺` bookend E(0⁺) = 3G, from the abstract's own initial condition ("deforms without change in volume and behaves like an incompressible elastic solid of the same shear modulus"); at ν_s = 0 the wall relaxes 1.5·H_A → H_A, and the bookend ratio 3/(2(1+ν_s)) diverges as ν_s → ½, matching the known confined-like limit. The time-resolved transient itself remains the classical Bessel-series solution: the eigen-coefficients live in the paywalled body of Armstrong–Lai–Mow 1984 — the same gating-input pattern as the JPEG 2000 Part 2 spike (`rfcs/0010`), deferred rather than faked.**
 - [ ] **Nonlinear biphasic theory, and a coupling between permeability and strain.**
   **Permeability-coupling half delivered (2026-10-01): `PermeabilityLaw` / `StrainDependentPermeability` — caller-cited `k(J)` with validated evaluation and the equilibrium-compaction evaluation point; constant-`k` stays the closed-form baseline. Nonlinear solid matrix and a non-constant-k solver remain.**
 - [ ] **A lubrication/repulsion term for the contact interface, so the model can be driven by a contact solver rather than a prescribed step load.**
+  **Squeeze-film slice delivered (2026-10-01): `SqueezeFilm` — Stefan's equation for a Newtonian film between parallel circular surfaces, with `load_capacity(thickness, approach_rate)` as the constitutive term a contact solver evaluates and the step-load `film_thickness`/`time_to_squeeze` creep forms; verified against RK4 integration of the defining ODE. Viscosity is caller-cited (synovial fluid is shear-rate dependent). Coupling that solver into the biphasic creep path itself remains.**
 - [ ] **Fibrous-cartilage support (a fibre-reinforced solid matrix).**
 
 ### `tpt-med-electrophysiology`

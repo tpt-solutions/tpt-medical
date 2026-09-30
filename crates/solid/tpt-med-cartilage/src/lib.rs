@@ -191,6 +191,26 @@ impl BiphasicMaterial {
         Some(self.aggregate_modulus * (1.0 + nu) * (1.0 - 2.0 * nu) / (1.0 - nu))
     }
 
+    /// Unconfined-compression **instantaneous** modulus (MPa): the
+    /// response at `t → 0⁺`, before any interstitial flow — "the biphasic
+    /// continuum deforms without change in volume and behaves like an
+    /// incompressible elastic solid of the same shear modulus"
+    /// (Armstrong, Lai & Mow 1984, *J Biomech Eng* 106:165, abstract). An
+    /// incompressible isotropic solid with shear modulus `G` has
+    /// `E = 3G`, so the bookends of the unconfined transient are
+    /// `E(0⁺) = 3G` here and [`Self::unconfined_equilibrium_modulus`] =
+    /// `2G(1+ν_s)` at `t → ∞`: at the cartilage default `ν_s = 0` the
+    /// wall relaxes from `1.5·H_A` down to `H_A`, and the relaxation
+    /// ratio `3/(2(1+ν_s))` diverges as `ν_s → ½` (the unconfined
+    /// response becomes confined-like), which is the classical
+    /// sensitivity the transient series exists to resolve in time. The
+    /// transient itself stays deferred — its Bessel-series coefficients
+    /// are cited literature (paywalled), not memory-reproducible
+    /// derivations. `None` for `ν_s ≥ ½`.
+    pub fn unconfined_instantaneous_modulus(&self) -> Option<f64> {
+        self.solid_shear_modulus().map(|g| 3.0 * g)
+    }
+
     /// Solid-matrix shear modulus `G = H_A·(1−2ν_s)/(2(1−ν_s))` (MPa).
     ///
     /// First-order biphasic **shear carries no interstitial fluid
@@ -226,6 +246,97 @@ impl BiphasicMaterial {
                 * (m * core::f64::consts::PI * 0.5).sin();
         }
         8.0 / core::f64::consts::PI * series
+    }
+}
+
+/// Squeeze-film lubrication of the contact interface: a Newtonian film of
+/// viscosity `μ` squeezed between parallel circular bearing surfaces of
+/// radius `R` — the screening geometry for synovial-joint lubrication,
+/// where the interstitial fluid phase is the lubricant and the film
+/// carries the load while it is being squeezed out.
+///
+/// The constitutive relation is **Stefan's equation** (1874), the
+/// parallel-plate limit of Reynolds' equation: with the pressure solving
+/// `∇²p = 12μ|ḣ|/h³` over the disk (`p(R) = 0`), the load the film
+/// carries at thickness `h` under approach rate `−ḣ` is
+///
+/// ```text
+/// W = (3π μ R⁴ / 2 h³) · (−ḣ)
+/// ```
+///
+/// and a constant load `W` therefore squeezes the film as
+/// `h(t) = [h₀⁻² + 4Wt/(3πμR⁴)]^(−1/2)` — fast at first, ever slower,
+/// never touching (the classical squeeze-film cushion). This is the
+/// lubrication term the contact item asked for: [`Self::load_capacity`]
+/// is the constitutive term a contact solver evaluates (approach rate in,
+/// carried load out), and [`Self::film_thickness`] / [`Self::time_to_squeeze`]
+/// are the step-load creep forms. Viscosity is caller-supplied (synovial
+/// fluid is strongly shear-rate dependent; a screening constant in the
+/// 0.005–0.5 Pa·s band converts to 5e-9–5e-7 MPa·s in this crate's
+/// N-mm-s units) — the mechanism ships, the coefficient comes from the
+/// caller's source.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SqueezeFilm {
+    /// Lubricant dynamic viscosity `μ` (MPa·s = N·s/mm²).
+    pub viscosity: f64,
+    /// Bearing-surface contact radius `R` (mm).
+    pub radius: f64,
+}
+
+impl SqueezeFilm {
+    /// Validates; `Err` for a non-finite or non-positive viscosity or
+    /// radius.
+    pub fn new(viscosity: f64, radius: f64) -> Result<Self, String> {
+        if !viscosity.is_finite() || viscosity <= 0.0 {
+            return Err(format!(
+                "viscosity must be positive and finite, got {viscosity}"
+            ));
+        }
+        if !radius.is_finite() || radius <= 0.0 {
+            return Err(format!("radius must be positive and finite, got {radius}"));
+        }
+        Ok(Self { viscosity, radius })
+    }
+
+    /// Film thickness `h(t)` (mm) after `time` (s) under a constant load
+    /// `load` (N), from an initial film thickness (mm). Stefan's equation;
+    /// `h(0) = initial`, monotonically decreasing, never zero.
+    pub fn film_thickness(&self, initial: f64, load: f64, time: f64) -> f64 {
+        let inv_sq = initial * initial;
+        (1.0 / inv_sq
+            + 4.0 * load * time
+                / (3.0 * core::f64::consts::PI * self.viscosity * self.radius.powi(4)))
+        .sqrt()
+        .recip()
+    }
+
+    /// The load (N) the film carries at `thickness` (mm) under approach
+    /// rate `approach_rate` = `−dh/dt` (mm/s) — the contact-solver-facing
+    /// constitutive term.
+    pub fn load_capacity(&self, thickness: f64, approach_rate: f64) -> f64 {
+        3.0 * core::f64::consts::PI * self.viscosity * self.radius.powi(4)
+            / (2.0 * thickness.powi(3))
+            * approach_rate
+    }
+
+    /// Time (s) to squeeze the film under constant `load` from one
+    /// thickness to a thinner one (mm) — the exact integral of Stefan's
+    /// equation. `Err` when `to ≥ from` (no thinning) or either is
+    /// non-positive.
+    pub fn time_to_squeeze(&self, load: f64, from: f64, to: f64) -> Result<f64, String> {
+        if from <= 0.0 || to <= 0.0 {
+            return Err(format!("thicknesses must be positive, got {from} -> {to}"));
+        }
+        if to >= from {
+            return Err(format!("the film thins: {from} -> {to} is no squeeze"));
+        }
+        if !load.is_finite() || load <= 0.0 {
+            return Err(format!("load must be positive and finite, got {load}"));
+        }
+        Ok(
+            3.0 * core::f64::consts::PI * self.viscosity * self.radius.powi(4) / (4.0 * load)
+                * (1.0 / (to * to) - 1.0 / (from * from)),
+        )
     }
 }
 
@@ -374,6 +485,115 @@ mod tests {
             constant.permeability_at(0.7).expect("valid"),
             constant.material.permeability
         );
+    }
+
+    #[test]
+    fn unconfined_instantaneous_modulus_brackets_the_equilibrium() {
+        let m = BiphasicMaterial::default();
+        // ν_s = 0: E(0⁺) = 3G = 1.5·H_A, against the E(∞) = H_A bookend.
+        assert!((m.unconfined_instantaneous_modulus().expect("valid ν") - 1.05).abs() < 1e-12);
+        // General ν_s: the 3G identity, hand-checked at ν = 0.3:
+        // 3 · H_A(1−2ν)/(2(1−ν)) = 6H_A/7.
+        let nu = BiphasicMaterial {
+            poissons_ratio: 0.3,
+            ..m
+        };
+        assert!(
+            (nu.unconfined_instantaneous_modulus().expect("valid ν") - 6.0 * 0.7 / 7.0).abs()
+                < 1e-12
+        );
+        // The relaxation bookends are ordered: E(0⁺) > E(∞) for ν_s > 0,
+        // in the ratio 3/(2(1+ν_s)) — at ν_s = 0 the instantaneous wall
+        // is still 1.5× the equilibrium one.
+        let e_inst = nu.unconfined_instantaneous_modulus().expect("valid ν");
+        let e_eq = nu.unconfined_equilibrium_modulus().expect("valid ν");
+        assert!((e_inst / e_eq - 3.0 / (2.0 * 1.3)).abs() < 1e-12);
+        assert!(e_inst > e_eq);
+        assert!(
+            (m.unconfined_instantaneous_modulus().expect("valid ν")
+                / m.unconfined_equilibrium_modulus().expect("valid ν")
+                - 1.5)
+                .abs()
+                < 1e-12
+        );
+        // ν_s ≥ ½: no linear instantaneous modulus.
+        assert!(BiphasicMaterial {
+            poissons_ratio: 0.5,
+            ..m
+        }
+        .unconfined_instantaneous_modulus()
+        .is_none());
+    }
+
+    #[test]
+    fn stefan_closed_form_matches_its_defining_ode() {
+        let film = SqueezeFilm::new(3.0e-8, 12.0).expect("valid");
+        // 5 N keeps the RK4 reference inside its stability region at this
+        // step size (the film's rate constant scales with the load).
+        let (h0, load) = (0.5, 5.0);
+        // Integrate dh/dt = −2Wh³/(3πμR⁴) (Stefan's load relation solved
+        // for the rate) numerically, and compare against the closed form.
+        let rate = |h: f64| {
+            -2.0 * load * h.powi(3)
+                / (3.0 * core::f64::consts::PI * film.viscosity * film.radius.powi(4))
+        };
+        let mut h = h0;
+        let t_end = 50.0;
+        let steps = 200_000;
+        let dt = t_end / steps as f64;
+        for _ in 0..steps {
+            // RK4 on the scalar ODE.
+            let k1 = rate(h);
+            let k2 = rate(h + 0.5 * dt * k1);
+            let k3 = rate(h + 0.5 * dt * k2);
+            let k4 = rate(h + dt * k3);
+            h += dt / 6.0 * (k1 + 2.0 * k2 + 2.0 * k3 + k4);
+        }
+        let closed = film.film_thickness(h0, load, t_end);
+        assert!(
+            (h - closed).abs() < 1e-4 * closed,
+            "RK4 {h} vs closed form {closed}"
+        );
+        // The exact squeeze time inverts the closed form.
+        let t_half = film.time_to_squeeze(load, h0, closed).expect("thinning");
+        assert!(
+            (film.film_thickness(h0, load, t_half) - closed).abs() < 1e-9 * closed,
+            "time inverse must land on the same thickness"
+        );
+    }
+
+    #[test]
+    fn squeeze_film_limits_and_load_capacity_round_trip() {
+        let film = SqueezeFilm::new(3.0e-8, 12.0).expect("valid");
+        let (h0, load) = (0.5, 500.0);
+        // h(0) = h0 exactly; the film thins monotonically and never
+        // touches; more load or more time squeezes further.
+        assert!((film.film_thickness(h0, load, 0.0) - h0).abs() < 1e-12);
+        let t1 = film.film_thickness(h0, load, 10.0);
+        let t2 = film.film_thickness(h0, load, 20.0);
+        assert!(h0 > t1 && t1 > t2 && t2 > 0.0);
+        assert!(film.film_thickness(h0, 2.0 * load, 10.0) < t1);
+        // Load capacity round-trips: the approach rate the closed form
+        // implies at thickness h carries exactly the applied load.
+        let h = t1;
+        let dh_dt = (film.film_thickness(h0, load, 10.0 + 1e-6)
+            - film.film_thickness(h0, load, 10.0))
+            / 1e-6;
+        let capacity = film.load_capacity(h, -dh_dt);
+        assert!(
+            (capacity - load).abs() < 1e-3 * load,
+            "capacity {capacity} vs load {load}"
+        );
+        // Construction validation.
+        assert!(SqueezeFilm::new(0.0, 12.0).is_err());
+        assert!(SqueezeFilm::new(-1.0, 12.0).is_err());
+        assert!(SqueezeFilm::new(3.0e-8, 0.0).is_err());
+        assert!(SqueezeFilm::new(f64::NAN, 12.0).is_err());
+        // Time-to-squeeze rejects non-thinning and non-positive inputs.
+        assert!(film.time_to_squeeze(load, 0.5, 0.5).is_err());
+        assert!(film.time_to_squeeze(load, 0.5, 0.6).is_err());
+        assert!(film.time_to_squeeze(load, 0.0, 0.1).is_err());
+        assert!(film.time_to_squeeze(-1.0, 0.5, 0.1).is_err());
     }
 
     #[test]

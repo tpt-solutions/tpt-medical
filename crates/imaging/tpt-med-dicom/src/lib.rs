@@ -8,9 +8,15 @@
 //!   (`1.2.840.10008.1.2`) and **explicit VR little endian**
 //!   (`1.2.840.10008.1.2.1`) — the two uncompressed syntaxes carried by the
 //!   overwhelming majority of archive exports.
-//! - Single-frame CT/MR slices; sequences are parsed and skipped.
+//! - Single-frame CT/MR slices, and **multi-frame (Enhanced) objects** for
+//!   the uncompressed syntaxes: a file's per-frame functional groups
+//!   (PS3.3 C.7.6.6) are mapped onto the slice list by
+//!   [`DicomParser::parse_bytes_all`] / [`DicomSeries::load_from_dir`].
+//!   Sequences are parsed (the functional groups are retained, others
+//!   carried structurally) rather than skipped.
 //! - Encapsulated/compressed pixel data (JPEG, JPEG-LS, JPEG 2000, RLE) is
-//!   **not** decoded; [`DicomError::CompressedPixelData`] is returned.
+//!   decoded behind its cargo feature (single-frame; a multi-frame
+//!   compressed object is a named rejection).
 //!
 //! Pixel values are stored as `i32` raw stored values; HU are obtained via
 //! `stored × RescaleSlope + RescaleIntercept` per slice.
