@@ -128,7 +128,9 @@ impl WasmMeshPipeline {
     pub fn new(dicom_payload: Vec<u8>, threshold_hu: f64) -> Result<WasmMeshPipeline, JsValue> {
         let mut slices = Vec::new();
         for bytes in split_framed(&dicom_payload) {
-            slices.push(tpt_med_dicom::DicomParser::parse_bytes(bytes).map_err(to_js)?);
+            // `_all`: an Enhanced (multi-frame) file in the upload
+            // contributes all of its frames, not a refusal.
+            slices.extend(tpt_med_dicom::DicomParser::parse_bytes_all(bytes).map_err(to_js)?);
         }
         let series = tpt_med_dicom::DicomSeries::from_slices(slices).map_err(to_js)?;
         let mask = tpt_med_meshing::SegmentationMask::threshold_hu(&series, threshold_hu);

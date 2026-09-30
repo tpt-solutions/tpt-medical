@@ -338,7 +338,9 @@ re-absorbed through the same arms as top-level tags; structural sequence
 resolution replaces sequence skipping; multi-frame encapsulated data
 stays a named rejection — plus a **real bug fix the new tests exposed**:
 Part-10 implicit-VR files failed to parse at all, because the meta-group
-loop read the first dataset element explicitly), `tpt-med-cartilage`
+loop read the first dataset element explicitly; `tpt-med-wasm`'s mesh
+pipeline now ingests Enhanced CT uploads through the frame-list entry
+point), `tpt-med-cartilage`
 (the exact `t → 0⁺` unconfined bookend `E(0⁺) = 3G`, its initial
 condition corroborated against the openly indexed Armstrong–Lai–Mow
 abstract; and `SqueezeFilm` — Stefan's squeeze-film lubrication as the

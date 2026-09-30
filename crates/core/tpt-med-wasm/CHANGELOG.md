@@ -12,6 +12,11 @@ changes for consumers of this crate.
 ## [Unreleased]
 
 ### Added
+- `WasmMeshPipeline::new` now ingests **Enhanced (multi-frame) CT files**:
+  each framed payload is parsed with the dicom crate's frame-list entry
+  point, so a multi-frame upload contributes all of its frames to the
+  meshed volume instead of being refused. Single-frame uploads are
+  unchanged.
 - Crate README with a complete JavaScript usage example, the unit table for
   every binding parameter, and the DICOM framing specification.
 
