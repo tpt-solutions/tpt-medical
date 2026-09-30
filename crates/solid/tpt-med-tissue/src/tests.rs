@@ -172,6 +172,7 @@ fn all_analytic_stresses_match_finite_difference() {
             fiber_directions: vec![Vec3::new(1.0, 1.0, 0.0), Vec3::new(-1.0, 1.0, 0.0)],
             d1: 100.0,
             crimp: None,
+            family_moduli: None,
         }),
     ];
     // Simple shear + stretch states.
@@ -278,6 +279,7 @@ fn all_models() -> Vec<(&'static str, TissueModel)> {
                 fiber_directions: vec![Vec3::new(1.0, 1.0, 0.0), Vec3::new(-1.0, 1.0, 0.0)],
                 d1: 100.0,
                 crimp: None,
+                family_moduli: None,
             }),
         ),
     ]
@@ -444,6 +446,7 @@ fn linearized_constants_match_the_closed_forms() {
         fiber_directions: vec![Vec3::new(1.0, 1.0, 0.0), Vec3::new(-1.0, 1.0, 0.0)],
         d1: 100.0,
         crimp: None,
+        family_moduli: None,
     });
     let (mu, k) = hgo.linearized_elastic_constants();
     assert!((mu - 1.6).abs() < 1e-12);

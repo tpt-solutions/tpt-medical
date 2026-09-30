@@ -138,6 +138,9 @@ pub(crate) struct SliceBuilder {
     /// frame count (which sizes the decode) may be tabulated after the
     /// PixelData position would otherwise have decoded it.
     pixel_value: Vec<u8>,
+    /// The resolved encapsulated fragment structure, when the payload was
+    /// encapsulated (drives multi-frame boundary recovery).
+    pixel_fragments: Option<crate::parser::PixelFragments>,
     /// Whether a PixelData element was present at all; without it the
     /// slice keeps empty pixels (a geometry-only parse).
     pixel_seen: bool,
@@ -195,6 +198,7 @@ impl SliceBuilder {
             PER_FRAME_FUNCTIONAL_GROUPS => self.per_frame_items = el.items,
             PIXEL_DATA => {
                 self.pixel_value = el.value;
+                self.pixel_fragments = el.pixel_fragments;
                 self.pixel_seen = true;
             }
             _ => {}
@@ -205,32 +209,31 @@ impl SliceBuilder {
     pub(crate) fn build(mut self) -> Result<Vec<DicomSlice>> {
         let frames = self.n_frames.max(1) as usize;
         let samples_per_frame = self.slice.rows as usize * self.slice.columns as usize;
-        let pixels = if self.pixel_seen {
-            self.decode_pixel_data(samples_per_frame * frames)?
-        } else {
-            Vec::new()
-        };
+        let encapsulated = self
+            .transfer_syntax
+            .is_some_and(TransferSyntax::is_encapsulated);
 
         if frames == 1 {
-            self.slice.pixel_data = pixels;
+            // No PixelData element: a geometry-only parse keeps empty
+            // pixels rather than decoding an absent payload.
+            self.slice.pixel_data = if !self.pixel_seen {
+                Vec::new()
+            } else if encapsulated {
+                self.decode_compressed_frame(&self.pixel_value)?
+            } else {
+                decode_pixels(
+                    &self.pixel_value,
+                    self.bits_allocated,
+                    self.pixel_representation,
+                    samples_per_frame,
+                    PIXEL_DATA,
+                )?
+            };
             return Ok(vec![self.slice]);
         }
 
-        // Multi-frame: the frames are cut out of the one native PixelData
-        // payload and given their per-frame functional-group geometry. An
-        // encapsulated multi-frame payload decodes only as one image here,
-        // so it is rejected rather than silently presenting frame 0 N times.
-        if self
-            .transfer_syntax
-            .is_some_and(TransferSyntax::is_encapsulated)
-        {
-            return Err(DicomError::BadValue {
-                tag: PIXEL_DATA,
-                reason: "multi-frame encapsulated pixel data is not supported; \
-                         use an uncompressed transfer syntax"
-                    .into(),
-            });
-        }
+        // Multi-frame: every frame gets its own decoded payload and its
+        // per-frame functional-group geometry.
         if self.per_frame_items.len() != frames {
             return Err(DicomError::BadValue {
                 tag: PER_FRAME_FUNCTIONAL_GROUPS,
@@ -241,6 +244,36 @@ impl SliceBuilder {
                 ),
             });
         }
+
+        let frame_pixels: Vec<Vec<i32>> = if encapsulated {
+            let fragments = self
+                .pixel_fragments
+                .clone()
+                .ok_or_else(|| DicomError::BadValue {
+                    tag: PIXEL_DATA,
+                    reason: "encapsulated pixel data arrived without its fragment structure".into(),
+                })?;
+            let payloads = frame_payloads(&self.pixel_value, &fragments, frames)?;
+            let mut decoded = Vec::with_capacity(frames);
+            for (i, payload) in payloads.iter().enumerate() {
+                decoded.push(
+                    self.decode_compressed_frame(payload)
+                        .map_err(|e| DicomError::InconsistentSeries(format!("frame {i}: {e}")))?,
+                );
+            }
+            decoded
+        } else {
+            let all = decode_pixels(
+                &self.pixel_value,
+                self.bits_allocated,
+                self.pixel_representation,
+                samples_per_frame * frames,
+                PIXEL_DATA,
+            )?;
+            (0..frames)
+                .map(|i| all[i * samples_per_frame..(i + 1) * samples_per_frame].to_vec())
+                .collect()
+        };
 
         let mut out = Vec::with_capacity(frames);
         for (i, item) in self.per_frame_items.iter().enumerate() {
@@ -275,29 +308,23 @@ impl SliceBuilder {
             {
                 s.rescale_intercept = intercept.as_ds_first()?;
             }
-            s.pixel_data = pixels[i * samples_per_frame..(i + 1) * samples_per_frame].to_vec();
+            s.pixel_data.clone_from(&frame_pixels[i]);
             out.push(s);
         }
         Ok(out)
     }
 
-    /// Decodes the retained PixelData payload according to the dataset's
-    /// transfer syntax, expecting `expected` stored samples in total.
-    ///
-    /// For a compressed syntax the payload holds the concatenated
-    /// encapsulated fragments collected by the parser, so it is handed to
-    /// the matching decoder (single-frame only — a multi-frame compressed
-    /// object is rejected in [`Self::build`] before this is reached). When
-    /// that decoder is behind a cargo feature that is not enabled, the
-    /// error names the feature rather than reporting a decode failure: the
-    /// data is fine, the build just cannot read it.
-    fn decode_pixel_data(&self, expected: usize) -> Result<Vec<i32>> {
+    /// Decodes one encapsulated frame payload according to the dataset's
+    /// transfer syntax. When that decoder is behind a cargo feature that
+    /// is not enabled, the error names the feature rather than reporting
+    /// a decode failure: the data is fine, the build just cannot read it.
+    fn decode_compressed_frame(&self, payload: &[u8]) -> Result<Vec<i32>> {
         macro_rules! feature_gated_decode {
             ($feature:literal, $module:ident, $uid:literal, $name:literal) => {{
                 #[cfg(feature = $feature)]
                 {
                     crate::$module::decode_frame(
-                        &self.pixel_value,
+                        payload,
                         self.slice.rows,
                         self.slice.columns,
                         self.bits_allocated,
@@ -307,7 +334,7 @@ impl SliceBuilder {
                 }
                 #[cfg(not(feature = $feature))]
                 {
-                    let _ = expected;
+                    let _ = payload;
                     Err(DicomError::CompressedPixelData(
                         concat!($uid, " (", $name, ")").to_string(),
                     ))
@@ -374,15 +401,73 @@ impl SliceBuilder {
                     "JPEG 2000 Part 2 Multi-component"
                 )
             }
-            _ => decode_pixels(
-                &self.pixel_value,
-                self.bits_allocated,
-                self.pixel_representation,
-                expected,
-                PIXEL_DATA,
-            ),
+            _ => Err(DicomError::BadValue {
+                tag: PIXEL_DATA,
+                reason: "encapsulated pixel data under a native transfer syntax".into(),
+            }),
         }
     }
+}
+
+/// Cuts a multi-frame encapsulated payload into per-frame byte ranges:
+/// from the Basic Offset Table when present (PS3.5 Annex A.4 — one u32
+/// offset per frame into the concatenated fragment stream), otherwise one
+/// fragment per frame when the counts agree. An empty table whose
+/// fragment count disagrees with the frame count leaves the boundaries
+/// unrecoverable, which is a named error rather than a guess.
+fn frame_payloads<'a>(
+    concat: &'a [u8],
+    fragments: &'a crate::parser::PixelFragments,
+    frames: usize,
+) -> Result<Vec<&'a [u8]>> {
+    if fragments.basic_offset_table.is_empty() {
+        if fragments.fragments.len() == frames {
+            return Ok(fragments.fragments.iter().map(|f| f.as_slice()).collect());
+        }
+        return Err(DicomError::BadValue {
+            tag: PIXEL_DATA,
+            reason: format!(
+                "multi-frame encapsulated pixel data has an empty Basic Offset Table and \
+                 {} fragments for {} frames; frame boundaries cannot be recovered",
+                fragments.fragments.len(),
+                frames
+            ),
+        });
+    }
+    if fragments.basic_offset_table.len() != frames {
+        return Err(DicomError::BadValue {
+            tag: PIXEL_DATA,
+            reason: format!(
+                "Basic Offset Table holds {} offsets for {} frames",
+                fragments.basic_offset_table.len(),
+                frames
+            ),
+        });
+    }
+    let mut starts: Vec<usize> = fragments
+        .basic_offset_table
+        .iter()
+        .map(|&o| o as usize)
+        .collect();
+    starts.push(concat.len());
+    let mut out = Vec::with_capacity(frames);
+    for w in starts.windows(2) {
+        let (start, end) = (w[0], w[1]);
+        if end <= start {
+            return Err(DicomError::BadValue {
+                tag: PIXEL_DATA,
+                reason: "Basic Offset Table offsets must strictly increase".into(),
+            });
+        }
+        if end > concat.len() {
+            return Err(DicomError::BadValue {
+                tag: PIXEL_DATA,
+                reason: "Basic Offset Table offset runs past the end of the fragment stream".into(),
+            });
+        }
+        out.push(&concat[start..end]);
+    }
+    Ok(out)
 }
 
 /// The leaf elements carried by a functional-groups sequence's items —
@@ -1149,5 +1234,203 @@ mod multiframe_tests {
         assert_eq!(series.hu_volume().len(), 12);
         // Sorted ascending along the normal (z).
         assert!(series.slices[0].position.z < series.slices[2].position.z);
+    }
+}
+
+#[cfg(all(test, feature = "rle"))]
+mod multiframe_encapsulated_tests {
+    use crate::parser::{encode_element_explicit, DicomParser};
+    use crate::tags::{
+        Tag, Vr, BITS_ALLOCATED, COLUMNS, IMAGE_POSITION_PATIENT, NUMBER_OF_FRAMES,
+        PER_FRAME_FUNCTIONAL_GROUPS, PIXEL_DATA, PIXEL_REPRESENTATION, PLANE_POSITION_SEQUENCE,
+        ROWS, TRANSFER_SYNTAX_UID,
+    };
+    /// Builds one minimal RLE frame: a single PackBits literal segment
+    /// holding the 2x2 8-bit frame bytes (same layout as `rle.rs`'s own
+    /// fixtures: 64-byte header, one segment offset, one literal run).
+    fn rle_frame(bytes: &[u8; 4]) -> Vec<u8> {
+        let mut out = vec![0u8; 64];
+        out[0..4].copy_from_slice(&1u32.to_le_bytes()); // one segment
+        out[4..8].copy_from_slice(&64u32.to_le_bytes()); // segment offset
+        out.push((bytes.len() as u8) - 1); // PackBits literal control
+        out.extend_from_slice(bytes);
+        out
+    }
+
+    fn item(content: &[u8]) -> Vec<u8> {
+        let mut out = vec![0xFE, 0xFF, 0x00, 0xE0]; // (FFFE,E000)
+        out.extend_from_slice(&(content.len() as u32).to_le_bytes());
+        out.extend_from_slice(content);
+        out
+    }
+
+    fn sq_defined(tag: Tag, body: &[u8]) -> Vec<u8> {
+        let mut out = Vec::new();
+        out.extend_from_slice(&tag.0.to_le_bytes());
+        out.extend_from_slice(&tag.1.to_le_bytes());
+        out.extend_from_slice(b"SQ");
+        out.extend_from_slice(&[0, 0]);
+        out.extend_from_slice(&(body.len() as u32).to_le_bytes());
+        out.extend_from_slice(body);
+        out
+    }
+
+    /// Encapsulated PixelData (PS3.5 Annex A.4) with the given Basic
+    /// Offset Table item value and fragments.
+    fn encapsulated(basic_offset_table: &[u32], fragments: &[Vec<u8>]) -> Vec<u8> {
+        let mut bot = Vec::new();
+        for &o in basic_offset_table {
+            bot.extend_from_slice(&o.to_le_bytes());
+        }
+        let mut out = Vec::new();
+        out.extend_from_slice(&PIXEL_DATA.0.to_le_bytes());
+        out.extend_from_slice(&PIXEL_DATA.1.to_le_bytes());
+        out.extend_from_slice(b"OB");
+        out.extend_from_slice(&[0, 0]);
+        out.extend_from_slice(&0xFFFF_FFFFu32.to_le_bytes());
+        out.extend(&item(&bot));
+        for f in fragments {
+            out.extend(&item(f));
+        }
+        out.extend_from_slice(&[0xFE, 0xFF, 0xDD, 0xE0]); // (FFFE,E0DD)
+        out.extend_from_slice(&0u32.to_le_bytes());
+        out
+    }
+
+    fn explicit_us(tag: Tag, v: u16) -> Vec<u8> {
+        encode_element_explicit(tag, Vr::Us, &v.to_le_bytes())
+    }
+
+    /// A two-frame Enhanced-style dataset whose PixelData is the given
+    /// encapsulated payload, under the RLE transfer syntax.
+    fn dataset(pixel_data: Vec<u8>) -> Vec<u8> {
+        let padded = |s: &str| {
+            let mut v = s.as_bytes().to_vec();
+            if v.len() % 2 == 1 {
+                v.push(b' ');
+            }
+            v
+        };
+        let ds = |tag: Tag, s: &str| encode_element_explicit(tag, Vr::Ds, &padded(s));
+
+        let mut d = Vec::new();
+        d.extend(explicit_us(ROWS, 2));
+        d.extend(explicit_us(COLUMNS, 2));
+        d.extend(explicit_us(BITS_ALLOCATED, 8));
+        d.extend(explicit_us(PIXEL_REPRESENTATION, 0));
+        d.extend(ds(IMAGE_POSITION_PATIENT, "0\\0\\0"));
+        d.extend(encode_element_explicit(
+            NUMBER_OF_FRAMES,
+            Vr::Is,
+            &padded("2"),
+        ));
+        let mut per_frame = Vec::new();
+        for i in 0..2 {
+            let inner = item(&ds(IMAGE_POSITION_PATIENT, &format!("0\\0\\{}", i)));
+            per_frame.push(item(&sq_defined(PLANE_POSITION_SEQUENCE, &inner)));
+        }
+        let body: Vec<u8> = per_frame.concat();
+        d.extend(sq_defined(PER_FRAME_FUNCTIONAL_GROUPS, &body));
+        d.extend(pixel_data);
+        d
+    }
+
+    fn part10(dataset: &[u8]) -> Vec<u8> {
+        let mut buf = vec![0u8; 128];
+        buf.extend_from_slice(b"DICM");
+        let mut uid = b"1.2.840.10008.1.2.5".to_vec(); // RLE Lossless
+        uid.push(0);
+        buf.extend(&encode_element_explicit(TRANSFER_SYNTAX_UID, Vr::Ui, &uid));
+        buf.extend_from_slice(dataset);
+        buf
+    }
+
+    const FRAME_A: [u8; 4] = [10, 20, 30, 40];
+    const FRAME_B: [u8; 4] = [50, 60, 70, 80];
+
+    #[test]
+    fn multiframe_rle_with_basic_offset_table_decodes_per_frame() {
+        let f0 = rle_frame(&FRAME_A);
+        let f1 = rle_frame(&FRAME_B);
+        // BOT offsets are byte offsets into the concatenated fragment
+        // stream: the first frame starts at 0, the second where the
+        // first fragment ends.
+        let offsets = [0u32, f0.len() as u32];
+        let payload = encapsulated(&offsets, &[f0, f1]);
+        let slices = DicomParser::parse_bytes_all(&part10(&dataset(payload))).expect("parses");
+        assert_eq!(slices.len(), 2);
+        assert_eq!(
+            slices[0].pixel_data,
+            FRAME_A.iter().map(|&b| b as i32).collect::<Vec<_>>()
+        );
+        assert_eq!(
+            slices[1].pixel_data,
+            FRAME_B.iter().map(|&b| b as i32).collect::<Vec<_>>()
+        );
+        assert_eq!(slices[0].instance_number, 0);
+        assert_eq!(slices[1].instance_number, 1);
+        // Positions come from the per-frame functional groups.
+        assert!((slices[1].position.z - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn multiframe_rle_empty_bot_one_fragment_per_frame() {
+        let f0 = rle_frame(&FRAME_A);
+        let f1 = rle_frame(&FRAME_B);
+        let payload = encapsulated(&[], &[f0, f1]);
+        let slices = DicomParser::parse_bytes_all(&part10(&dataset(payload))).expect("parses");
+        assert_eq!(slices.len(), 2);
+        assert_eq!(
+            slices[0].pixel_data,
+            FRAME_A.iter().map(|&b| b as i32).collect::<Vec<_>>()
+        );
+        assert_eq!(
+            slices[1].pixel_data,
+            FRAME_B.iter().map(|&b| b as i32).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn empty_bot_with_mismatched_fragments_is_a_named_error() {
+        let f0 = rle_frame(&FRAME_A);
+        let payload = encapsulated(&[], &[f0]);
+        let err = DicomParser::parse_bytes_all(&part10(&dataset(payload)))
+            .expect_err("1 fragment for 2 frames without a BOT");
+        assert!(
+            matches!(&err, crate::DicomError::BadValue { reason, .. }
+                if reason.contains("cannot be recovered")),
+            "unexpected error: {err:?}"
+        );
+    }
+
+    #[test]
+    fn bot_offset_count_must_match_the_frame_count() {
+        let f0 = rle_frame(&FRAME_A);
+        let f1 = rle_frame(&FRAME_B);
+        let payload = encapsulated(
+            &[64, f0.len() as u32, (f0.len() + f1.len()) as u32],
+            &[f0, f1],
+        );
+        let err = DicomParser::parse_bytes_all(&part10(&dataset(payload)))
+            .expect_err("3 offsets for 2 frames");
+        assert!(
+            matches!(&err, crate::DicomError::BadValue { reason, .. }
+                if reason.contains("offsets for 2 frames")),
+            "unexpected error: {err:?}"
+        );
+    }
+
+    #[test]
+    fn bot_offset_past_the_stream_is_rejected() {
+        let f0 = rle_frame(&FRAME_A);
+        let f1 = rle_frame(&FRAME_B);
+        let payload = encapsulated(&[0, 999_999], &[f0, f1]);
+        let err = DicomParser::parse_bytes_all(&part10(&dataset(payload)))
+            .expect_err("offset past the stream");
+        assert!(
+            matches!(&err, crate::DicomError::BadValue { reason, .. }
+                if reason.contains("past the end")),
+            "unexpected error: {err:?}"
+        );
     }
 }

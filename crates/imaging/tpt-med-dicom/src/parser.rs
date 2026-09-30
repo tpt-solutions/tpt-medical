@@ -6,6 +6,19 @@ use crate::error::{DicomError, Result};
 use crate::tags::{implicit_vr, Tag, TransferSyntax, Vr};
 use crate::{tags, DICM_MAGIC};
 
+/// The resolved structure of encapsulated pixel data (PS3.5 Annex A.4):
+/// the fragment list and the Basic Offset Table's frame offsets.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PixelFragments {
+    /// The fragment items after the Basic Offset Table, in stream order.
+    pub fragments: Vec<Vec<u8>>,
+    /// The Basic Offset Table's byte offsets - one per frame into the
+    /// concatenated fragment stream. Empty when the table itself was
+    /// empty (single-frame objects, and multi-frame objects whose writer
+    /// left the table empty).
+    pub basic_offset_table: Vec<u32>,
+}
+
 /// One decoded dataset element: tag, VR, raw value bytes, and - for a
 /// sequence the parser resolved - its parsed items.
 #[derive(Debug, Clone)]
@@ -14,8 +27,11 @@ pub struct DicomElement {
     pub tag: Tag,
     /// Value representation.
     pub vr: Vr,
-    /// Raw value bytes (empty for a sequence whose items were resolved).
+    /// Raw value bytes (empty for a sequence whose items were resolved;
+    /// for encapsulated pixel data, the concatenated fragments).
     pub value: Vec<u8>,
+    /// For encapsulated pixel data, the resolved fragment structure.
+    pub pixel_fragments: Option<PixelFragments>,
     /// For a resolved sequence, the parsed items in order (each item is a
     /// flat element list; nested sequences appear as elements with their
     /// own `items`). Empty for non-sequence elements, and for sequences
@@ -319,12 +335,16 @@ impl<'a> Cursor<'a> {
     fn finish_element(&mut self, tag: Tag, vr: Vr, len: usize) -> Result<DicomElement> {
         if len == usize::MAX {
             if tag == tags::PIXEL_DATA && self.encapsulated {
-                let value = self.read_fragments()?;
+                let (value, fragments, basic_offset_table) = self.read_fragments()?;
                 return Ok(DicomElement {
                     tag,
                     vr,
                     value,
                     items: Vec::new(),
+                    pixel_fragments: Some(PixelFragments {
+                        fragments,
+                        basic_offset_table,
+                    }),
                 });
             }
             let items = self.read_items()?;
@@ -333,6 +353,7 @@ impl<'a> Cursor<'a> {
                 vr,
                 value: Vec::new(),
                 items,
+                pixel_fragments: None,
             });
         }
         let value = self.read_exact(len, "element value")?.to_vec();
@@ -352,6 +373,7 @@ impl<'a> Cursor<'a> {
             vr,
             value,
             items,
+            pixel_fragments: None,
         })
     }
 
@@ -419,11 +441,14 @@ impl<'a> Cursor<'a> {
 
     /// Collects encapsulated pixel data fragments up to the sequence delimiter.
     ///
-    /// PS3.5 Annex A.4: the first item is the Basic Offset Table, which is
-    /// empty unless a multi-frame object provides frame offsets. It is
-    /// dropped, so what remains is one fragment per frame.
-    fn read_fragments(&mut self) -> Result<Vec<u8>> {
+    /// PS3.5 Annex A.4: the first item is the Basic Offset Table, whose
+    /// value is one u32 byte offset per frame into the concatenated
+    /// fragment stream. It is resolved alongside the fragments (a
+    /// multi-frame object's frame boundaries live there); the
+    /// concatenated stream is returned first, as the element's `value`.
+    fn read_fragments(&mut self) -> Result<(Vec<u8>, Vec<Vec<u8>>, Vec<u32>)> {
         let mut fragments: Vec<Vec<u8>> = Vec::new();
+        let mut basic_offset_table: Vec<u32> = Vec::new();
         let mut offset_table_seen = false;
         loop {
             if !self.has_more() {
@@ -449,24 +474,25 @@ impl<'a> Cursor<'a> {
                     let data = self.read_exact(len as usize, "fragment data")?.to_vec();
                     if !offset_table_seen {
                         offset_table_seen = true;
-                        // The Basic Offset Table is a separate item whose value
-                        // is frame offsets, not pixel data. A single-frame
-                        // object carries it empty, so a non-empty table means
-                        // multiple frames, which this crate does not support.
-                        if !data.is_empty() {
+                        // The Basic Offset Table is a separate item whose
+                        // value is u32 frame offsets, not pixel data.
+                        if data.len() % 4 != 0 {
                             return Err(DicomError::BadValue {
                                 tag: tags::PIXEL_DATA,
-                                reason: "multi-frame encapsulated pixel data is not supported"
-                                    .into(),
+                                reason: "Basic Offset Table is not a multiple of four bytes".into(),
                             });
                         }
+                        basic_offset_table = data
+                            .chunks_exact(4)
+                            .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+                            .collect();
                     } else {
                         fragments.push(data);
                     }
                 }
                 SEQ_DELIM => {
                     let _len = self.u32_le("sequence delimiter length")?;
-                    return Ok(fragments.concat());
+                    return Ok((fragments.concat(), fragments, basic_offset_table));
                 }
                 ITEM_DELIM => {
                     let _len = self.u32_le("item delimiter length")?;

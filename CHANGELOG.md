@@ -329,6 +329,19 @@ Tracked in `todo.md`. Summary of the user-visible change here:
   (foundation ⊕ interface layer `E/t`), the screening step from rigid
   punch toward compliant-implant evaluation.
 
+### Added — Roadmap completions: encapsulated multi-frame, two-family HGO (2026-10-01)
+`tpt-med-dicom` (**multi-frame over the compressed syntaxes** — the Basic
+Offset Table is resolved instead of rejected, giving per-frame byte
+ranges through the same feature-gated codec path, with the empty-table
+one-fragment-per-frame convention accepted when the counts agree and
+named errors where boundaries cannot be recovered; RFC 0001's v1 item 2
+is now complete for every syntax this crate decodes), and
+`tpt-med-tissue` (`HgoParams::family_moduli` — the two-family
+elastin/collagen parameterisation, verified by the exact sum identity of
+the additive fiber term; the HGO fiber item is thereby delivered in
+full, with per-family recruitment windows noted as the remaining
+nuance).
+
 ### Added — Open-resource pass: Enhanced CT ingestion, unconfined bookends, squeeze-film lubrication (2026-10-01)
 `tpt-med-dicom` (**multi-frame/Enhanced CT for the uncompressed syntaxes**,
 RFC 0001 v1 item 2: `parse_bytes_all`/`parse_file_all` map per-frame

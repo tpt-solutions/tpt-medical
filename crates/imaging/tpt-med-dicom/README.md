@@ -328,11 +328,12 @@ fn main() -> std::io::Result<()> {
   Near-Lossless, and whichever encoder wrote a `.91` JPEG 2000 stream lossily).
   A HU value derived from one of these is not the exact number the scanner
   produced. Treat it the same way you would treat any other lossy source.
-- **Multi-frame over compressed syntaxes only is unsupported.** Uncompressed
-  (implicit/explicit VR LE) multi-frame CT/MR objects parse fully; an
-  encapsulated multi-frame payload is a named rejection, because one decode
-  per payload cannot represent N frames and the Basic Offset Table path this
-  crate reserves would be the way to do it.
+- **Multi-frame encapsulated payloads need recoverable frame boundaries.**
+  Uncompressed multi-frame objects cut frames by sample count; compressed
+  ones use the Basic Offset Table (one offset per frame) or, failing that,
+  the one-fragment-per-frame convention. An empty table whose fragment
+  count disagrees with `NumberOfFrames` is a named error rather than a
+  guess, and each frame still decodes through the same codec feature.
 - **Incomplete tag coverage.** Only the tags needed for geometry and HU
   mapping are decoded. Window/level, pixel padding, slice position sorting by
   `INSTANCE_NUMBER`, private tags and structured reports are not.

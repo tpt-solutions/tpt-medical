@@ -85,10 +85,26 @@ changes for consumers of this crate.
   symmetric), volumetric tangent vs FD of `volumetric_first_piola`, and
   positivity/inverted-configuration guards.
 
+### Added
+- **`HgoParams::family_moduli` — the two-family elastin/collagen
+  parameterisation**: per-family `(k1, k2)` overrides parallel to
+  `fiber_directions` (a compliant elastin family alongside a stiff
+  collagen family), replacing the shared `k1`/`k2` for the families they
+  cover. `None` — the default — is the shared pair, bit-identical; a
+  length mismatch is an assert-level API error, like the stent crate's
+  paired-slice contracts. Because the fiber term sums over families, the
+  two-family response is verified as the *exact* sum of the single-family
+  responses (an identity, not a tolerance), alongside finite-difference
+  stress agreement for the full combination (per-family moduli + crimp
+  together), shared-pair equivalence, and the pairing panic. Crimp
+  recruitment weights every family by the same `R(λ)` — per-family
+  recruitment windows remain open.
+
 ### Planned
-- The two-family elastin/collagen parameterisation (per-family `k1`/`k2`
-  and stiffness split) used in some literature; the crimp-recruitment half
-  of the fiber item is delivered above.
+- (The fiber item is delivered: crimp recruitment above, per-family
+  moduli in this release. Remaining as a small nuance: per-family
+  recruitment windows, so an elastin family can be engaged before a
+  crimp-gated collagen one.)
 
 ### Notes
 - Adding a `TissueModel` variant is a **breaking** change for any downstream

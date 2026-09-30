@@ -178,6 +178,34 @@ pub struct HgoParams {
     /// Optional collagen-crimp recruitment (see the module docs).
     /// `None` — the default — is the unmodified HGO model.
     pub crimp: Option<CrimpRecruitment>,
+    /// Per-family stiffness overrides `(k1, k2)` parallel to
+    /// `fiber_directions` — the two-family elastin/collagen
+    /// parameterisation: a compliant elastin family (low `k1`) alongside a
+    /// stiff collagen family (high `k1`). `None` — the default — gives
+    /// every family the shared `k1`/`k2`. A `Some` slice whose length
+    /// differs from `fiber_directions` is an API misuse and panics at
+    /// evaluation, like the stent crate's paired-slice contracts. Note
+    /// that crimp recruitment (when set) weights *every* family by the
+    /// same `R(λ)` — per-family recruitment windows stay open.
+    pub family_moduli: Option<Vec<(f64, f64)>>,
+}
+
+impl HgoParams {
+    /// `(k1, k2)` of family `i` — the override when present, the shared
+    /// pair otherwise.
+    fn family_k(&self, i: usize) -> (f64, f64) {
+        match &self.family_moduli {
+            Some(ms) => {
+                assert_eq!(
+                    ms.len(),
+                    self.fiber_directions.len(),
+                    "family_moduli must pair one (k1, k2) per fiber_directions entry"
+                );
+                ms[i]
+            }
+            None => (self.k1, self.k2),
+        }
+    }
 }
 
 /// `E_f = κ I1 + (1 − 3κ) I4 − 1` for one family.
@@ -203,13 +231,14 @@ impl HgoParams {
         let j = f.det();
 
         let mut w = self.c * 0.5 * (i1 - 3.0);
-        for a0 in &self.fiber_directions {
+        for (i, a0) in self.fiber_directions.iter().enumerate() {
+            let (k1, k2) = self.family_k(i);
             let a = a0.normalize();
             let i4 = a.dot(c_mat * a);
             let e = fiber_exponent(i1, i4, self.kappa);
             if e > 0.0 {
                 let weight = self.recruitment_weight(i4);
-                w += weight * self.k1 / (2.0 * self.k2) * ((self.k2 * e * e).exp_m1());
+                w += weight * k1 / (2.0 * k2) * ((k2 * e * e).exp_m1());
             }
         }
         w + (j - 1.0).powi(2) / self.d1
@@ -237,14 +266,15 @@ impl HgoParams {
         let identity = Mat3::IDENTITY;
         let mut dw_dc = identity * (self.c * 0.5);
 
-        for a0 in &self.fiber_directions {
+        for (f, a0) in self.fiber_directions.iter().enumerate() {
+            let (k1, k2) = self.family_k(f);
             let a = a0.normalize();
             let aot = outer(a);
             let i4 = a.dot(c_mat * a);
             let e = fiber_exponent(i1, i4, self.kappa);
             if e > 0.0 {
                 let r = self.recruitment_weight(i4);
-                let coef = self.k1 * r * e * (self.k2 * e * e).exp();
+                let coef = k1 * r * e * (k2 * e * e).exp();
                 dw_dc = dw_dc + (identity * self.kappa + aot * (1.0 - 3.0 * self.kappa)) * coef;
                 if let Some(c) = &self.crimp {
                     // The chain-rule term through R(λ), λ = √I4: dR/dI4 =
@@ -252,9 +282,9 @@ impl HgoParams {
                     // the recruitment window.
                     let lambda = i4.max(0.0).sqrt();
                     if lambda > 0.0 {
-                        let dr = c.recruited_fraction_derivative(lambda) / (2.0 * lambda) * self.k1
-                            / (2.0 * self.k2)
-                            * (self.k2 * e * e).exp_m1();
+                        let dr = c.recruited_fraction_derivative(lambda) / (2.0 * lambda)
+                            * (k1 / (2.0 * k2))
+                            * (k2 * e * e).exp_m1();
                         dw_dc = dw_dc + aot * dr;
                     }
                 }
@@ -308,6 +338,7 @@ mod tests {
             fiber_directions: vec![Vec3::new(1.0, 1.0, 0.0), Vec3::new(-1.0, 1.0, 0.0)],
             d1: 100.0,
             crimp: None,
+            family_moduli: None,
         }
     }
 
@@ -357,6 +388,7 @@ mod tests {
             fiber_directions: vec![Vec3::X, Vec3::Y],
             d1: 100.0,
             crimp: None,
+            family_moduli: None,
         };
         let f = uniaxial_f(1.1);
         // κ = 0 → E = I4 − 1; with the lateral contraction the y-fiber sees
@@ -371,6 +403,7 @@ mod tests {
             fiber_directions: vec![Vec3::Y],
             d1: 100.0,
             crimp: None,
+            family_moduli: None,
         };
         let base = HgoParams {
             c: 0.8,
@@ -380,6 +413,7 @@ mod tests {
             fiber_directions: vec![Vec3::Y],
             d1: 100.0,
             crimp: None,
+            family_moduli: None,
         };
         assert!(
             (inactive_only.strain_energy(&f) - base.strain_energy(&f)).abs() < 1e-12,
@@ -399,6 +433,7 @@ mod tests {
             fiber_directions: vec![Vec3::X],
             d1: 100.0,
             crimp: CrimpRecruitment::new(mean, spread),
+            family_moduli: None,
         }
     }
 
@@ -539,5 +574,113 @@ mod tests {
         assert!((erf(1.0) - 0.8427007929497149).abs() < 1e-15);
         assert!((erf(-1.0) + 0.8427007929497149).abs() < 1e-15);
         assert!((erf(3.0) - erf(3.0 + 1e-9)).abs() < 1e-12);
+    }
+
+    /// Biaxial extension with `J = 1`: both families in extension, so
+    /// every structural term is active.
+    fn biaxial_f() -> Mat3 {
+        let (a, b) = (1.2f64, 1.1f64);
+        Mat3::from_rows(
+            Vec3::new(a, 0.0, 0.0),
+            Vec3::new(0.0, b, 0.0),
+            Vec3::new(0.0, 0.0, 1.0 / (a * b)),
+        )
+    }
+
+    #[test]
+    fn two_family_energy_is_the_exact_sum_of_single_families() {
+        // The fiber term sums over families, so a two-family wall is
+        // exactly the sum of the single-family walls minus one share of
+        // the ground substance — an identity, not an approximation.
+        let ground = |p: &HgoParams, f: &Mat3| {
+            p.c * 0.5 * ((f.transpose() * *f).trace() - 3.0) + (f.det() - 1.0).powi(2) / p.d1
+        };
+        let f = biaxial_f();
+        let (k1a, k2a, k1b, k2b) = (2.0, 3.0, 50.0, 12.0);
+        let two = HgoParams {
+            c: 0.8,
+            k1: 0.0,
+            k2: 1.0,
+            kappa: 0.1,
+            fiber_directions: vec![Vec3::X, Vec3::Y],
+            d1: 100.0,
+            crimp: None,
+            family_moduli: Some(vec![(k1a, k2a), (k1b, k2b)]),
+        };
+        let only_a = HgoParams {
+            k1: k1a,
+            k2: k2a,
+            fiber_directions: vec![Vec3::X],
+            family_moduli: Some(vec![(k1a, k2a)]),
+            ..two.clone()
+        };
+        let only_b = HgoParams {
+            k1: k1b,
+            k2: k2b,
+            fiber_directions: vec![Vec3::Y],
+            family_moduli: Some(vec![(k1b, k2b)]),
+            ..two.clone()
+        };
+        let expected = only_a.strain_energy(&f) + only_b.strain_energy(&f) - ground(&only_a, &f);
+        assert!(
+            (two.strain_energy(&f) - expected).abs() < 1e-12,
+            "{} vs {}",
+            two.strain_energy(&f),
+            expected
+        );
+    }
+
+    #[test]
+    fn two_family_analytic_stress_matches_finite_difference() {
+        // Both overrides at once: per-family moduli on a crimped wall —
+        // the full combination the analytic stress must differentiate.
+        let mut two = crimped_params(1.2, 0.02);
+        two.fiber_directions = vec![Vec3::X, Vec3::Y];
+        two.family_moduli = Some(vec![(50.0, 12.0), (5.0, 3.0)]);
+        for lam in [1.1, 1.19, 1.25] {
+            let f = uniaxial_f(lam);
+            let pa = two.first_piola(&f);
+            let pn = fd_stress(&two, &f);
+            for i in 0..3 {
+                for j in 0..3 {
+                    let scale = pa.at(i, j).abs().max(1e-3);
+                    assert!(
+                        (pa.at(i, j) - pn.at(i, j)).abs() < 1e-5 * scale,
+                        "λ={lam} ({i},{j}): {} vs {}",
+                        pa.at(i, j),
+                        pn.at(i, j)
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn per_family_overrides_reproducing_the_shared_pair_are_identical() {
+        let mut shared = crimped_params(1.2, 0.02);
+        shared.fiber_directions = vec![Vec3::X, Vec3::new(1.0, 1.0, 0.0)];
+        let explicit = HgoParams {
+            family_moduli: Some(vec![(50.0, 12.0), (50.0, 12.0)]),
+            ..shared.clone()
+        };
+        let f = biaxial_f();
+        assert_eq!(shared.strain_energy(&f), explicit.strain_energy(&f));
+        for i in 0..3 {
+            for j in 0..3 {
+                assert_eq!(
+                    shared.first_piola(&f).at(i, j),
+                    explicit.first_piola(&f).at(i, j)
+                );
+            }
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "family_moduli must pair")]
+    fn family_moduli_length_mismatch_is_an_api_error() {
+        let mut p = crimped_params(1.2, 0.02);
+        p.fiber_directions = vec![Vec3::X, Vec3::Y];
+        p.family_moduli = Some(vec![(50.0, 12.0)]);
+        let _ = p.strain_energy(&uniaxial_f(1.1));
     }
 }

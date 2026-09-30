@@ -474,14 +474,16 @@ than inferred from a clean-looking list of completed phases.
 
 ### `tpt-med-dicom`
 
-Multi-frame (Enhanced) ingestion for the uncompressed syntaxes —
-RFC 0001's v1 item 2 — **delivered 2026-10-01** (`parse_bytes_all` maps
-per-frame functional groups onto the slice list; also found and fixed a
-pre-existing bug where Part-10 implicit-VR files failed to parse at
-all). The ingestion roadmap's own remaining open items — Part 2
-multi-component codestream decoding, JPIP, multi-frame over the
-compressed syntaxes, and DICOM networking — are tracked in the crate's
-CHANGELOG, so there is one checkbox per piece of work. Part 2 was spiked in
+Multi-frame (Enhanced) ingestion — RFC 0001's v1 item 2 — **delivered
+2026-10-01 for the uncompressed syntaxes and, behind each codec feature,
+the compressed ones** (`parse_bytes_all` maps per-frame functional groups
+onto the slice list; compressed frame boundaries come from the Basic
+Offset Table or the one-fragment-per-frame convention; also found and
+fixed a pre-existing bug where Part-10 implicit-VR files failed to parse
+at all). The ingestion roadmap's own remaining open items — Part 2
+multi-component codestream decoding, JPIP, and DICOM networking — are
+tracked in the crate's CHANGELOG, so there is one checkbox per piece of
+work. Part 2 was spiked in
 `rfcs/0010-jpeg2000-part2-spike.md`, which recommends deferring it: the
 gating input is a purchase of ISO/IEC 15444-2, not engineering time.
 
@@ -636,8 +638,9 @@ gating input is a purchase of ISO/IEC 15444-2, not engineering time.
   **Done (2026-09-30): `MaterialTangent` (`A[i][j](k,l) = ∂P_ij/∂F_kl`) via `material_tangent` — analytic for Neo-Hookean and Yeoh (the `q′` term needs a second `β`) and the model-independent `volumetric_tangent`; central differences for Mooney–Rivlin/Ogden/HGO (same split as `first_piola`). Verified by FD agreement, major symmetry `A_ij,kl = A_kl,ij` on all five models (the minor symmetry does not hold), and the volumetric FD cross-check.**
 - [x] **Plane-stress and reduced-order wrappers over the full 3×3 `F` interface.**
   **Done (2026-10-01): `ReducedPlaneModel` with `PlaneCondition::{PlaneStrain, PlaneStress}` — plane strain pins `F₃₃ = 1`; plane stress solves `P₃₃ = 0` by bracketed bisection on the scalar `F₃₃` (verified against the incompressible closed form `F₃₃ = 1/det F₂ₓ₂` and traction-freeness).**
-- [ ] **Fiber-family rotation in HGO (collagen crimp), and the two-family elastin/collagen parameterisation used in some literature.**
-  **Crimp-recruitment half delivered (2026-10-01): `CrimpRecruitment` + `HgoParams::crimp` — each fiber family's term weighted by the recruited fraction `R(λ) = Φ((λ − λ̄_r)/σ_r)` (Decraemer–Maes–Vanhuyse waviness distribution), caller-cited `λ̄_r`/`σ_r`; `R → 1` recovers standard HGO exactly, `crimp: None` is bit-identical. The analytic stress carries the chain-rule `R′` term, and the normal CDF is evaluated to machine precision (series + continued-fraction erf) because the FD stress reference differentiates through `R` — a 1e-7-value rational approximation was tried first and rejected for exactly that. The two-family per-family-stiffness parameterisation remains.**
+- [x] **Fiber-family rotation in HGO (collagen crimp), and the two-family elastin/collagen parameterisation used in some literature.**
+  **Done (2026-10-01, both halves):**
+  **Crimp recruitment: `CrimpRecruitment` + `HgoParams::crimp` — each fiber family's term weighted by the recruited fraction `R(λ) = Φ((λ − λ̄_r)/σ_r)` (Decraemer–Maes–Vanhuyse waviness distribution), caller-cited `λ̄_r`/`σ_r`; `R → 1` recovers standard HGO exactly, `crimp: None` is bit-identical. The analytic stress carries the chain-rule `R′` term, and the normal CDF is evaluated to machine precision (series + continued-fraction erf) because the FD stress reference differentiates through `R` — a 1e-7-value rational approximation was tried first and rejected for exactly that.  **Two-family parameterisation: `HgoParams::family_moduli` — per-family `(k1, k2)` overrides parallel to `fiber_directions`; verified by the exact sum identity (the fiber term is additive over families, so a two-family wall IS the sum of the single-family walls), FD stress agreement for the full moduli+crimp combination, and shared-pair bit-equivalence. Remaining nuance, tracked in the crate's Planned: per-family recruitment windows (crimp currently weights every family by the same R(λ)).**
 
 ### `tpt-med-viscoelastic`
 

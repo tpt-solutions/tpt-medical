@@ -38,6 +38,20 @@ changes for consumers of this crate.
   implicit-VR multi-frame, the `_all` refusal, the count mismatch, the
   missing plane position, series assembly, and a single-frame
   `NumberOfFrames = 1` file through the unchanged entry point.
+- **Multi-frame over the compressed syntaxes too** — completing the
+  roadmap item for every transfer syntax this crate decodes. The Basic
+  Offset Table (PS3.5 Annex A.4) is resolved instead of rejected: one u32
+  byte offset per frame into the concatenated fragment stream, validated
+  (strictly increasing, within the stream, count == `NumberOfFrames`);
+  with an empty table, one fragment per frame is accepted when the counts
+  agree. Each frame decodes through the same feature-gated codec path,
+  with per-frame functional-group geometry exactly as in the native case.
+  An empty table whose fragment count disagrees with the frame count is a
+  named "boundaries cannot be recovered" error rather than a guess.
+  `DicomElement::pixel_fragments` (`PixelFragments { fragments,
+  basic_offset_table }`) carries the resolved structure. Five new tests
+  (RLE frames through the BOT, the empty-table fragment-per-frame form,
+  and the three named rejections).
 - **Fixed: Part-10 implicit-VR files failed to parse at all.** The file
   meta-group loop read the first dataset element with explicit-VR
   parsing, so an implicit dataset's 32-bit length header was
@@ -187,9 +201,9 @@ changes for consumers of this crate.
     it is a network reference to pixel data held elsewhere, so it needs a
     transport story (resolved at the archive boundary) before decoding is even
     in scope. Still `DicomError::CompressedPixelData`.
-  - DICOM networking (C-STORE, DICOMweb); multi-frame ingestion for the
-    **compressed** transfer syntaxes (the uncompressed syntaxes are done —
-    see Added above).
+  - DICOM networking (C-STORE, DICOMweb). Multi-frame ingestion is done
+    for the uncompressed syntaxes and, behind each codec feature, for the
+    compressed ones (see Added above).
 - A built-in library of named, cited `PhantomModel`s for common commercial
   phantoms — the remaining half after the rotation detection delivered
   above (`detect_phantom_rotation`); the layouts and known values must come
