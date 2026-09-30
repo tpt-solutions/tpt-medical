@@ -22,15 +22,6 @@ changes for consumers of this crate.
   at the initial uniform pressure. Contact loss past the penetration is
   flagged (`any_zone_lost_contact`); runaway modes (edge loading,
   third-body abrasion) plug in through the same trait. Three new tests.
-- `ContactSolver` trait + built-in `WinklerContact`, and
-  `simulate_wear_with_contact`: **the contact-solver coupling with
-  wear-debris feedback** — per-zone wear depths feed each block's pressure
-  solve, so wear changes the contact geometry and pressures. The
-  Winkler foundation is self-stabilising (worn zones shed load to fresh
-  ones; verified by load conservation, load migration off the faster-worn
-  zone, and a coupled total below the prescribed-pressure run); runaway
-  modes plug in through the same trait. Contact loss past the penetration
-  is flagged. Three new tests.
 - `WearSchedule` + `WearModel::simulate_wear_with_schedule`: **run-in
   excess wear** (linearly decaying multiplier over a run-in period) and
   **activity-level bands**, integrated cycle-exactly — gait extrapolation is
@@ -45,9 +36,10 @@ changes for consumers of this crate.
   default would be a fabricated number wearing a citation.
 
 ### Planned
-  of magnitude between studies and which a defensible screening study should
-  quantify.
-  strictly linear in cycle count.
+- (None: the debris-feedback loop, the contact-solver coupling, the
+  uncertainty band and the run-in/activity schedule are all delivered
+  above; a full contact solution beyond the Winkler foundation enters
+  through the `ContactSolver` trait.)
 
 ### Notes
 - Changing `WearLaw` or `WearResult` is a breaking change. Adding a new law

@@ -12,6 +12,23 @@ changes for consumers of this crate.
 ## [Unreleased]
 
 ### Added
+- **`CylindricalCut` (+ `PlanStep::Cylinder`, `VirtualSurgery::cylinder`):
+  the first curved resection surface.** The cylinder of `radius` about an
+  axis (`axis_origin` + `axis_direction`) — the shape a reamer or burr
+  actually leaves, and the surface a rotational (derotation) osteotomy
+  swings about — keeping the core within `radius` (`keep_inside`, e.g. a
+  reaming or core decompression) or the annulus outside it. Everything the
+  plane cut has carries over: an optional saw-kerf width removing the
+  radial slab within `kerf_width / 2` of the wall on both sides,
+  `DiscardedSide::RetainAs` (a cylindrical core kept as a named fragment
+  for grafting), the same measurement conventions (resection volume;
+  depth measured past the kept face — the wall shifted by half the kerf),
+  build-time plan validation, and the `cylinder:` audit label. The
+  retained-side compaction is now one shared helper for the plane and
+  cylinder cuts, so the two cannot drift. Five new tests: exact core
+  count/volume/depth, keep-outside resection, kerf slab, offset + non-unit
+  axis, retain-and-named-move integration, and the plan-validation
+  rejections.
 - **Per-fragment addressing, first slice** (`rfcs/0011` option 3,
   implemented following the maintainer's direction to proceed):
   `DiscardedSide::{Resect, RetainAs { name }}` on `OsteotomyCut` — a cut
@@ -60,38 +77,12 @@ changes for consumers of this crate.
   grid-aligned and a sub-voxel translation, multi-cut totals).
 
 ### Planned
-- Curved and freeform resections (kerf width and two-plane wedges are delivered).
+- Freeform (anatomically contoured) resections — the cylindrical surface is
+  delivered; general implicit/spline-contoured surfaces remain.
 - Implant component placement with a bone–implant interface, and bone graft or
   defect reconstruction.
 - Soft-tissue structures, so a plan can be checked for collateral damage to
   ligaments, capsules and neurovascular bundles.
-
-### Notes
-- `NaN` is the sentinel for a discarded voxel, and every operation skips `NaN`
-  voxels rather than treating them as zero. This is what keeps `count_above`
-  honest: a resected model reports the resected volume.
-- Discarded voxels are compacted to the bounding box of the kept region, so
-  fragment volumes stay correct rather than carrying a full-size field of dead
-  cells.
-- Fragment transforms are **rigid** (rotation plus translation). No scaling and
-  no shear — a plan that could scale bone would not be a surgical plan.
-- Adding a `PlanStep` variant is breaking for downstream exhaustive matches.
-
-## [Unreleased]
-
-### Added
-- Crate README explaining why the audit trail is the point of this crate: the
-  planning primitives are not hard, but producing the operation log *by
-  construction* rather than reconstructing it from screenshots afterwards is.
-
-### Planned
-- Curved and freeform resections (kerf width and two-plane wedges are delivered).
-- Implant component placement with a bone–implant interface, and bone graft or
-  defect reconstruction.
-- Soft-tissue structures, so a plan can be checked for collateral damage to
-  ligaments, capsules and neurovascular bundles.
-- Measurement reporting: resection volumes, cut depths and achieved alignment
-  errors, recorded alongside the steps in the audit log.
 
 ### Notes
 - `NaN` is the sentinel for a discarded voxel, and every operation skips `NaN`

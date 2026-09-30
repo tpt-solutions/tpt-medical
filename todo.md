@@ -528,7 +528,7 @@ gating input is a purchase of ISO/IEC 15444-2, not engineering time.
 
 - [ ] **Additional boundary conditions: unconfined compression and shear.**
   **Shear half delivered (2026-10-01): `solid_shear_modulus` — first-order biphasic shear is volumetrically silent, so the fluid never pressurises and the response is a closed form at all times (permeability-independent; verified). Unconfined compression remains open above.**
-  **Unconfined limits delivered (2026-10-01): `unconfined_equilibrium_modulus` (E_s, equal to H_A at ν_s = 0) plus the documented rigid instantaneous response — both exact and tested. The transient itself remains the classical Bessel-series solution.**
+  **Unconfined limits delivered (2026-10-01): `unconfined_equilibrium_modulus` (E_s, equal to H_A at ν_s = 0) plus the documented rigid instantaneous response — both exact and tested. The transient itself remains the classical Bessel-series solution: the crate's docs rule out reproducing Armstrong–Lai–Mow's eigen-coefficients from memory, and the paper is paywalled — the same gating-input pattern as the JPEG 2000 Part 2 spike (`rfcs/0010`), deferred rather than faked.**
 - [ ] **Nonlinear biphasic theory, and a coupling between permeability and strain.**
   **Permeability-coupling half delivered (2026-10-01): `PermeabilityLaw` / `StrainDependentPermeability` — caller-cited `k(J)` with validated evaluation and the equilibrium-compaction evaluation point; constant-`k` stays the closed-form baseline. Nonlinear solid matrix and a non-constant-k solver remain.**
 - [ ] **A lubrication/repulsion term for the contact interface, so the model can be driven by a contact solver rather than a prescribed step load.**
@@ -603,7 +603,8 @@ gating input is a purchase of ISO/IEC 15444-2, not engineering time.
 
 ### `tpt-med-stents`
 
-- [ ] ****Level 2** — tapered ring groups, which would give `dogboning` a real value instead of the structural `0.0` it reports today.**
+- [x] ****Level 2** — tapered ring groups, which would give `dogboning` a real value instead of the structural `0.0` it reports today.**
+  **Done — `simulate_tapered_deployment` / `TaperedDeployment`: the stent resolved into axial ring groups, each at its own equilibrium against a caller-supplied axial lumen profile, with `dogboning = |d_ends − d_mids|/nominal` (the two-group variant compares the ends directly); a uniform profile reproduces `simulate_deployment` exactly. The code shipped in the "thirteen per-crate planned items" sweep and this tick was missed by the two tracker refreshes since — found by cross-checking the CHANGELOGs against this tracker.**
 - [ ] ****Level 3** — 3D superelastic FEM with frictional contact via `tpt-fem-hyperelastic` / `tpt-fem-contact`.**
 - [x] **Foreshortening, and per-crown stiffness variation for a non-uniform ring.**
   **Done (2026-09-30): `StentModel::foreshortening` — diamond-cell geometry with a `link_fraction` calibration landing in the published few-percent band (NaN beyond the developed-length limit); `simulate_deployment_with_crowns`/`NonUniformDeployment` — per-crown stiffness slice with proportional force split and peak-crown share (empty slice reproduces the uniform ring exactly).**
@@ -616,7 +617,8 @@ gating input is a purchase of ISO/IEC 15444-2, not engineering time.
 - [x] **Per-fragment addressing, so a `PlanStep::Move` can target a single named fragment rather than the whole assembled model. This is the largest known gap and needs an RFC.**
   **Implemented (2026-10-01) as RFC 0011's option-3 first slice, following maintainer direction to proceed: `DiscardedSide::{Resect, RetainAs { name }}` + `PlanStep::MoveNamed`/`move_fragment_named` with build-time `PlanError` validation; plans without retention are byte-identical (rule 4 asserted by the untouched prior suite). The implementation also exposed that the RFC's original option 1 was itself flawed — recorded in the RFC. Remaining (tracked in the crate's CHANGELOG): cuts after named moves (grid unification), multi-fragment retaining cuts, collision handling beyond last-write-wins.**
 - [ ] **Curved and freeform resections, saw-kerf width, and multi-plane wedges.**
-  **Kerf and wedges delivered (2026-10-01): `OsteotomyCut::kerf_width` (symmetric slab removal, boundary shifted by half the kerf, depth measured past the kept face) and `WedgeCut`/`PlanStep::Wedge` (the exact two-plane intersection sequential cuts cannot express). Curved/freeform resections remain open.**
+  **Kerf and wedges delivered (2026-10-01): `OsteotomyCut::kerf_width` (symmetric slab removal, boundary shifted by half the kerf, depth measured past the kept face) and `WedgeCut`/`PlanStep::Wedge` (the exact two-plane intersection sequential cuts cannot express).**
+  **Cylindrical slice delivered (2026-10-01): `CylindricalCut`/`PlanStep::Cylinder` — the cylinder about an axis, keeping the core or the annulus, with the plane cut's kerf, `DiscardedSide::RetainAs` retention, measurements and build-time validation (a reamer/burr surface, and the surface a rotational osteotomy swings about). Freeform (anatomically contoured) resections remain open.**
 - [ ] **Implant component placement with a bone–implant interface, and bone graft or defect reconstruction.**
 - [ ] **Soft-tissue structures, so a plan can be checked for collateral damage to ligaments, capsules and neurovascular bundles.**
 - [x] **Measurement reporting: resection volumes, cut depths and achieved alignment errors, recorded alongside the steps in the audit log.**
@@ -629,6 +631,7 @@ gating input is a purchase of ISO/IEC 15444-2, not engineering time.
 - [x] **Plane-stress and reduced-order wrappers over the full 3×3 `F` interface.**
   **Done (2026-10-01): `ReducedPlaneModel` with `PlaneCondition::{PlaneStrain, PlaneStress}` — plane strain pins `F₃₃ = 1`; plane stress solves `P₃₃ = 0` by bracketed bisection on the scalar `F₃₃` (verified against the incompressible closed form `F₃₃ = 1/det F₂ₓ₂` and traction-freeness).**
 - [ ] **Fiber-family rotation in HGO (collagen crimp), and the two-family elastin/collagen parameterisation used in some literature.**
+  **Crimp-recruitment half delivered (2026-10-01): `CrimpRecruitment` + `HgoParams::crimp` — each fiber family's term weighted by the recruited fraction `R(λ) = Φ((λ − λ̄_r)/σ_r)` (Decraemer–Maes–Vanhuyse waviness distribution), caller-cited `λ̄_r`/`σ_r`; `R → 1` recovers standard HGO exactly, `crimp: None` is bit-identical. The analytic stress carries the chain-rule `R′` term, and the normal CDF is evaluated to machine precision (series + continued-fraction erf) because the FD stress reference differentiates through `R` — a 1e-7-value rational approximation was tried first and rejected for exactly that. The two-family per-family-stiffness parameterisation remains.**
 
 ### `tpt-med-viscoelastic`
 

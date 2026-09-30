@@ -178,37 +178,13 @@ impl OsteotomyCut {
             return (out, None, measurement); // empty cut result; leave as-is
         }
         compact(&mut out, min, max);
-        // Compact the retained fragment to its own bounding box.
-        let retained_model = retained.map(|mut r| {
-            let mut rmin = [usize::MAX; 3];
-            let mut rmax = [0usize; 3];
-            for z in 0..r.dims.2 {
-                for y in 0..r.dims.1 {
-                    for x in 0..r.dims.0 {
-                        if !r.values[r.index(x, y, z).expect("in-bounds")].is_nan() {
-                            rmin[0] = rmin[0].min(x);
-                            rmin[1] = rmin[1].min(y);
-                            rmin[2] = rmin[2].min(z);
-                            rmax[0] = rmax[0].max(x);
-                            rmax[1] = rmax[1].max(y);
-                            rmax[2] = rmax[2].max(z);
-                        }
-                    }
-                }
-            }
-            if rmax[0] == 0 {
-                r // nothing retained (empty side)
-            } else {
-                compact(&mut r, rmin, rmax);
-                r
-            }
-        });
-        let retained_model = retained_model.filter(|r| r.values.iter().any(|v| !v.is_nan()));
+        let retained_model = retained.and_then(compact_retained);
         (out, retained_model, measurement)
     }
 }
 
-/// Measurements of one [`OsteotomyCut`], for the surgical report.
+/// Measurements of one cut step (plane [`OsteotomyCut`], [`WedgeCut`] or
+/// [`CylindricalCut`]), for the surgical report.
 #[derive(Debug, Clone)]
 pub struct CutMeasurement {
     /// The cut's fragment label.
@@ -323,7 +299,157 @@ impl WedgeCut {
     }
 }
 
-/// A rigid fragment transform: rotation (axis-angle) about a pivot plus/// A rigid fragment transform: rotation (axis-angle) about a pivot plus
+/// A **curved (cylindrical) resection**: the cylinder of radius `radius`
+/// about an axis (`axis_origin`, `axis_direction`), keeping one side of
+/// the wall — the core within `radius` (a reaming or core decompression)
+/// or the annulus outside it. This is the first curved resection surface
+/// in the crate: a cylinder is the shape a reamer or a burr actually
+/// leaves, and the surface a rotational (derotation) osteotomy swings
+/// about. An optional **saw-kerf width** removes the radial slab within
+/// `kerf_width / 2` of the wall on both sides, exactly as
+/// [`OsteotomyCut`]'s kerf does for a plane. The discarded side follows
+/// the `rfcs/0011` resolution ([`DiscardedSide`]): resected by default,
+/// or retained as a named fragment (e.g. a cylindrical core kept for
+/// grafting).
+#[derive(Debug, Clone)]
+pub struct CylindricalCut {
+    /// A point on the cylinder's axis (patient coordinates).
+    pub axis_origin: Vec3,
+    /// The cylinder's axis direction (normalized internally; a zero
+    /// vector degrades the distance to "distance from `axis_origin`", so
+    /// always pass a real axis).
+    pub axis_direction: Vec3,
+    /// Cylinder radius (mm).
+    pub radius: f64,
+    /// Fragment name produced from the kept side (audit label).
+    pub fragment_name: String,
+    /// Keep the material within `radius` of the axis (the core); `false`
+    /// keeps the annulus outside and resects the core.
+    pub keep_inside: bool,
+    /// Saw-kerf width (mm): material within `kerf_width / 2` of the
+    /// cylinder wall is discarded from both sides. 0.0 (the default) is a
+    /// pure cylindrical surface.
+    pub kerf_width: f64,
+    /// The discarded side's fate, as for [`OsteotomyCut`].
+    pub discarded: DiscardedSide,
+}
+
+impl CylindricalCut {
+    /// Perpendicular distance from the cylinder's axis (mm).
+    pub fn radial_distance(&self, p: Vec3) -> f64 {
+        let dir = self.axis_direction.normalize();
+        let w = p - self.axis_origin;
+        let along = w.dot(dir);
+        (w - dir * along).norm()
+    }
+
+    /// Applies the cut; returns the kept fragment (see
+    /// [`OsteotomyCut::apply`]).
+    pub fn apply(&self, model: &VoxelModel) -> VoxelModel {
+        self.apply_measured(model).0
+    }
+
+    /// [`Self::apply`] plus the step's measurements, with the same
+    /// conventions as [`OsteotomyCut::apply_measured`]: the resection
+    /// volume counts discarded non-empty voxels, and the cut depth is the
+    /// deepest discarded voxel centre past the kept face — the cylinder
+    /// wall shifted by half the kerf.
+    pub fn apply_measured(
+        &self,
+        model: &VoxelModel,
+    ) -> (VoxelModel, Option<VoxelModel>, CutMeasurement) {
+        let mut out = model.clone();
+        let (nx, ny, nz) = model.dims;
+        let voxel_volume = model.spacing.0 * model.spacing.1 * model.spacing.2;
+        let retaining = matches!(self.discarded, DiscardedSide::RetainAs { .. });
+        let mut retained = if retaining { Some(model.clone()) } else { None };
+        let mut min = [usize::MAX; 3];
+        let mut max = [0usize; 3];
+        let mut resected = 0usize;
+        let mut max_depth = 0.0f64;
+        let half_kerf = self.kerf_width * 0.5;
+        for z in 0..nz {
+            for y in 0..ny {
+                for x in 0..nx {
+                    let Some(idx) = model.index(x, y, z) else {
+                        continue;
+                    };
+                    if model.values[idx].is_nan() {
+                        continue;
+                    }
+                    let d = self.radial_distance(model.center(x, y, z));
+                    let keep = if self.keep_inside {
+                        d <= self.radius - half_kerf
+                    } else {
+                        d >= self.radius + half_kerf
+                    };
+                    if keep {
+                        min[0] = min[0].min(x);
+                        min[1] = min[1].min(y);
+                        min[2] = min[2].min(z);
+                        max[0] = max[0].max(x);
+                        max[1] = max[1].max(y);
+                        max[2] = max[2].max(z);
+                        if let Some(r) = &mut retained {
+                            r.values[idx] = f64::NAN;
+                        }
+                    } else {
+                        out.values[idx] = f64::NAN;
+                        if !retaining {
+                            resected += 1;
+                        }
+                        let depth = if self.keep_inside {
+                            d - (self.radius - half_kerf)
+                        } else {
+                            (self.radius + half_kerf) - d
+                        };
+                        max_depth = max_depth.max(depth);
+                    }
+                }
+            }
+        }
+        let measurement = CutMeasurement {
+            fragment_name: self.fragment_name.clone(),
+            resection_volume_mm3: resected as f64 * voxel_volume,
+            max_depth_mm: max_depth,
+        };
+        if max[0] == 0 {
+            return (out, None, measurement); // empty cut result; leave as-is
+        }
+        compact(&mut out, min, max);
+        let retained_model = retained.and_then(compact_retained);
+        (out, retained_model, measurement)
+    }
+}
+
+/// Compacts a retained fragment to its own bounding box; `None` when the
+/// side retained nothing non-empty. Shared by every cut type that can
+/// retain ([`OsteotomyCut`], [`CylindricalCut`]) so the two cannot drift.
+fn compact_retained(retained: VoxelModel) -> Option<VoxelModel> {
+    let mut rmin = [usize::MAX; 3];
+    let mut rmax = [0usize; 3];
+    for z in 0..retained.dims.2 {
+        for y in 0..retained.dims.1 {
+            for x in 0..retained.dims.0 {
+                if !retained.values[retained.index(x, y, z).expect("in-bounds")].is_nan() {
+                    rmin[0] = rmin[0].min(x);
+                    rmin[1] = rmin[1].min(y);
+                    rmin[2] = rmin[2].min(z);
+                    rmax[0] = rmax[0].max(x);
+                    rmax[1] = rmax[1].max(y);
+                    rmax[2] = rmax[2].max(z);
+                }
+            }
+        }
+    }
+    let mut r = retained;
+    if rmax[0] != 0 {
+        compact(&mut r, rmin, rmax);
+    }
+    (r.values.iter().any(|v| !v.is_nan())).then_some(r)
+}
+
+/// A rigid fragment transform: rotation (axis-angle) about a pivot plus
 /// translation (both in patient coordinates, mm / radians).
 #[derive(Debug, Clone)]
 pub struct FragmentTransform {
@@ -455,6 +581,8 @@ pub enum PlanStep {
     Cut(OsteotomyCut),
     /// Two-plane closed-wedge osteotomy.
     Wedge(WedgeCut),
+    /// Curved (cylindrical) resection.
+    Cylinder(CylindricalCut),
     /// Rigid reposition of **every** fragment (the original semantics).
     Move(FragmentTransform),
     /// Rigid reposition of one **named** fragment
@@ -642,6 +770,35 @@ impl VirtualSurgery {
         Ok(self)
     }
 
+    /// Appends a curved (cylindrical) resection step.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::cut`] (including retention via
+    /// [`DiscardedSide::RetainAs`]).
+    pub fn cylinder(&mut self, cut: CylindricalCut) -> Result<&mut Self, PlanError> {
+        self.validate_cut()?;
+        if let DiscardedSide::RetainAs { name } = &cut.discarded {
+            if name.trim().is_empty() {
+                return Err(PlanError::EmptyRetainedName);
+            }
+        }
+        let retained = matches!(cut.discarded, DiscardedSide::RetainAs { .. });
+        self.fragment_log
+            .push(format!("cylinder:{}", cut.fragment_name));
+        self.steps.push(PlanStep::Cylinder(cut));
+        self.fragment_names = vec![self.latest_kept_name().to_string()];
+        if retained {
+            if let Some(PlanStep::Cylinder(c)) = self.steps.last() {
+                if let DiscardedSide::RetainAs { name } = &c.discarded {
+                    self.fragment_names.push(name.clone());
+                }
+            }
+        }
+        self.fragment_count = self.fragment_names.len();
+        Ok(self)
+    }
+
     /// Appends a whole-model fragment transform — every fragment moves
     /// together, preserving their relative positions (the original
     /// semantics; existing plans are unaffected).
@@ -709,6 +866,7 @@ impl VirtualSurgery {
             match step {
                 PlanStep::Cut(c) => return &c.fragment_name,
                 PlanStep::Wedge(w) => return &w.fragment_name,
+                PlanStep::Cylinder(c) => return &c.fragment_name,
                 _ => continue,
             }
         }
@@ -772,6 +930,25 @@ impl VirtualSurgery {
                         name: Some(cut.fragment_name.clone()),
                         model: next,
                     };
+                }
+                PlanStep::Cylinder(cut) => {
+                    // Validated at build: exactly one fragment.
+                    let current = &fragments[0].model;
+                    let (kept, retained, m) = cut.apply_measured(current);
+                    total_resection += m.resection_volume_mm3;
+                    log.push(format!("cylinder:{}", cut.fragment_name));
+                    measurements.push(StepMeasurement::Cut(m));
+                    fragments[0] = NamedFragment {
+                        name: Some(cut.fragment_name.clone()),
+                        model: kept,
+                    };
+                    if let (Some(r), DiscardedSide::RetainAs { name }) = (retained, &cut.discarded)
+                    {
+                        fragments.push(NamedFragment {
+                            name: Some(name.clone()),
+                            model: r,
+                        });
+                    }
                 }
                 PlanStep::Move(m) => {
                     let before = union_centroid(&fragments);
@@ -1168,6 +1345,247 @@ mod tests {
         // Half-kerf offset: discard now includes centres with x ≤ 0 or
         // z ≤ 0 in the overlap — strictly more than the zero-kerf wedge.
         assert!(m.resection_volume_mm3 > 250.0);
+    }
+
+    /// The cube grid's column count with centres x² + y² within a
+    /// radius² bound (x, y centres −5..4, a 10-wide grid): {r² ≤ 9} →
+    /// 29 columns, {r² ≤ 4} → 13, the complement → 71.
+    fn columns_within(radius_squared: f64) -> usize {
+        let mut n = 0;
+        for x in -5i32..5 {
+            for y in -5i32..5 {
+                if (x * x + y * y) as f64 <= radius_squared {
+                    n += 1;
+                }
+            }
+        }
+        n
+    }
+
+    fn core_cut(
+        radius: f64,
+        kerf: f64,
+        keep_inside: bool,
+        discarded: DiscardedSide,
+    ) -> CylindricalCut {
+        CylindricalCut {
+            axis_origin: Vec3::ZERO,
+            axis_direction: Vec3::Z,
+            radius,
+            fragment_name: "core".into(),
+            keep_inside,
+            kerf_width: kerf,
+            discarded,
+        }
+    }
+
+    #[test]
+    fn cylindrical_cut_keeps_exactly_the_core() {
+        let model = cube_model();
+        let cut = core_cut(3.0, 0.0, true, DiscardedSide::Resect);
+        let (out, _, m) = cut.apply_measured(&model);
+        // Columns within r = 3 exist in every z slice (the axis runs the
+        // full grid), zero-valued tissue included — 29 × 10.
+        let cols = columns_within(9.0);
+        assert_eq!(cols, 29);
+        // Cube voxels in the core: the cube's x/y centres run −3..2, so
+        // the (3,0) column and the four (x,3) columns are outside it —
+        // 27 of the 29 core columns are cube.
+        assert_eq!(out.count_above(50.0), 27 * 6, "cube voxels in the core");
+        let kept_total = out.values.iter().filter(|v| !v.is_nan()).count();
+        assert_eq!(kept_total, cols * 10);
+        // Resection volume: everything not kept (tissue + cube corners).
+        assert!(
+            (m.resection_volume_mm3 - (1000.0 - (cols * 10) as f64)).abs() < 1e-9,
+            "{}",
+            m.resection_volume_mm3
+        );
+        // Depth past the wall: the farthest discarded centre is a grid
+        // corner at r = √50.
+        assert!((m.max_depth_mm - (50.0f64.sqrt() - 3.0)).abs() < 1e-9);
+        // The kept bounding box compacts to the core's extent.
+        assert_eq!(out.dims, (7, 7, 10));
+        assert!((out.origin.x - (-3.0)).abs() < 1e-12);
+    }
+
+    #[test]
+    fn cylindrical_cut_keep_outside_resects_the_core() {
+        let model = cube_model();
+        let cut = core_cut(3.0, 0.0, false, DiscardedSide::Resect);
+        let (out, _, m) = cut.apply_measured(&model);
+        // Kept: the annulus d ≥ 3. The four r = 3 boundary columns are
+        // kept by *both* settings (the core keeps d ≤ 3) — the same
+        // measure-zero boundary overlap the plane cut has with its
+        // d ≥ 0 / d ≤ 0 convention — so the annulus is 71 + 4 = 75 of
+        // the grid's 100 columns × 10 slices.
+        let annulus_cols = 75;
+        let kept_total = out.values.iter().filter(|v| !v.is_nan()).count();
+        assert_eq!(kept_total, annulus_cols * 10);
+        // Cube voxels in the annulus: 36 cube columns minus the 25 the
+        // resection took (the 27 core∩cube columns less the two r = 3
+        // boundary columns it keeps).
+        assert_eq!(out.count_above(50.0), (36 - 25) * 6);
+        // Resected: the strict core interior.
+        assert!(
+            (m.resection_volume_mm3 - (25.0 * 10.0)).abs() < 1e-9,
+            "{}",
+            m.resection_volume_mm3
+        );
+        // Depth into the core: the axis column (r = 0) is the deepest.
+        assert!((m.max_depth_mm - 3.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn cylindrical_kerf_removes_a_radial_slab() {
+        let model = cube_model();
+        // Zero-kerf baseline.
+        let (_, _, m0) = core_cut(3.0, 0.0, true, DiscardedSide::Resect).apply_measured(&model);
+        // A 2 mm kerf keeps r ≤ 2 only: 13 columns × 10 slices, so the
+        // resection grows by exactly the (29 − 13)-column shell, and the
+        // depth is measured past the kept face at r = 2.
+        let cut = core_cut(3.0, 2.0, true, DiscardedSide::Resect);
+        let (out, _, m2) = cut.apply_measured(&model);
+        let cols = columns_within(4.0);
+        assert_eq!(cols, 13);
+        let kept_total = out.values.iter().filter(|v| !v.is_nan()).count();
+        assert_eq!(kept_total, cols * 10);
+        assert!(
+            (m2.resection_volume_mm3 - (m0.resection_volume_mm3 + 160.0)).abs() < 1e-9,
+            "{} vs {}",
+            m2.resection_volume_mm3,
+            m0.resection_volume_mm3
+        );
+        assert!(m2.resection_volume_mm3 > m0.resection_volume_mm3);
+        assert!((m2.max_depth_mm - (50.0f64.sqrt() - 2.0)).abs() < 1e-9);
+    }
+
+    #[test]
+    fn cylindrical_axis_direction_and_offset_are_honoured() {
+        let model = cube_model();
+        // A non-unit axis direction and an offset axis: the cut is the
+        // radius-1.5 cylinder about the line (x=3, y=0). Columns within
+        // 1.5 of (3, 0): dy=0 → dx ∈ {−1,0,1} → 3; dy=±1 → dx² + 1 ≤ 2.25
+        // → dx ∈ {−1,0,1} → 3 each. 9 columns, all inside the grid.
+        let cut = CylindricalCut {
+            axis_origin: Vec3::new(3.0, 0.0, 0.0),
+            axis_direction: Vec3::new(0.0, 0.0, 7.0),
+            radius: 1.5,
+            fragment_name: "core".into(),
+            keep_inside: true,
+            kerf_width: 0.0,
+            discarded: DiscardedSide::Resect,
+        };
+        let (out, _, m) = cut.apply_measured(&model);
+        let kept_total = out.values.iter().filter(|v| !v.is_nan()).count();
+        assert_eq!(kept_total, 9 * 10, "9 columns of the offset cylinder");
+        // Cube columns in the core: only centre x = 2 is inside the
+        // cube's x centres −3..2 (the axis sits at x = 3), y ∈ {−1,0,1}
+        // → 3 per slice.
+        assert_eq!(out.count_above(50.0), 3 * 6);
+        assert_eq!(m.fragment_name, "core");
+    }
+
+    #[test]
+    fn cylindrical_cut_integrates_with_retention_and_named_moves() {
+        let model = cube_model();
+        let mut plan = VirtualSurgery::new(model);
+        plan.cylinder(core_cut(
+            3.0,
+            0.0,
+            true,
+            DiscardedSide::RetainAs {
+                name: "graft".into(),
+            },
+        ))
+        .expect("single-fragment model accepts a retaining cylinder");
+        // Distract the kept core +2 mm axially; the retained annulus
+        // stays. A z-translation keeps every core voxel in its own
+        // column, and the core/annulus columns are disjoint, so the
+        // composition conserves every voxel exactly.
+        plan.move_fragment_named(
+            "core",
+            FragmentTransform {
+                rotation_axis: Vec3::Z,
+                rotation_angle: 0.0,
+                pivot: Vec3::ZERO,
+                translation: Vec3::new(0.0, 0.0, 2.0),
+            },
+        )
+        .expect("core exists");
+        let (operated, report) = plan.execute_with_report();
+        assert!(report.step_log[0].starts_with("cylinder:core"));
+        assert!(report.step_log[1].starts_with("move_named:core:"));
+        // Retention is not resection.
+        assert!((report.total_resection_volume_mm3 - 0.0).abs() < 1e-9);
+        // Both sides survive the composition: core 29×10 + annulus
+        // 71×10 = the full 1000 voxels.
+        assert_eq!(operated.values.iter().filter(|v| !v.is_nan()).count(), 1000);
+        assert_eq!(operated.count_above(50.0), 36 * 6);
+        // The composed grid grew axially to hold the distracted core.
+        let far_z = operated.origin.z + operated.dims.2 as f64 * operated.spacing.2;
+        assert!(far_z > 5.0, "composed z extent {far_z}");
+    }
+
+    #[test]
+    fn cylindrical_cut_respects_plan_validation() {
+        let model = cube_model();
+        // A cylinder after a plain cut is a legal second step.
+        let mut plan = VirtualSurgery::new(model.clone());
+        plan.cut(OsteotomyCut {
+            plane: Plane::from_point_normal(Vec3::ZERO, Vec3::Z).unwrap(),
+            fragment_name: "proximal".into(),
+            keep_positive: true,
+            kerf_width: 0.0,
+            discarded: DiscardedSide::Resect,
+        })
+        .expect("valid");
+        assert!(plan
+            .cylinder(core_cut(2.0, 0.0, true, DiscardedSide::Resect))
+            .is_ok());
+        // A cylinder cannot follow a named move.
+        let mut plan2 = VirtualSurgery::new(model.clone());
+        plan2
+            .cut(OsteotomyCut {
+                plane: Plane::from_point_normal(Vec3::ZERO, Vec3::Z).unwrap(),
+                fragment_name: "a".into(),
+                keep_positive: true,
+                kerf_width: 0.0,
+                discarded: DiscardedSide::RetainAs { name: "b".into() },
+            })
+            .expect("valid");
+        plan2
+            .move_fragment_named("b", FragmentTransform::no_op())
+            .expect("b exists");
+        assert_eq!(
+            plan2
+                .cylinder(core_cut(2.0, 0.0, true, DiscardedSide::Resect))
+                .err(),
+            Some(PlanError::CutAfterMove {
+                fragment: "b".into()
+            })
+        );
+        // Nor a retaining cylinder on an already-split model.
+        let mut plan3 = VirtualSurgery::new(model);
+        plan3
+            .cut(OsteotomyCut {
+                plane: Plane::from_point_normal(Vec3::ZERO, Vec3::Z).unwrap(),
+                fragment_name: "a".into(),
+                keep_positive: true,
+                kerf_width: 0.0,
+                discarded: DiscardedSide::RetainAs { name: "b".into() },
+            })
+            .expect("valid");
+        assert_eq!(
+            plan3
+                .cylinder(core_cut(
+                    2.0,
+                    0.0,
+                    true,
+                    DiscardedSide::RetainAs { name: "d".into() }
+                ))
+                .err(),
+            Some(PlanError::ModelAlreadySplit { fragments: 2 })
+        );
     }
 
     #[test]

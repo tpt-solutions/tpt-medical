@@ -64,6 +64,12 @@ voxel grid.
   removes exactly the two-plane intersection, the closed wedge that two
   sequential single-sided cuts cannot express, with its own audit label.
 
+- **Curved (cylindrical) resections** — `CylindricalCut` resects on the
+  cylinder of a given radius about an axis: the shape a reamer or burr
+  leaves, keeping the core (`keep_inside`) or the annulus, with the same
+  kerf, retention (`DiscardedSide::RetainAs`), measurement and audit
+  conventions as the plane cut.
+
 - **Per-fragment addressing** — a cut with
   `DiscardedSide::RetainAs { name }` keeps *both* sides as named
   fragments, and `move_fragment_named` repositions one of them
@@ -91,7 +97,9 @@ voxel grid.
 
 ```rust
 use tpt_med_geometry::{Plane, Vec3};
-use tpt_med_surgical_planning::{FragmentTransform, OsteotomyCut, VirtualSurgery, VoxelModel};
+use tpt_med_surgical_planning::{
+    DiscardedSide, FragmentTransform, OsteotomyCut, VirtualSurgery, VoxelModel,
+};
 
 fn main() {
     // A small 8^3 synthetic bone block, 1 mm voxels, 300 HU.
@@ -111,6 +119,8 @@ fn main() {
             .unwrap(),
         fragment_name: "femoral-resection".into(),
         keep_positive: true,
+        kerf_width: 0.0,
+        discarded: DiscardedSide::Resect,
     });
 
     // Then reposition the fragment: 3 degrees about the transepicondylar
@@ -143,14 +153,17 @@ fn main() {
 | `VoxelModel::index(x, y, z) -> Option<usize>` | Bounds-checked flat index |
 | `VoxelModel::center(x, y, z) -> Vec3` | Patient-space voxel centre (mm) |
 | `VoxelModel::count_above(threshold) -> usize` | Voxel count above a threshold; `NaN` voxels never count |
-| `OsteotomyCut { plane, fragment_name, keep_positive }` | Plane resection; discarded voxels become `NaN`, kept region is compacted |
+| `OsteotomyCut { plane, fragment_name, keep_positive, kerf_width, discarded }` | Plane resection; discarded voxels become `NaN`, kept region is compacted |
 | `OsteotomyCut::apply(&VoxelModel) -> VoxelModel` | The resection |
+| `WedgeCut { plane_a, plane_b, fragment_name, kerf_width }` | Two-plane closed wedge: removes exactly the intersection |
+| `CylindricalCut { axis_origin, axis_direction, radius, fragment_name, keep_inside, kerf_width, discarded }` | Curved resection on a cylinder: core (`keep_inside`) or annulus, with kerf and retention |
+| `CylindricalCut::radial_distance(Vec3) -> f64` | Perpendicular distance from the cylinder's axis (mm) |
 | `FragmentTransform { rotation_axis, rotation_angle, pivot, translation }` | Rigid only: rotation about `pivot`, then translation |
 | `FragmentTransform::apply_to_point(Vec3) -> Vec3` | Transform a point |
 | `FragmentTransform::apply_to_model(&VoxelModel) -> VoxelModel` | Transform a whole model |
-| `PlanStep` | `Cut(OsteotomyCut)` or `Move(FragmentTransform)` |
+| `PlanStep` | `Cut(OsteotomyCut)`, `Wedge(WedgeCut)`, `Cylinder(CylindricalCut)`, `Move(FragmentTransform)`, or `MoveNamed { fragment, transform }` |
 | `VirtualSurgery::new(base)` | Start a plan on the pre-operative model |
-| `VirtualSurgery::cut(..)`, `::move_fragment(..)` | Append steps in plan order (builder style, returns `&mut Self`) |
+| `VirtualSurgery::cut(..)`, `::wedge(..)`, `::cylinder(..)`, `::move_fragment(..)`, `::move_fragment_named(..)` | Append steps in plan order (builder style, returns `&mut Self`; cut-shaped steps validated at build time) |
 | `VirtualSurgery::execute() -> (VoxelModel, Vec<String>)` | Operated model plus the audit log in execution order |
 | `VirtualSurgery::base_model() -> &VoxelModel` | Pre-operative model, for side-by-side views |
 | `VirtualSurgery::fragments() -> BTreeMap<usize, String>` | Recorded fragment labels, ordered and deduplicated |
@@ -181,8 +194,9 @@ fn main() {
 
 ## Known Limitations
 
-- **Planar resections only.** Kerf width and two-plane wedges are in; curved
-  and freeform resections (anatomically contoured surfaces) are not.
+- **Plane and cylindrical resections only.** Kerf width, two-plane wedges and
+  the cylindrical surface are in; freeform (anatomically contoured, implicit
+  or spline-defined) resections are not.
 - **Rigid fragments only.** No implant component placement with a bone-implant
   interface, no bone graft, no defect reconstruction.
 - **Measurements are voxel-quantised.** Resection volume counts discarded
@@ -190,15 +204,12 @@ fn main() {
   alignment error is measured between the prescribed transform and the
   nearest-neighbour scatter. Volumes are accurate to the voxel pitch; the
   report is a screening record, not an intra-operative measurement.
-- **Fragment transforms act on the whole current model.** A `Move` applies to
-  the assembled model rather than to a single named fragment, so a plan that
-  repositions two different fragments independently needs two
-  `VirtualSurgery` invocations or an extension to `PlanStep`. This is a
-  deliberate v0 simplification and a known gap. The first slice of per-fragment addressing
-(`DiscardedSide::RetainAs` + `move_fragment_named`, per
-[`rfcs/0011`](../../../rfcs/0011-per-fragment-addressing.md)) is in;
-cuts after named moves are rejected in v0, and fragment collisions in
-the composition record last-write-wins.
+- **Per-fragment addressing is a first slice**
+  ([`rfcs/0011`](../../../rfcs/0011-per-fragment-addressing.md)):
+  `DiscardedSide::RetainAs` + `move_fragment_named` are in, but cuts after
+  named moves are rejected in v0 (grid re-unification is unsolved), a
+  retaining cut requires a single-fragment model, and fragment collisions
+  in the composition record last-write-wins.
 - **No soft tissue.** Only the bone voxel model is planned; ligaments,
   capsules and neurovascular structures are absent, so no plan can be checked
   for collateral damage.

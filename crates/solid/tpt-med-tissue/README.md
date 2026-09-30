@@ -50,7 +50,11 @@ the build fails.
   because the principal-stretch derivative needs eigenvectors of `C` that are
   not implemented analytically.
 - **Holzapfel–Gasser–Ogden (HGO)** — fibrous tissue with **fiber dispersion**,
-  the standard model for arterial wall and tendon/meniscus (RFC 0002).
+  the standard model for arterial wall and tendon/meniscus (RFC 0002), plus
+  optional **collagen crimp** (`CrimpRecruitment`): progressive fiber
+  recruitment through a caller-cited Gaussian recruitment distribution, so
+  the wall is softer until the fibers straighten and the standard HGO
+  response is recovered exactly once they have.
 - **Invariant helpers** — `invariant_i1`, `invariant_i2`, `principal_stretches`.
 - **Uniform dispatch** — the `TissueModel` enum, so a solver can hold a
   runtime-selected model without generics or dynamic dispatch overhead in the
@@ -156,8 +160,10 @@ fn main() {
 | `MooneyRivlinParams { c10, c01, d1 }` | Two-term invariant polynomial |
 | `YeohParams { c1, c2, c3, d1 }` | Third-order model in `Ī1 − 3` |
 | `OgdenParams { mu, alpha, d1 }` | Principal-stretch series; `mu`/`alpha` are parallel vectors |
-| `HgoParams { c, k1, k2, kappa, fiber_directions, d1 }` | Fiber-reinforced model; `kappa ∈ [0, 1/3]` (1/3 = isotropic, 0 = aligned) |
+| `HgoParams { c, k1, k2, kappa, fiber_directions, d1, crimp }` | Fiber-reinforced model; `kappa ∈ [0, 1/3]` (1/3 = isotropic, 0 = aligned); optional collagen-crimp recruitment |
 | `HgoParams::{strain_energy, first_piola}` | The same interface for HGO, exposed as `TissueModel::HolzapfelGasserOgden` |
+| `CrimpRecruitment::new(mean_recruitment_stretch, spread) -> Option<_>` | Collagen-crimp recruitment `R(λ) = Φ((λ − λ̄_r)/σ_r)`; refuses non-positive spread / sub-rest mean |
+| `ReducedPlaneModel::new(model, PlaneCondition::{PlaneStrain, PlaneStress})` | In-plane 2×2 `F` in, out-of-plane stretch solved (`F₃₃ = 1`, or `P₃₃ = 0` by bisection) |
 | `SoftTissueMaterial { model, density, is_incompressible }` | A named material: model plus physical metadata |
 | `invariant_i1(&Mat3) -> f64` | First invariant `tr C` |
 | `invariant_i2(&Mat3) -> f64` | Second invariant of `C` |
@@ -199,13 +205,12 @@ Golden reference dataset: `test-data/golden/solid/arterial_wall_inflation.json`.
 
 ## Known Limitations
 
-- Plane-stress and reduced-order wrappers are not provided; the models operate
-  on a full 3×3 `F`.
 - No automatic differentiation — the analytic derivatives are hand-written and
   therefore must be kept in sync with `W` (which is exactly what the
   finite-difference test enforces).
-- The HGO implementation covers dispersion but not the full two-family
-  collagen/elastin parameterisation used in some literature.
+- The HGO implementation covers dispersion and collagen-crimp recruitment but
+  not the full two-family collagen/elastin parameterisation (per-family
+  stiffness) used in some literature.
 - **Ogden has no analytic stress.** `TissueModel::first_piola` falls back to
   `first_piola_numerical` for `Ogden` (and, via the same enum match arm,
   currently also for `HolzapfelGasserOgden`) — even though `HgoParams`

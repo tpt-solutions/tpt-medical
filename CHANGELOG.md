@@ -329,6 +329,23 @@ Tracked in `todo.md`. Summary of the user-visible change here:
   (foundation ⊕ interface layer `E/t`), the screening step from rigid
   punch toward compliant-implant evaluation.
 
+### Added — Backlog follow-up: curved resection, collagen crimp, tracker reconciliation (2026-10-01)
+`tpt-med-surgical-planning` (the first curved resection surface:
+`CylindricalCut` — core/annulus about an axis, with the plane cut's kerf,
+`RetainAs` retention, measurements and build-time validation; freeform
+contoured surfaces remain open), and `tpt-med-tissue` (collagen crimp in
+HGO: `CrimpRecruitment` weights each fiber family by the recruited
+fraction of a caller-cited Gaussian recruitment distribution, with the
+chain-rule `R′` term in the analytic stress and a machine-precision `erf`
+— a 1e-7 rational approximation was tried first and rejected because the
+finite-difference stress reference differentiates through `R`; plus the
+missing CHANGELOG record for the plane-stress wrappers already shipped).
+The same pass reconciled the per-crate CHANGELOG `Planned` sections and
+the `todo.md` tracker with what had actually shipped: the stents Level-2
+tapered-ring deployment had been in since the thirteen-item sweep without
+its tick, and the wear/tissue/dicom Planned sections carried stale or
+orphaned entries.
+
 ### Added — Backlog follow-up, continued (2026-10-01)
 `tpt-med-cartilage` (first-order shear: a closed form, the fluid never
 engages), `tpt-med-viscoelastic` (Fung-type quasi-linear viscoelasticity

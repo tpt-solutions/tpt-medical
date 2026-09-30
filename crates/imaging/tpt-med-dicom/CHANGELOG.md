@@ -153,10 +153,10 @@ changes for consumers of this crate.
     transport story (resolved at the archive boundary) before decoding is even
     in scope. Still `DicomError::CompressedPixelData`.
   - Multi-frame objects and DICOM networking (C-STORE, DICOMweb).
-- Automatic rotation detection and a small built-in library of named,
-  cited `PhantomModel`s for common commercial phantoms — explicitly out of
-  scope for `rfcs/0008-phantom-rod-sampling.md`'s v0 mechanism; see that
-  RFC's Unresolved Questions.
+- A built-in library of named, cited `PhantomModel`s for common commercial
+  phantoms — the remaining half after the rotation detection delivered
+  above (`detect_phantom_rotation`); the layouts and known values must come
+  from manufacturer datasheets with citations, not baked-in approximations.
 
 ### Notes
 - The default HU→density relation is still the linear CT approximation

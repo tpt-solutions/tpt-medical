@@ -12,6 +12,36 @@ changes for consumers of this crate.
 ## [Unreleased]
 
 ### Added
+- **Collagen crimp in HGO (`CrimpRecruitment` + `HgoParams::crimp`)** —
+  the recruitment half of the fiber-rotation/crimp roadmap item. Real
+  collagen fibers are wavy at rest and straighten progressively: with
+  crimp set, each family's fiber term is weighted by the recruited
+  fraction `R(λ) = Φ((λ − λ̄_r)/σ_r)` at fiber stretch `λ` (the Gaussian
+  waviness-distribution treatment of Decraemer, Maes & Vanhuyse 1980).
+  The caller cites `λ̄_r` and `σ_r` — the mechanism ships, the coefficients
+  come from the caller's source, as everywhere in this workspace;
+  `CrimpRecruitment::new` refuses a non-positive spread and a sub-rest
+  mean. `crimp: None` — the default — is the unmodified HGO model,
+  bit-identical; `R → 1` recovers it exactly, below recruitment the fiber
+  term is silent. The analytic `HgoParams::first_piola` carries the
+  chain-rule `R′` term, and the normal CDF is evaluated to near machine
+  precision (convergent positive series plus the continued fraction of
+  A&S 7.1.14): a 1e-7 rational approximation was tried first and
+  **rejected** — the finite-difference stress reference differentiates
+  through `R`, so a CDF accurate only in value disagrees with its own
+  derivative inside the recruitment window (~2e-5 relative). Five new
+  tests: silence below recruitment, exact recovery above it,
+  analytic-vs-FD stress through the window, monotone stiffening, the
+  spread ordering (fraction level and rise steepness), and constructor
+  validation including the erf accuracy.
+- **`ReducedPlaneModel` (+ `PlaneCondition`, `PlaneSolution`)**:
+  plane-strain and plane-stress wrappers over the full 3×3 `F` interface —
+  the caller supplies the four in-plane gradient components; plane strain
+  pins `F₃₃ = 1`, plane stress solves `P₃₃ = 0` by bracketed bisection on
+  the scalar `F₃₃` (`P₃₃` is monotone decreasing in `F₃₃` for every law in
+  this crate, which is what makes the scalar bracket robust). Verified
+  against the incompressible closed form `F₃₃ = 1/det F₂ₓ₂` and
+  traction-freeness.
 - Crate README stating the verification convention explicitly: closed-form
   verification compares **deviatoric** Cauchy stress `s = σ − (tr σ/3)I`, not
   full stress, because penalty formulations carry model-internal hydrostatic
@@ -56,9 +86,9 @@ changes for consumers of this crate.
   positivity/inverted-configuration guards.
 
 ### Planned
-- Plane-stress and reduced-order wrappers over the full 3×3 `F` interface.
-- Fiber-family rotation in HGO (collagen crimp), and the two-family
-  elastin/collagen parameterisation used in some literature.
+- The two-family elastin/collagen parameterisation (per-family `k1`/`k2`
+  and stiffness split) used in some literature; the crimp-recruitment half
+  of the fiber item is delivered above.
 
 ### Notes
 - Adding a `TissueModel` variant is a **breaking** change for any downstream
