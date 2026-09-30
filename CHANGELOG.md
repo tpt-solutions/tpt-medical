@@ -329,6 +329,16 @@ Tracked in `todo.md`. Summary of the user-visible change here:
   (foundation ⊕ interface layer `E/t`), the screening step from rigid
   punch toward compliant-implant evaluation.
 
+### Added — Cartilage non-constant-k creep solver (2026-10-01)
+`tpt-med-cartilage` (`ConfinedCreepStepper`: 1-D confined-compression
+creep under an arbitrary `PermeabilityLaw`, adaptive-CFL explicit
+integration, verified by reproducing the constant-`k` closed-form series
+to a fraction of a percent of the equilibrium strain — the
+numerics-vs-closed-form cross-check that makes the strain-dependent
+results trustworthy — plus refinement convergence and the
+compaction-slows-drainage behaviour; the solver half of the
+nonlinear-biphasic item).
+
 ### Added — Roadmap completions: encapsulated multi-frame, two-family HGO (2026-10-01)
 `tpt-med-dicom` (**multi-frame over the compressed syntaxes** — the Basic
 Offset Table is resolved instead of rejected, giving per-frame byte

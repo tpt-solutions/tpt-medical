@@ -60,13 +60,24 @@ changes for consumers of this crate.
   is shear-rate dependent; the mechanism ships, the coefficient comes
   from the caller's citation).
 
-### Planned
-- Unconfined compression (the equilibrium and instantaneous bookends and the
-  shear closed form are delivered; the analytic transient still needs the
-  classical Bessel-series coefficients from the paywalled source).
-- Nonlinear biphasic theory proper (the strain-dependent permeability
-  hook is delivered; a full nonlinear solid matrix and a time-stepping
-  solver for non-constant `k` remain).
+- **`ConfinedCreepStepper`** — the time-stepping solver for a
+  strain-dependent permeability law (the solver half of the
+  nonlinear-biphasic item): 1-D confined compression on `cells` nodes
+  with the layer's own boundary convention (drained surface, sealed
+  platen), explicit Euler with an adaptive step held to the
+  state-dependent diffusion CFL bound (no monotonicity assumption on the
+  law). `creep_fraction_with_law`/`pressure_profile_with_law` are the
+  drivers; `step`/`stable_time_step`/`creep_fraction_of` are exposed for
+  callers driving their own schedules. Verification is the strongest
+  kind available: with [`ConstantPermeability`] the stepper reproduces
+  the closed-form series to a fraction of a percent of the equilibrium
+  strain, the error shrinks under refinement, and a compaction law (k
+  falling as the matrix consolidates) is shown to slow the creep exactly
+  as the physics requires while reaching the same equilibrium.
+- Crate README explaining why poroelastic rather than elastic: interstitial
+- Nonlinear biphasic theory proper (the strain-dependent permeability hook
+  and the time-stepping solver for non-constant `k` are delivered; a full
+  nonlinear solid matrix remains).
 - (Lubrication, first slice delivered above: `SqueezeFilm` gives the
   interface a film term — a contact solver evaluates `load_capacity`;
   what remains is coupling that solver into the biphasic creep path

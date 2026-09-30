@@ -340,6 +340,130 @@ impl SqueezeFilm {
     }
 }
 
+/// A 1-D confined-compression creep stepper for an arbitrary
+/// [`PermeabilityLaw`] — the time-stepping half of the nonlinear-biphasic
+/// item. The closed-form series in [`BiphasicMaterial`]
+/// (`creep_displacement_fraction`, `fluid_pressure_fraction`) are
+/// solutions of the CONSTANT-`k` problem; a strain-dependent `k` makes
+/// the diffusion coefficient space- and time-dependent and those series
+/// no longer apply. This stepper integrates the same problem numerically:
+///
+/// ```text
+/// ṗ = k(J) H_A ∂²p/∂x²,   e = (σ0 − p)/H_A,   J = 1 − e
+/// ```
+///
+/// on `cells` nodes over the layer (drained surface at `x = 0`, sealed
+/// platen at `x = h` — the same boundary convention the series uses), so
+/// `u(t)/h = (σ0 − p̄)/H_A` throughout. When the law is
+/// [`ConstantPermeability`], the stepper reproduces the closed-form
+/// series to discretisation error — which is the verification that makes
+/// the strain-dependent results trustworthy. Integration is explicit
+/// Euler with an adaptive step held to a fraction of the diffusion CFL
+/// bound computed from the current `k` field (no monotonicity assumption
+/// on the law).
+#[derive(Debug, Clone)]
+pub struct ConfinedCreepStepper {
+    /// The (linear-elastic solid matrix) biphasic material.
+    pub material: BiphasicMaterial,
+    /// Spatial resolution: number of cells over the layer thickness.
+    pub cells: usize,
+}
+
+impl ConfinedCreepStepper {
+    /// Validates; `Err` for fewer than 8 cells (the boundary layer the
+    /// series resolves is unresolvable coarser than that).
+    pub fn new(material: BiphasicMaterial, cells: usize) -> Result<Self, String> {
+        if cells < 8 {
+            return Err(format!("at least 8 cells are needed, got {cells}"));
+        }
+        Ok(Self { material, cells })
+    }
+
+    fn cell_permeabilities(&self, p: &[f64], sigma0: f64, law: &impl PermeabilityLaw) -> Vec<f64> {
+        let ha = self.material.aggregate_modulus;
+        p.iter()
+            .map(|&p_i| {
+                let j = 1.0 - (sigma0 - p_i) / ha;
+                law.permeability(j)
+            })
+            .collect()
+    }
+
+    /// One explicit-Euler step of `p` (length `cells + 1`; `p[0]` is the
+    /// drained surface and stays zero). `dt` must satisfy the
+    /// [`Self::stable_time_step`] bound.
+    pub fn step(&self, p: &mut [f64], sigma0: f64, dt: f64, law: &impl PermeabilityLaw) {
+        let n = self.cells;
+        debug_assert_eq!(p.len(), n + 1, "one pressure value per node");
+        let ha = self.material.aggregate_modulus;
+        let k = self.cell_permeabilities(p, sigma0, law);
+        let dx2 = (self.material.thickness / n as f64).powi(2);
+        let mut dp = vec![0.0; n + 1];
+        for i in 1..n {
+            dp[i] = ha * k[i] * (p[i + 1] - 2.0 * p[i] + p[i - 1]) / dx2;
+        }
+        // Sealed platen: mirrored node, so the second difference collapses
+        // to (p[n-1] - p[n]).
+        dp[n] = ha * k[n] * (p[n - 1] - p[n]) / dx2;
+        for i in 1..=n {
+            p[i] += dt * dp[i];
+        }
+    }
+
+    /// The diffusion CFL bound for the current state: the explicit step
+    /// must stay below `dx² / (2 · max(k) · H_A)`; the driver uses 0.4 of
+    /// it.
+    pub fn stable_time_step(&self, p: &[f64], sigma0: f64, law: &impl PermeabilityLaw) -> f64 {
+        let k = self.cell_permeabilities(p, sigma0, law);
+        let k_max = k.iter().cloned().fold(0.0f64, f64::max);
+        let dx = self.material.thickness / self.cells as f64;
+        dx * dx / (2.0 * k_max * self.material.aggregate_modulus)
+    }
+
+    /// The pressure field after integration to `time` — for callers who
+    /// want the profile, not just the scalar creep fraction. The field is
+    /// `[p(0) = 0, p_1, ..., p(cells)]` over the layer.
+    pub fn pressure_profile_with_law(
+        &self,
+        sigma0: f64,
+        time: f64,
+        law: &impl PermeabilityLaw,
+    ) -> Vec<f64> {
+        let mut p = vec![sigma0; self.cells + 1];
+        p[0] = 0.0;
+        let mut t = 0.0f64;
+        while t < time {
+            let dt = (0.8 * self.stable_time_step(&p, sigma0, law)).min(time - t);
+            self.step(&mut p, sigma0, dt, law);
+            p[0] = 0.0;
+            t += dt;
+        }
+        p
+    }
+
+    /// Mean strain `u(t)/h` of a pressure field — the creep displacement
+    /// fraction (zero at `t = 0`, `σ0/H_A` at equilibrium).
+    pub fn creep_fraction_of(&self, p: &[f64], sigma0: f64) -> f64 {
+        let ha = self.material.aggregate_modulus;
+        let p_bar = p.iter().sum::<f64>() / p.len() as f64;
+        (sigma0 - p_bar) / ha
+    }
+
+    /// Integrates confined-compression creep under `sigma0` (MPa) to
+    /// `time` (s) with the given permeability law, returning `u(t)/h`.
+    /// The step is adaptive (a fixed fraction of the state-dependent CFL
+    /// bound), so the call is deterministic for a given `cells`.
+    pub fn creep_fraction_with_law(
+        &self,
+        sigma0: f64,
+        time: f64,
+        law: &impl PermeabilityLaw,
+    ) -> f64 {
+        let p = self.pressure_profile_with_law(sigma0, time, law);
+        self.creep_fraction_of(&p, sigma0)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -594,6 +718,89 @@ mod tests {
         assert!(film.time_to_squeeze(load, 0.5, 0.6).is_err());
         assert!(film.time_to_squeeze(load, 0.0, 0.1).is_err());
         assert!(film.time_to_squeeze(-1.0, 0.5, 0.1).is_err());
+    }
+
+    #[test]
+    fn constant_k_stepper_reproduces_the_series_solution() {
+        let m = BiphasicMaterial::default();
+        let stepper = ConfinedCreepStepper::new(m, 150).expect("valid");
+        let law = ConstantPermeability { k: m.permeability };
+        let sigma = 0.1;
+        let equilibrium = m.equilibrium_strain(sigma);
+        // t = 0: the fluid carries everything, the displacement is zero.
+        let u0 = stepper.creep_fraction_with_law(sigma, 1e-6, &law);
+        assert!(
+            u0.abs() < 0.01 * equilibrium,
+            "u(0)/u(∞) = {}",
+            u0 / equilibrium
+        );
+        // Mid-transient: the numerics reproduce the closed form to a
+        // small fraction of the equilibrium strain (2nd-order space,
+        // 1st-order time, 200 cells).
+        let tg = m.gel_time();
+        for frac in [0.25, 0.5, 1.0, 2.0] {
+            let numeric = stepper.creep_fraction_with_law(sigma, tg * frac, &law);
+            let series = m.creep_displacement_fraction(sigma, tg * frac, 32);
+            assert!(
+                (numeric - series).abs() < 0.01 * equilibrium,
+                "t = {frac}·t½: numeric {numeric} vs series {series}"
+            );
+        }
+        // Long time: equilibrium.
+        let late = stepper.creep_fraction_with_law(sigma, tg * 20.0, &law);
+        assert!((late - equilibrium).abs() < 1e-3 * equilibrium);
+    }
+
+    #[test]
+    fn stepper_error_shrinks_under_refinement() {
+        let m = BiphasicMaterial::default();
+        let law = ConstantPermeability { k: m.permeability };
+        let sigma = 0.1;
+        let t = m.gel_time() * 0.5;
+        let series = m.creep_displacement_fraction(sigma, t, 32);
+        let error = |cells: usize| {
+            let s = ConfinedCreepStepper::new(m, cells).expect("valid");
+            (s.creep_fraction_with_law(sigma, t, &law) - series).abs()
+        };
+        let (e100, e200) = (error(100), error(200));
+        assert!(
+            e200 < e100 * 0.7,
+            "refinement must shrink the error: {e100} -> {e200}"
+        );
+    }
+
+    #[test]
+    fn strain_dependent_permeability_slows_the_creep() {
+        let m = BiphasicMaterial::default();
+        let stepper = ConfinedCreepStepper::new(m, 100).expect("valid");
+        let constant = ConstantPermeability { k: m.permeability };
+        // The compaction law evaluated at J = 1 equals the reference k, so
+        // the two runs start identically; as the matrix compacts the law's
+        // k falls, drainage slows, and the strain at any finite time is
+        // smaller than the constant-k run.
+        let law = |j: f64| m.permeability * (-2.0 * (1.0 - j)).exp();
+        let sigma = 0.1;
+        let t = m.gel_time();
+        let u_constant = stepper.creep_fraction_with_law(sigma, t, &constant);
+        let u_compacting = stepper.creep_fraction_with_law(sigma, t, &law);
+        assert!(
+            u_compacting < u_constant,
+            "compacted matrix must drain slower: {u_compacting} vs {u_constant}"
+        );
+        // Both reach the same equilibrium eventually (the compacting run
+        // needs longer: its drained-state k is ~1.3x smaller).
+        let late_c = stepper.creep_fraction_with_law(sigma, t * 30.0, &constant);
+        let late_l = stepper.creep_fraction_with_law(sigma, t * 30.0, &law);
+        let equilibrium = m.equilibrium_strain(sigma);
+        assert!((late_c - equilibrium).abs() < 1e-3 * equilibrium);
+        assert!((late_l - equilibrium).abs() < 1e-3 * equilibrium);
+    }
+
+    #[test]
+    fn stepper_validates_its_construction() {
+        let m = BiphasicMaterial::default();
+        assert!(ConfinedCreepStepper::new(m, 4).is_err());
+        assert!(ConfinedCreepStepper::new(m, 8).is_ok());
     }
 
     #[test]
