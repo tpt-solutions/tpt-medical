@@ -12,6 +12,15 @@ changes for consumers of this crate.
 ## [Unreleased]
 
 ### Added
+- `PermeabilityLaw` / `ConstantPermeability` /
+  `StrainDependentPermeability`: the **strain-dependent permeability
+  hook** — the mechanism half of the nonlinear-biphasic item. Callers
+  supply a cited `k(J)` law (closure or type); the crate validates the
+  evaluation and provides the equilibrium-compaction evaluation point.
+  Constant-`k` remains the closed-form baseline: the creep series solve
+  the constant-coefficient problem, so a strain-dependent `k` is
+  evaluated per compaction zone for caller-driven stepping, not
+  substituted into the series.
 - `BiphasicMaterial::unconfined_equilibrium_modulus`: the **unconfined
   equilibrium limit** — `E_s = H_A(1+ν_s)(1−2ν_s)/(1−ν_s)`, equal to
   `H_A` at the cartilage default `ν_s = 0` (confined and unconfined
@@ -33,7 +42,9 @@ changes for consumers of this crate.
 
 ### Planned
 - Unconfined compression (its analytic transient needs the classical Bessel-series coefficients; shear, the other half, is delivered above as a closed form).
-- Nonlinear biphasic theory, and a coupling between permeability and strain.
+- Nonlinear biphasic theory proper (the strain-dependent permeability
+  hook is delivered; a full nonlinear solid matrix and a time-stepping
+  solver for non-constant `k` remain).
 - A lubrication/repulsion term for the contact interface, so the model can be
   driven by a contact solver rather than a prescribed step load.
 - Fibrous-cartilage support (a fibre-reinforced solid matrix).

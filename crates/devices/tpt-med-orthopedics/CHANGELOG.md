@@ -12,6 +12,13 @@ changes for consumers of this crate.
 ## [Unreleased]
 
 ### Added
+- `CompliantImplant` (+ `effective_stiffness` / `interface_model`): the
+  **screening step from rigid punch toward compliant implant** — the
+  Winkler foundation in series with the implant's interface-layer
+  stiffness (`k_i = E/t`), so a porous coating or cement mantle softens
+  the interface and raises the micromotion a caller screens. The rigid
+  punch is the stiff-implant limit and is reproduced unchanged; full
+  continuum coupling remains the fem-adapter's job.
 - `GruenZone`, `gruen_zone`, `gruen_zones_in_order`: **built-in Gruen
   zone definitions** (Gruen, McNeice & Amstutz 1979) — geometric
   classification of a point into zones 1-7 from the stem axis end points,
@@ -41,8 +48,9 @@ changes for consumers of this crate.
   growth shape.
 
 ### Planned
-- Continuum coupling, so an implant with realistic compliance can be
-  evaluated rather than modelled as a rigid punch.
+- Full continuum coupling (the series-compliance screening for compliant
+  interface layers is delivered; a genuinely flexible stem needs the
+  fem-adapter).
 
 ### Notes
 - `zone_micromotion` reports **`NaN` for zero-area zones** deliberately, to

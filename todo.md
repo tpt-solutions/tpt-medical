@@ -530,6 +530,7 @@ gating input is a purchase of ISO/IEC 15444-2, not engineering time.
   **Shear half delivered (2026-10-01): `solid_shear_modulus` — first-order biphasic shear is volumetrically silent, so the fluid never pressurises and the response is a closed form at all times (permeability-independent; verified). Unconfined compression remains open above.**
   **Unconfined limits delivered (2026-10-01): `unconfined_equilibrium_modulus` (E_s, equal to H_A at ν_s = 0) plus the documented rigid instantaneous response — both exact and tested. The transient itself remains the classical Bessel-series solution.**
 - [ ] **Nonlinear biphasic theory, and a coupling between permeability and strain.**
+  **Permeability-coupling half delivered (2026-10-01): `PermeabilityLaw` / `StrainDependentPermeability` — caller-cited `k(J)` with validated evaluation and the equilibrium-compaction evaluation point; constant-`k` stays the closed-form baseline. Nonlinear solid matrix and a non-constant-k solver remain.**
 - [ ] **A lubrication/repulsion term for the contact interface, so the model can be driven by a contact solver rather than a prescribed step load.**
 - [ ] **Fibrous-cartilage support (a fibre-reinforced solid matrix).**
 
@@ -598,6 +599,7 @@ gating input is a purchase of ISO/IEC 15444-2, not engineering time.
 - [x] **Built-in zone definitions (Gruen, Paprosky) so callers are not left to invent one.**
   **Done (2026-09-29): `GruenZone`/`gruen_zone`/`gruen_zones_in_order` — geometric zones 1-7 (Paprosky remains future work; the Gruen half of the item is delivered).**
 - [ ] **Continuum coupling, so an implant with realistic compliance can be evaluated rather than modelled as a rigid punch.**
+  **Series-compliance screening delivered (2026-10-01): `CompliantImplant` — the Winkler foundation in series with the implant's interface stiffness `E/t`; the rigid punch is the stiff limit and full continuum coupling stays with the fem-adapter.**
 
 ### `tpt-med-stents`
 

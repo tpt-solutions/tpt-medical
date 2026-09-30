@@ -119,18 +119,36 @@ A working prototype of the Q1/P0 path was built and debugged to the point
 where the remaining blocker is precisely identifiable. Findings, all
 verified numerically on a single-element uniaxial problem:
 
-1. **The residual assembly is settled.** The constraint is the element-mean
-   volume `r_p = ∫(J − 1) dV`; the multiplier's constraint stress in the
+1. **The constraint side is settled; the deviatoric side needed a
+   correction.** The constraint is the element-mean volume
+   `r_p = ∫(J − 1) dV`, and the multiplier's constraint stress in the
    `u` rows is `p·cof(F)` with the **pointwise** cofactor (it
-   differentiates the true-`J` term `p·(J−1)`); and the deviatoric stress
-   must be evaluated at the mean-dilatation-modified gradient
-   `F̄ = (J̄/J)^{1/3}F` — the finite-strain B-bar. Two bugs the prototype
+   differentiates the true-`J` term `p·(J−1)`). Two bugs the prototype
    hit and fixed are worth recording: `J̄` is the volume-weighted **mean**
    (forgetting the division by `V` inflates every gradient by
    `(V/J)^{1/3}` — a 100× Jacobian error caught by a
    finite-difference-vs-assembled-Jacobian consistency check), and the
    multiplier's constraint stress must NOT be evaluated at `F̄` (that
    square-scales `K_up` by the same factor).
+
+   **Correction to the deviatoric treatment as first attempted.** The
+   prototype evaluated the law at `F̄ = (J̄/J)^{1/3}F` and still measured
+   a ~17% stiff nominal stress. Post-mortem: for the workspace's laws —
+   whose deviatoric energy already carries the isochoric split
+   internally (`C10·J^{−2/3}I₁`-shaped) — evaluating at `F̄` is a
+   mathematical **identity**: substituting `det F̄ = J̄` into the model's
+   own `J^{−2/3}` factor reproduces `J^{−2/3}(F)`·pointwise exactly, so
+   the "modification" changes nothing and the pointwise-dilatation
+   locking remains. The mean-dilatation method proper **substitutes the
+   mean into the dilatation factor**: the deviatoric Piola is evaluated
+   with `J̄` in place of the pointwise `J` in the model's isochoric
+   factors — e.g. for the Neo-Hookean branch `P = 2c₁₀·J̄^{−2/3}·F` (the
+   constraint stress `p·cof(F)` supplies what the dropped `F⁻ᵀ` term
+   would have contributed). This requires a per-law
+   mean-dilatation-stress method (the generic trait cannot express
+   "replace J inside the law"), which is the actual remaining
+   implementation work on the assembly side, alongside the solver
+   findings below.
 
 2. **The pure-Lagrange saddle needs a pressure regularization and a
    continuation strategy — this is the remaining blocker.** With

@@ -18,6 +18,84 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
+/// A strain-dependent permeability law: `k` as a function of a
+/// deformation measure. The classical cartilage physics — permeability
+/// falling steeply as the matrix compacts — is what makes biphasic
+/// load responses nonlinear in time even when the solid matrix is linear.
+///
+/// The crate ships the constant-`k` default (the linear biphasic
+/// baseline); strain-dependent forms (exponential in compaction, or in
+/// `J²`, per the literature's several parameterisations) are
+/// caller-supplied closures implementing this trait, with their own
+/// citations — the same pattern as `tpt-med-bone`'s `ModulusLaw` and
+/// `tpt-med-dicom`'s calibration hooks: the mechanism ships, the
+/// coefficients come from the caller's cited source.
+pub trait PermeabilityLaw {
+    /// Permeability `k` (mm⁴/(N·s)) at a volume ratio `J` (dimensionless;
+    /// `J < 1` = compaction).
+    fn permeability(&self, volume_ratio: f64) -> f64;
+}
+
+/// The linear-biphasic baseline: constant [`BiphasicMaterial::permeability`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ConstantPermeability {
+    /// The constant `k` (mm⁴/(N·s)).
+    pub k: f64,
+}
+
+impl PermeabilityLaw for ConstantPermeability {
+    fn permeability(&self, _volume_ratio: f64) -> f64 {
+        self.k
+    }
+}
+
+impl<F: Fn(f64) -> f64> PermeabilityLaw for F {
+    fn permeability(&self, volume_ratio: f64) -> f64 {
+        self(volume_ratio)
+    }
+}
+
+/// A biphasic material with a caller-supplied strain-dependent
+/// permeability, for creep/relaxation sweeps under matrix compaction.
+///
+/// The evaluation points this crate owns (the creep series and its
+/// `gel_time`) are closed-form solutions of the CONSTANT-`k` problem; a
+/// strain-dependent `k` makes the diffusion coefficient time- and
+/// space-dependent and those series no longer apply. What this type
+/// therefore provides is the **effective-permeability evaluation**: the
+/// `k` at a given compaction level, for callers driving their own
+/// stepping scheme zone by zone.
+#[derive(Debug, Clone)]
+pub struct StrainDependentPermeability<L: PermeabilityLaw> {
+    /// The constant-`k` baseline (also the reference the law should be
+    /// calibrated against: `law.permeability(1.0)` should be the
+    /// unconstrained-compaction value).
+    pub material: BiphasicMaterial,
+    /// The permeability law.
+    pub law: L,
+}
+
+impl<L: PermeabilityLaw> StrainDependentPermeability<L> {
+    /// Permeability at a volume ratio, validated positive and finite.
+    pub fn permeability_at(&self, volume_ratio: f64) -> Result<f64, String> {
+        let k = self.law.permeability(volume_ratio);
+        if !k.is_finite() || k <= 0.0 {
+            return Err(format!(
+                "permeability law returned {k} at J = {volume_ratio}"
+            ));
+        }
+        Ok(k)
+    }
+
+    /// Permeability at the equilibrium compaction of a step stress `σ0`
+    /// under the constant-`k` aggregate-modulus relation — the screening
+    /// point at which a creep sweep's late-time `k` is evaluated.
+    pub fn permeability_at_equilibrium(&self, sigma0: f64) -> Result<f64, String> {
+        let j = 1.0 - self.material.equilibrium_strain(sigma0);
+        self.permeability_at(j)
+    }
+}
+
 /// Biphasic cartilage material.
 #[derive(Debug, Clone, Copy)]
 pub struct BiphasicMaterial {
@@ -261,6 +339,41 @@ mod tests {
         let confined_strain = 0.2 / 0.7;
         let unconfined_strain = 0.2 / quarter.unconfined_equilibrium_modulus().expect("valid ν");
         assert!(unconfined_strain > confined_strain);
+    }
+
+    #[test]
+    fn strain_dependent_permeability_evaluates_and_validates() {
+        let material = BiphasicMaterial::default();
+        // Exponential compaction law, caller-cited: k falls as the matrix
+        // compacts (J < 1).
+        let law = |j: f64| 0.002 * (-2.0 * (1.0 - j)).exp();
+        let sweep = StrainDependentPermeability { material, law };
+        // Unstrained: the law at J = 1 is the reference k.
+        assert!((sweep.permeability_at(1.0).expect("valid") - 0.002).abs() < 1e-12);
+        // Compaction decreases k monotonically.
+        let at_half = sweep.permeability_at(0.5).expect("valid");
+        assert!(at_half < 0.002 && at_half > 0.0);
+        assert!(sweep.permeability_at(0.4).expect("valid") < at_half);
+        // Equilibrium point: σ0 = 0.2 → J̄ = 1 − σ0/H_A = 1 − 0.2857.
+        let eq = sweep.permeability_at_equilibrium(0.2).expect("valid");
+        let expected_j = 1.0 - 0.2 / 0.7;
+        assert!((eq - 0.002 * (-2.0f64 * (1.0 - expected_j)).exp()).abs() < 1e-12);
+        // Non-positive or non-finite returns are rejected.
+        assert!(StrainDependentPermeability {
+            material,
+            law: |_: f64| 0.0
+        }
+        .permeability_at(0.9)
+        .is_err());
+        // The constant baseline reproduces the material's own k at any J.
+        let constant = StrainDependentPermeability {
+            material,
+            law: ConstantPermeability { k: 0.002 },
+        };
+        assert_eq!(
+            constant.permeability_at(0.7).expect("valid"),
+            constant.material.permeability
+        );
     }
 
     #[test]

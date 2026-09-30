@@ -318,6 +318,17 @@ Tracked in `todo.md`. Summary of the user-visible change here:
   eventual implementer; the remaining blocker is the saddle solver's
   global convergence, with three ranked resolution strategies.
 
+- `rfcs/0012`'s implementation notes were **corrected**: the attempted
+  `F̄`-rescaling is an identity for laws with built-in isochoric splits;
+  the mean-dilatation method proper substitutes `J̄` into the dilatation
+  factors and needs a per-law method — recorded as the actual remaining
+  assembly work.
+- `tpt-med-cartilage`: `PermeabilityLaw` / `StrainDependentPermeability`
+  (caller-cited `k(J)` hook with validated evaluations).
+- `tpt-med-orthopedics`: `CompliantImplant` series-compliance screening
+  (foundation ⊕ interface layer `E/t`), the screening step from rigid
+  punch toward compliant-implant evaluation.
+
 ### Added — Backlog follow-up, continued (2026-10-01)
 `tpt-med-cartilage` (first-order shear: a closed form, the fluid never
 engages), `tpt-med-viscoelastic` (Fung-type quasi-linear viscoelasticity

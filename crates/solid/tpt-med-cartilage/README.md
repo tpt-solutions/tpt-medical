@@ -58,6 +58,11 @@ than a finite-element code.
   instantaneous response is rigid. The transient between them is the
   classical Bessel-series solution and is not implemented.
 
+- **Strain-dependent permeability hook** — `PermeabilityLaw` (closure or
+  type) supplies a cited `k(J)`; the crate validates evaluations and
+  gives the equilibrium-compaction evaluation point. Constant-`k` stays
+  the closed-form baseline.
+
 ## Conventions
 
 - Aggregate modulus `H_A` in **MPa**; permeability `k` in **mm⁴/(N·s)**;

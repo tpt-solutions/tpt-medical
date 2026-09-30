@@ -154,6 +154,57 @@ pub fn micromotion_um(result: &MicromotionResult) -> Length {
     Length::from_mm(result.max_micromotion * 1.0e3)
 }
 
+/// Effective interface stiffness when the implant itself is **compliant**:
+/// the Winkler foundation in series with the implant's coating/stem
+/// stiffness, so the micromotion the bone sees includes the implant's own
+/// elastic deformation — a screening step from rigid-punch toward
+/// compliant-implant evaluation (full continuum coupling is the
+/// fem-adapter's job).
+///
+/// ```text
+/// 1/k_eff = 1/k_foundation + t/(E·A_share)
+/// ```
+///
+/// with `t` the implant's load-bearing thickness and `E` its modulus
+/// (Ti-alloy stem ~110 GPa; a porous-coating or cement mantle drops the
+/// effective modulus by an order of magnitude, which is exactly the case
+/// where the rigid-punch assumption bites).
+#[derive(Debug, Clone, Copy)]
+pub struct CompliantImplant {
+    /// Foundation stiffness of the bone bed (N/mm³).
+    pub foundation_stiffness: f64,
+    /// Implant modulus at the interface (MPa).
+    pub implant_modulus_mpa: f64,
+    /// Implant load-bearing thickness at the interface (mm).
+    pub implant_thickness_mm: f64,
+}
+
+impl CompliantImplant {
+    /// Effective foundation stiffness (N/mm³) seen by the micromotion
+    /// model: the series combination of the bone bed and the implant's
+    /// interface layer. A rigid punch is the `implant_modulus → ∞` limit,
+    /// where this returns `foundation_stiffness` unchanged.
+    pub fn effective_stiffness(&self) -> f64 {
+        let k_implant = self.implant_modulus_mpa / self.implant_thickness_mm.max(1e-9);
+        // MPa = N/mm²; a foundation stiffness is N/mm³ = N/mm²/mm, so the
+        // implant layer stiffness k_i = E/t converts directly.
+        let k_eff = 1.0 / (1.0 / self.foundation_stiffness + 1.0 / k_implant);
+        let _ = k_implant;
+        k_eff
+    }
+
+    /// An [`InterfaceModel`] with the foundation stiffness replaced by the
+    /// series effective value — ready for [`micromotion_analysis`] or
+    /// [`micromotion_over_cycle`].
+    pub fn interface_model(&self, contact_area: f64, friction: f64) -> InterfaceModel {
+        InterfaceModel {
+            foundation_stiffness: self.effective_stiffness(),
+            contact_area,
+            friction,
+        }
+    }
+}
+
 /// Result of a cyclic (gait) micromotion analysis.
 #[derive(Debug, Clone)]
 pub struct CyclicMicromotionResult {
@@ -555,6 +606,38 @@ mod tests {
         let r = micromotion_analysis(&interface(), Force::from_n(1500.0), 0.25, &[800.0]);
         let um = micromotion_um(&r);
         assert!((um.to_mm() - r.max_micromotion * 1.0e3).abs() < 1e-9);
+    }
+
+    #[test]
+    fn compliant_implant_softens_the_interface_in_series() {
+        // Rigid limit: a very stiff implant returns the bare foundation.
+        let stiff = CompliantImplant {
+            foundation_stiffness: 5.0,
+            implant_modulus_mpa: 110_000.0,
+            implant_thickness_mm: 5.0,
+        };
+        let k_stiff = stiff.effective_stiffness();
+        assert!((k_stiff - 5.0).abs() < 0.01, "rigid limit {k_stiff}");
+
+        // A compliant coating (1 GPa, 2 mm) softens the interface.
+        let coated = CompliantImplant {
+            foundation_stiffness: 5.0,
+            implant_modulus_mpa: 1_000.0,
+            implant_thickness_mm: 2.0,
+        };
+        let k_coated = coated.effective_stiffness();
+        assert!(k_coated < 5.0, "coating must soften: {k_coated}");
+        // Series arithmetic hand-checked: 1/(1/5 + 2/1000) = 1/0.202 = 4.95.
+        assert!((k_coated - 4.9505).abs() < 1e-3, "{k_coated}");
+        // And the softened interface raises micromotion.
+        let load = Force::from_n(2000.0);
+        let rigid = micromotion_analysis(&stiff.interface_model(800.0, 0.5), load, 0.3, &[800.0]);
+        let compliant =
+            micromotion_analysis(&coated.interface_model(800.0, 0.5), load, 0.3, &[800.0]);
+        assert!(
+            compliant.max_micromotion > rigid.max_micromotion,
+            "compliant implant must increase micromotion"
+        );
     }
 
     #[test]

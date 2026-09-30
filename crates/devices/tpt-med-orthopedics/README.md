@@ -69,6 +69,11 @@ as a first-class input rather than assuming perfect bonding.
   RSA-style continued-migration (> 0.2 mm/year) flag.
 - Zero dependencies beyond `tpt-med-units`.
 
+- **Compliant-implant screening** — `CompliantImplant` puts the Winkler
+  foundation in series with the implant's interface-layer stiffness
+  (`E/t`), so a porous coating or cement mantle softens the interface
+  before the micromotion screen; the rigid punch is the stiff limit.
+
 ## Conventions
 
 - `foundation_stiffness` in **N/mm³**; `contact_area` in **mm²**;
