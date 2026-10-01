@@ -26,7 +26,7 @@ pub mod wss;
 
 pub use blood::BloodModel;
 pub use domain::FluidDomain;
-pub use heat::{bulk, stable_time_step, step, ScalarWall};
+pub use heat::{bulk, conjugate_step, stable_time_step, step, ScalarWall};
 pub use solver::{HemodynamicsSolver, PressureSolver, SolverConfig, SteadyStats};
 pub use wss::{extract_wss, OsiAccumulator, WssField};
 

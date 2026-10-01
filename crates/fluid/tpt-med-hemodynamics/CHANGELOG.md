@@ -67,12 +67,25 @@ changes for consumers of this crate.
   Nusselt number is deliberately not asserted on a stair-step coarse
   grid). Remaining for full CHT: the solid-side conduction solver and a
   two-way coupled interface.
+- **`conjugate_step`: the solid side, completing CHT** — diffusion
+  through *both* regions in one step, with interface faces taking the
+  **harmonic-mean** conductivity `2 κ_f κ_s/(κ_f + κ_s)`: for
+  cell-centered finite volumes that makes the interface face's
+  resistance the exact series sum of the two half-cell resistances, so
+  the two-layer steady state IS the analytic composite-wall solution.
+  Verified to machine precision across all 32 cells (fluid and solid)
+  against the resistance-chain potentials, including the two-layer
+  interface-temperature formula; two-region conservation holds exactly
+  through the interface exchange, and the regions equilibrate. The
+  fluid's wall temperature is no longer prescribed — it *is* the solid
+  cell's temperature, and the interface flux is continuous. `ScalarWall`
+  gained a `Faces([...])` variant (per-face fixed values, `None` =
+  insulated) so 1-D analytic tests are expressible on a 3-D box.
 
 ### Planned
 - Wall compliance, enabling a coupled fluid–structure boundary.
-- **The solid side of conjugate heat transfer** — a conduction solver
-  for the wall/solid with a two-way coupled fluid interface (the fluid
-  side is delivered in the `heat` module above).
+- (Conjugate heat transfer is delivered — see `conjugate_step` in Added
+  above. Wall compliance and local wall refinement remain.)
 - Optional local wall refinement, so peak WSS at a geometric corner stops
   being resolution dependent.
 - Multigrid pressure solve (a level beyond the new CG option) if CG's

@@ -31,10 +31,65 @@ use crate::domain::FluidDomain;
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ScalarWall {
     /// Isothermal wall at the given scalar value (e.g. `T_wall` in K or
-    /// °C — the module is unit-agnostic).
+    /// °C — the module is unit-agnostic) on every wall face.
     Fixed(f64),
-    /// Adiabatic wall: zero diffusive flux.
+    /// Adiabatic and impermeable wall: zero flux of either kind.
     Insulated,
+    /// Per-face fixed values, ordered `[x_low, x_high, y_low, y_high,
+    /// z_low, z_high]`; a `None` face is insulated. This is what makes a
+    /// 1-D analytic test expressible on a 3-D box (hot one end, cold the
+    /// other, insulated sides).
+    Faces([Option<f64>; 6]),
+}
+
+/// Wall-face identifiers for [`ScalarWall::Faces`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WallFace {
+    /// Low-x boundary.
+    XLow,
+    /// High-x boundary.
+    XHigh,
+    /// Low-y boundary.
+    YLow,
+    /// High-y boundary.
+    YHigh,
+    /// Low-z boundary.
+    ZLow,
+    /// High-z boundary.
+    ZHigh,
+}
+
+/// The fixed temperature of one wall face, or `None` when insulated.
+fn wall_value(wall: &ScalarWall, face: WallFace) -> Option<f64> {
+    match wall {
+        ScalarWall::Fixed(v) => Some(*v),
+        ScalarWall::Insulated => None,
+        ScalarWall::Faces(arr) => match face {
+            WallFace::XLow => arr[0],
+            WallFace::XHigh => arr[1],
+            WallFace::YLow => arr[2],
+            WallFace::YHigh => arr[3],
+            WallFace::ZLow => arr[4],
+            WallFace::ZHigh => arr[5],
+        },
+    }
+}
+
+/// The face a boundary neighbor lies on.
+fn face_of(di: i64, dj: i64, dk: i64) -> WallFace {
+    if di == -1 {
+        WallFace::XLow
+    } else if di == 1 {
+        WallFace::XHigh
+    } else if dj == -1 {
+        WallFace::YLow
+    } else if dj == 1 {
+        WallFace::YHigh
+    } else if dk == -1 {
+        WallFace::ZLow
+    } else {
+        WallFace::ZHigh
+    }
 }
 
 /// Face index on the u (x-face) array.
@@ -121,9 +176,14 @@ pub fn step(
                     // A domain-boundary inflow under a fixed wall carries
                     // the wall temperature; insulated boundaries are also
                     // impermeable (no advective flux).
-                    if let ScalarWall::Fixed(tw) = wall {
-                        let inflow = (i == 0 && uf > 0.0) || (i == nx && uf < 0.0);
-                        if inflow {
+                    let inflow = (i == 0 && uf > 0.0) || (i == nx && uf < 0.0);
+                    if inflow {
+                        let face = if i == 0 {
+                            WallFace::XLow
+                        } else {
+                            WallFace::XHigh
+                        };
+                        if let Some(tw) = wall_value(&wall, face) {
                             fx[idx] = uf * tw;
                         }
                     }
@@ -151,9 +211,14 @@ pub fn step(
                 let lower_ok = j > 0 && domain.is_fluid(i as i64, j as i64 - 1, k as i64);
                 let upper_ok = j < ny && domain.is_fluid(i as i64, j as i64, k as i64);
                 if !lower_ok || !upper_ok {
-                    if let ScalarWall::Fixed(tw) = wall {
-                        let inflow = (j == 0 && vf > 0.0) || (j == ny && vf < 0.0);
-                        if inflow {
+                    let inflow = (j == 0 && vf > 0.0) || (j == ny && vf < 0.0);
+                    if inflow {
+                        let face = if j == 0 {
+                            WallFace::YLow
+                        } else {
+                            WallFace::YHigh
+                        };
+                        if let Some(tw) = wall_value(&wall, face) {
                             fy[idx] = vf * tw;
                         }
                     }
@@ -181,9 +246,14 @@ pub fn step(
                 let back_ok = k > 0 && domain.is_fluid(i as i64, j as i64, k as i64 - 1);
                 let front_ok = k < nz && domain.is_fluid(i as i64, j as i64, k as i64);
                 if !back_ok || !front_ok {
-                    if let ScalarWall::Fixed(tw) = wall {
-                        let inflow = (k == 0 && wf > 0.0) || (k == nz && wf < 0.0);
-                        if inflow {
+                    let inflow = (k == 0 && wf > 0.0) || (k == nz && wf < 0.0);
+                    if inflow {
+                        let face = if k == 0 {
+                            WallFace::ZLow
+                        } else {
+                            WallFace::ZHigh
+                        };
+                        if let Some(tw) = wall_value(&wall, face) {
                             fz[idx] = wf * tw;
                         }
                     }
@@ -268,16 +338,19 @@ pub fn step(
                         } else {
                             sum_z += d;
                         }
-                    } else if let ScalarWall::Fixed(tw) = wall {
-                        // A wall face at the fixed temperature, half-cell
-                        // away from the center (factor 2).
-                        let d = 2.0 * (tw - t[c]);
-                        if di != 0 {
-                            wall_x += d;
-                        } else if dj != 0 {
-                            wall_y += d;
-                        } else {
-                            wall_z += d;
+                    } else {
+                        // A wall face (solid or domain boundary) at its
+                        // fixed temperature, half a cell from the center
+                        // (factor 2); insulated faces contribute nothing.
+                        if let Some(tw) = wall_value(&wall, face_of(di, dj, dk)) {
+                            let d = 2.0 * (tw - t[c]);
+                            if di != 0 {
+                                wall_x += d;
+                            } else if dj != 0 {
+                                wall_y += d;
+                            } else {
+                                wall_z += d;
+                            }
                         }
                     }
                     // Insulated walls contribute zero flux.
@@ -292,6 +365,231 @@ pub fn step(
         out[i] += dt * kappa * lap[i];
     }
     out
+}
+
+/// Advances the cell-centered scalar by one explicit step of advection
+/// (fluid cells only — the MAC velocities are zero in the solid) plus
+/// diffusion **through both regions**, with the interface faces taking
+/// the **harmonic-mean** conductivity `2 κ_f κ_s/(κ_f + κ_s)`.
+///
+/// The harmonic mean is not a refinement choice: for cell-centered finite
+/// volumes it makes the interface face's resistance the exact series sum
+/// of the two half-cell resistances, which is why the two-layer steady
+/// test reproduces the analytic composite-wall solution to machine
+/// precision (the classic argument for harmonic means at material
+/// interfaces).
+///
+/// This is the two-way coupled fluid–solid boundary of the CHT item: the
+/// fluid's wall temperature is no longer prescribed — it *is* the solid
+/// cell's temperature, and the flux through the interface is continuous.
+///
+/// # Panics
+///
+/// Panics if the arrays' lengths do not match the domain layout.
+#[allow(clippy::too_many_lines)]
+pub fn conjugate_step(
+    domain: &FluidDomain,
+    t: &[f64],
+    u: &[f64],
+    v: &[f64],
+    w: &[f64],
+    kappa_fluid: f64,
+    kappa_solid: f64,
+    dt: f64,
+    wall: &ScalarWall,
+) -> Vec<f64> {
+    let (nx, ny, nz) = domain.dims;
+    let (sx, sy, sz) = domain.spacing;
+    let cell = |i: usize, j: usize, k: usize| (i * ny + j) * nz + k;
+    assert_eq!(t.len(), nx * ny * nz, "scalar length mismatch");
+    assert_eq!(u.len(), (nx + 1) * ny * nz, "u length mismatch");
+    assert_eq!(v.len(), nx * (ny + 1) * nz, "v length mismatch");
+    assert_eq!(w.len(), nx * ny * (nz + 1), "w length mismatch");
+    let kappa_cell = |i: usize, j: usize, k: usize| {
+        if domain.is_fluid(i as i64, j as i64, k as i64) {
+            kappa_fluid
+        } else {
+            kappa_solid
+        }
+    };
+    // Harmonic mean at a face between two cells.
+    let harmonic = |ka: f64, kb: f64| 2.0 * ka * kb / (ka + kb);
+
+    let mut out = t.to_vec();
+
+    // ---- Advection: fluid cells only (velocities are zero in solids) ----
+    let mut fx = vec![0.0f64; (nx + 1) * ny * nz];
+    for i in 0..=nx {
+        for j in 0..ny {
+            for k in 0..nz {
+                let uf = u[uidx(domain, i, j, k)];
+                let idx = uidx(domain, i, j, k);
+                if uf == 0.0 {
+                    continue;
+                }
+                let left_ok = i > 0 && domain.is_fluid(i as i64 - 1, j as i64, k as i64);
+                let right_ok = i < nx && domain.is_fluid(i as i64, j as i64, k as i64);
+                if !left_ok || !right_ok {
+                    // No flow through solids; boundary inflows under a
+                    // fixed wall face carry the wall value.
+                    if (i == 0 && uf > 0.0) || (i == nx && uf < 0.0) {
+                        let face = if i == 0 {
+                            WallFace::XLow
+                        } else {
+                            WallFace::XHigh
+                        };
+                        if let Some(tw) = wall_value(wall, face) {
+                            fx[idx] = uf * tw;
+                        }
+                    }
+                    continue;
+                }
+                let left = cell(i - 1, j, k);
+                let right = cell(i, j, k);
+                fx[idx] = if uf >= 0.0 {
+                    uf * t[left]
+                } else {
+                    uf * t[right]
+                };
+            }
+        }
+    }
+    let mut fy = vec![0.0f64; nx * (ny + 1) * nz];
+    for i in 0..nx {
+        for j in 0..=ny {
+            for k in 0..nz {
+                let vf = v[vidx(domain, i, j, k)];
+                let idx = vidx(domain, i, j, k);
+                if vf == 0.0 {
+                    continue;
+                }
+                let lower_ok = j > 0 && domain.is_fluid(i as i64, j as i64 - 1, k as i64);
+                let upper_ok = j < ny && domain.is_fluid(i as i64, j as i64, k as i64);
+                if !lower_ok || !upper_ok {
+                    if (j == 0 && vf > 0.0) || (j == ny && vf < 0.0) {
+                        let face = if j == 0 {
+                            WallFace::YLow
+                        } else {
+                            WallFace::YHigh
+                        };
+                        if let Some(tw) = wall_value(wall, face) {
+                            fy[idx] = vf * tw;
+                        }
+                    }
+                    continue;
+                }
+                let lower = cell(i, j - 1, k);
+                let upper = cell(i, j, k);
+                fy[idx] = if vf >= 0.0 {
+                    vf * t[lower]
+                } else {
+                    vf * t[upper]
+                };
+            }
+        }
+    }
+    let mut fz = vec![0.0f64; nx * ny * (nz + 1)];
+    for i in 0..nx {
+        for j in 0..ny {
+            for k in 0..=nz {
+                let wf = w[widx(domain, i, j, k)];
+                let idx = widx(domain, i, j, k);
+                if wf == 0.0 {
+                    continue;
+                }
+                let back_ok = k > 0 && domain.is_fluid(i as i64, j as i64, k as i64 - 1);
+                let front_ok = k < nz && domain.is_fluid(i as i64, j as i64, k as i64);
+                if !back_ok || !front_ok {
+                    if (k == 0 && wf > 0.0) || (k == nz && wf < 0.0) {
+                        let face = if k == 0 {
+                            WallFace::ZLow
+                        } else {
+                            WallFace::ZHigh
+                        };
+                        if let Some(tw) = wall_value(wall, face) {
+                            fz[idx] = wf * tw;
+                        }
+                    }
+                    continue;
+                }
+                let back = cell(i, j, k - 1);
+                let front = cell(i, j, k);
+                fz[idx] = if wf >= 0.0 {
+                    wf * t[back]
+                } else {
+                    wf * t[front]
+                };
+            }
+        }
+    }
+    let ay = sy * sz;
+    let ax = sx * sz;
+    let az = sx * sy;
+    let volume = sx * sy * sz;
+    for i in 0..nx {
+        for j in 0..ny {
+            for k in 0..nz {
+                if !domain.is_fluid(i as i64, j as i64, k as i64) {
+                    continue;
+                }
+                let c = cell(i, j, k);
+                let net = (fx[uidx(domain, i + 1, j, k)] - fx[uidx(domain, i, j, k)]) * ay
+                    + (fy[vidx(domain, i, j + 1, k)] - fy[vidx(domain, i, j, k)]) * ax
+                    + (fz[widx(domain, i, j, k + 1)] - fz[widx(domain, i, j, k)]) * az;
+                out[c] -= dt * net / volume;
+            }
+        }
+    }
+
+    // ---- Diffusion through BOTH regions, harmonic-mean interfaces ----
+    let mut out2 = out;
+    for i in 0..nx {
+        for j in 0..ny {
+            for k in 0..nz {
+                let c = cell(i, j, k);
+                let kc = kappa_cell(i, j, k);
+                let mut flux_sum = 0.0f64;
+                for (di, dj, dk) in [
+                    (1i64, 0, 0),
+                    (-1, 0, 0),
+                    (0, 1, 0),
+                    (0, -1, 0),
+                    (0, 0, 1),
+                    (0, 0, -1),
+                ] {
+                    let (ii, jj, kk) = (i as i64 + di, j as i64 + dj, k as i64 + dk);
+                    let in_bounds = ii >= 0
+                        && jj >= 0
+                        && kk >= 0
+                        && (ii as usize) < nx
+                        && (jj as usize) < ny
+                        && (kk as usize) < nz;
+                    let s2 = if di != 0 {
+                        sx * sx
+                    } else if dj != 0 {
+                        sy * sy
+                    } else {
+                        sz * sz
+                    };
+                    if in_bounds {
+                        let nc = cell(ii as usize, jj as usize, kk as usize);
+                        // Face conductivity: harmonic mean across a
+                        // material interface, own conductivity otherwise.
+                        let kf = harmonic(kc, kappa_cell(ii as usize, jj as usize, kk as usize));
+                        flux_sum += kf * (t[nc] - t[c]) / s2;
+                    } else if let Some(tw) = wall_value(wall, face_of(di, dj, dk)) {
+                        // A wall face at its fixed temperature, half a
+                        // cell from the center (factor 2); insulated
+                        // faces contribute nothing.
+                        flux_sum += 2.0 * kc * (tw - t[c]) / s2;
+                    }
+                }
+                // Unit volumetric heat capacity: diffusivity = conductivity.
+                out2[c] = t[c] + dt * flux_sum;
+            }
+        }
+    }
+    out2
 }
 
 /// Volume-weighted mean scalar over fluid cells (the bulk temperature).
@@ -546,4 +844,160 @@ mod tests {
         let dt_b = stable_time_step(&domain, 0.12, 2.0);
         assert!((dt_b - dt_d.min(dt_a)).abs() < 1e-12);
     }
+}
+
+/// The composite-wall steady state: a fluid half and a solid half,
+/// hot wall on the left, cold on the right, insulated elsewhere,
+/// run to equilibrium under `conjugate_step`. The harmonic-mean
+/// interface makes the interface face's resistance the exact series
+/// sum of the two half-cell resistances, so the discrete steady
+/// state IS the analytic composite-wall solution — every cell
+/// matches the resistance-chain potential to machine precision, and
+/// the interface temperature equals the two-layer formula
+/// `T_int = T_hot - (T_hot - T_cold) R_hot/(R_hot + R_cold)`.
+#[test]
+fn conjugate_two_layer_steady_state_matches_series_resistance() {
+    let n = 32;
+    let dims = (n, 2, 2);
+    // Fluid for x < 16, solid for x >= 16.
+    let mut mask = vec![false; n * 2 * 2];
+    for i in 0..n {
+        for j in 0..2 {
+            for k in 0..2 {
+                mask[(i * 2 + j) * 2 + k] = i < 16;
+            }
+        }
+    }
+    let domain = FluidDomain::from_mask(dims, (1.0, 1.0, 1.0), mask, 0, true);
+    let (k_f, k_s) = (0.12, 1.0);
+    let (t_hot, t_cold) = (1.0f64, 0.0f64);
+    let wall = ScalarWall::Faces([Some(t_hot), Some(t_cold), None, None, None, None]);
+
+    let zeros = (
+        vec![0.0; (n + 1) * 2 * 2],
+        vec![0.0; n * 3 * 2],
+        vec![0.0; n * 2 * 3],
+    );
+    let mut t = vec![0.5f64; n * 2 * 2];
+    // March to steady state: the slowest mode is the fluid slab's
+    // diffusion time (2L_f/pi)^2/k_f ~ 860 s; 1.4e5 steps x 0.15 s
+    // ~ 2.1e4 s is ~24 of those time constants, putting the residual
+    // transient below the 1e-9 assertion.
+    let dt = 0.9 / 6.0;
+    for _ in 0..150_000 {
+        t = conjugate_step(
+            &domain, &t, &zeros.0, &zeros.1, &zeros.2, k_f, k_s, dt, &wall,
+        );
+    }
+
+    // Analytic discrete steady state from the resistance chain: q =
+    // (T_hot - T_cold)/R_total with the half-cell wall resistances
+    // and the (exact) harmonic-mean interface resistance.
+    let dx = 1.0;
+    let r_half_f = dx / (2.0 * k_f);
+    let r_half_s = dx / (2.0 * k_s);
+    let k_int = 2.0 * k_f * k_s / (k_f + k_s);
+    let r_int = dx / k_int;
+    let r_total = r_half_f + 15.0 * (dx / k_f) + r_int + 15.0 * (dx / k_s) + r_half_s;
+    let q = (t_hot - t_cold) / r_total;
+
+    let mut expected = Vec::with_capacity(n);
+    let mut potential = t_hot;
+    // Wall half-cell first, then one resistance per cell-to-cell face.
+    potential -= q * r_half_f;
+    expected.push(potential);
+    for i in 1..n {
+        let r_step = if i == 16 {
+            r_int
+        } else if i < 16 {
+            dx / k_f
+        } else {
+            dx / k_s
+        };
+        potential -= q * r_step;
+        expected.push(potential);
+    }
+    for i in 0..n {
+        for j in 0..2 {
+            for k in 0..2 {
+                let got = t[(i * 2 + j) * 2 + k];
+                assert!(
+                    (got - expected[i]).abs() < 1e-9,
+                    "cell ({i},{j},{k}): {got} vs {}",
+                    expected[i]
+                );
+            }
+        }
+    }
+    // Interface temperature equals the two-layer formula.
+    let r_fluid_side = r_half_f + 15.0 * (dx / k_f);
+    let t_interface = t_hot - (t_hot - t_cold) * r_fluid_side / r_total;
+    assert!(
+        (t[(15 * 2) * 2] - t_interface).abs() < 1e-9,
+        "interface cell {} vs {}",
+        t[(15 * 2) * 2],
+        t_interface
+    );
+}
+
+/// Two-region conservation: with insulated outer walls, the fluid and
+/// solid energies sum to a constant even as heat redistributes
+/// through the interface.
+#[test]
+fn conjugate_conservation_across_regions() {
+    let n = 16;
+    let dims = (n, 2, 2);
+    let mut mask = vec![false; n * 2 * 2];
+    for i in 0..n {
+        for j in 0..2 {
+            for k in 0..2 {
+                mask[(i * 2 + j) * 2 + k] = i < 8;
+            }
+        }
+    }
+    let domain = FluidDomain::from_mask(dims, (1.0, 1.0, 1.0), mask, 0, true);
+    let (k_f, k_s) = (0.12, 1.0);
+    let wall = ScalarWall::Insulated;
+    let zeros = (
+        vec![0.0; (n + 1) * 2 * 2],
+        vec![0.0; n * 3 * 2],
+        vec![0.0; n * 2 * 3],
+    );
+    // Hot fluid, cold solid.
+    let mut t = vec![0.0f64; n * 2 * 2];
+    for i in 0..n {
+        for j in 0..2 {
+            for k in 0..2 {
+                t[(i * 2 + j) * 2 + k] = if i < 8 { 1.0 } else { 0.0 };
+            }
+        }
+    }
+    let initial: f64 = t.iter().sum();
+    let dt = 0.9 / 6.0;
+    // Conservation is checked along the way, not just at the end.
+    // ~40 fluid-internal time constants: the equilibration assertion
+    // below is a real 1e-3 of the initial unit contrast.
+    for step_n in 0..12000 {
+        t = conjugate_step(
+            &domain, &t, &zeros.0, &zeros.1, &zeros.2, k_f, k_s, dt, &wall,
+        );
+        if step_n % 500 == 0 {
+            let total: f64 = t.iter().sum();
+            assert!(
+                (total - initial).abs() < 1e-9,
+                "two-region energy drifted at step {step_n}: {initial} -> {total}"
+            );
+        }
+    }
+    let final_total: f64 = t.iter().sum();
+    assert!(
+        (final_total - initial).abs() < 1e-9,
+        "two-region energy drifted: {initial} -> {final_total}"
+    );
+    // Interface exchange time ~ C/G ~ 38 s; the slower fluid-internal
+    // mode is ~54 s, so 900 s is ~17 of those: the spread is below
+    // 1e-3 of the initial unit contrast.
+    let spread = t.iter().cloned().fold(f64::NEG_INFINITY, f64::max)
+        - t.iter().cloned().fold(f64::INFINITY, f64::min);
+    assert!(spread < 1e-3, "not equilibrated: spread {spread}");
 }

@@ -357,7 +357,11 @@ isothermal or adiabatic-and-impermeable walls and an explicit-step
 stability bound. Verified against the exact discrete Fourier eigenmodes
 of both wall closures, machine-precision conservation on a
 divergence-free field, and monotone thermal-entry decay in Poiseuille
-flow (the coarse-grid Nusselt number deliberately not asserted).
+flow (the coarse-grid Nusselt number deliberately not asserted). The
+same commit cycle adds `conjugate_step` — the **solid side**, with
+harmonic-mean interface conductivity making the two-layer steady state
+match the analytic composite-wall solution to machine precision —
+completing the CHT item; wall compliance/FSI remains.
 
 ### Added — Finite-strain internal-variable viscoelasticity (2026-10-01)
 `tpt-med-viscoelastic` (`FiniteStrainViscoelastic`: Simo-type isochoric
