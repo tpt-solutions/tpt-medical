@@ -464,6 +464,173 @@ impl ConfinedCreepStepper {
     }
 }
 
+/// A 1-D confined-compression stepper for a **nonlinear solid matrix**:
+/// the drained effective stress `σ_eff(e)` is a caller-supplied
+/// increasing function of the apparent compressive strain
+/// `e = 1 − J`, replacing the linear `σ_eff = H_A·e` the
+/// [`ConfinedCreepStepper`] embeds.
+///
+/// # Formulation
+///
+/// The quasi-static confined problem has one independent field once the
+/// equilibrium `σ_eff(e) + p = σ₀` is substituted (effective solid
+/// stress plus excess pore pressure equals the applied `σ₀`; undrained
+/// `t = 0⁺` has `e = 0`, `p = σ₀` — the fluid carries everything).
+/// Darcy continuity then gives a heat-like equation for the excess
+/// pressure with the **state-dependent diffusivity**
+///
+/// ```text
+/// ∂p/∂t = k(e) · σ_eff′(e) · p_xx,    e = σ_eff⁻¹(σ₀ − p)
+/// ```
+///
+/// the poroelastic coefficient that generalizes the linear `k·H_A`. The
+/// drained surface holds the constant Dirichlet pressure `p = 0` (which
+/// pins `e(0) = σ_eff⁻¹(σ₀)` = the equilibrium strain); the platen end
+/// is sealed (`p_x = 0`). The creep fraction is `u/h = mean(e)` — zero
+/// undrained, `σ_eff⁻¹(σ₀)` at equilibrium.
+///
+/// `σ_eff` is caller-supplied and caller-cited (the mechanism ships,
+/// the coefficients come from the caller's source, as everywhere in
+/// this workspace); it must be increasing with `σ_eff(0) = 0`. The
+/// update is explicit with an adaptive step bounded by the
+/// state-dependent diffusion limit `dx²/(2·max k·σ_eff′)`.
+#[derive(Debug, Clone)]
+pub struct NonlinearConfinedStepper {
+    /// Tissue thickness in the loading direction (mm).
+    pub thickness: f64,
+    /// Spatial resolution: cells over the thickness.
+    pub cells: usize,
+}
+
+/// Inverts an increasing `σ_eff` on the compressive-strain range by a
+/// bracketed bisection whose bracket expands from zero.
+fn invert_sigma_eff(sigma_eff: &impl Fn(f64) -> f64, target: f64) -> Result<f64, String> {
+    if target < 0.0 {
+        return Err(format!("negative driving stress {target}"));
+    }
+    let mut lo = 0.0f64;
+    let mut hi = 0.05f64;
+    while sigma_eff(hi) < target {
+        lo = hi;
+        hi *= 2.0;
+        if hi > 4.0 {
+            return Err(format!(
+                "sigma_eff does not reach {target} by e = 4 (300 % compressive strain)"
+            ));
+        }
+    }
+    for _ in 0..80 {
+        let mid = 0.5 * (lo + hi);
+        if sigma_eff(mid) < target {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    Ok(0.5 * (lo + hi))
+}
+
+impl NonlinearConfinedStepper {
+    /// Validates; `Err` for fewer than 8 cells.
+    pub fn new(thickness: f64, cells: usize) -> Result<Self, String> {
+        if cells < 8 {
+            return Err(format!("at least 8 cells are needed, got {cells}"));
+        }
+        Ok(Self { thickness, cells })
+    }
+
+    /// `σ_eff′` by central differences (the caller's law is a black box;
+    /// the step is scaled by `max(1, |e|)` like the tissue crate's
+    /// tangent differencing).
+    fn sigma_eff_prime(sigma_eff: &impl Fn(f64) -> f64, e: f64, h: f64) -> f64 {
+        let step = h * e.abs().max(1.0);
+        (sigma_eff(e + step) - sigma_eff(e - step)) / (2.0 * step)
+    }
+
+    /// The strain field `e(x)` after marching to `time` under `σ0` with
+    /// the given permeability and drained-stress laws. The drained
+    /// surface holds `e(0) = σ_eff⁻¹(σ0)` from `t > 0`.
+    pub fn strain_profile(
+        &self,
+        sigma0: f64,
+        time: f64,
+        permeability: &impl PermeabilityLaw,
+        sigma_eff: &impl Fn(f64) -> f64,
+    ) -> Result<Vec<f64>, String> {
+        let n = self.cells;
+        let dx = self.thickness / n as f64;
+        // The drained surface's equilibrium strain; asserted reachable so
+        // an unreachable sigma0 fails before the march, not during it.
+        let _e_eq = invert_sigma_eff(sigma_eff, sigma0)?;
+
+        // Undrained start: zero strain, excess pressure sigma0 everywhere,
+        // drained surface pinned at p = 0.
+        let mut p = vec![sigma0; n + 1];
+        p[0] = 0.0;
+        let mut t = 0.0f64;
+        while t < time {
+            // Per-cell strain and state-dependent diffusivity
+            // D = k(e)·sigma_eff'(e).
+            let mut d_node = vec![0.0f64; n + 1];
+            for i in 1..=n {
+                let e_i = invert_sigma_eff(sigma_eff, sigma0 - p[i])?;
+                let prime = Self::sigma_eff_prime(sigma_eff, e_i, 1.0e-6);
+                if !prime.is_finite() || prime <= 0.0 {
+                    return Err(format!(
+                        "sigma_eff must be increasing: sigma_eff'({e_i:.4}) = {prime}"
+                    ));
+                }
+                let kf = permeability.permeability(1.0 - e_i);
+                if !kf.is_finite() || kf <= 0.0 {
+                    return Err(format!(
+                        "permeability law returned {kf} at J = {:.4}",
+                        1.0 - e_i
+                    ));
+                }
+                d_node[i] = prime * kf;
+            }
+            // CFL: dx² / (2 · max D).
+            let max_d = d_node.iter().cloned().fold(0.0f64, f64::max);
+            let dt_cfl = 0.4 * dx * dx / (2.0 * max_d);
+            let dt = dt_cfl.min(time - t);
+
+            // Explicit heat-like update on the excess pressure.
+            let mut dp = vec![0.0f64; n + 1];
+            for i in 1..n {
+                dp[i] = d_node[i] * (p[i + 1] - 2.0 * p[i] + p[i - 1]) / (dx * dx);
+            }
+            // Sealed platen: mirrored.
+            dp[n] = d_node[n] * (p[n - 1] - p[n]) / (dx * dx);
+            for i in 1..=n {
+                p[i] += dt * dp[i];
+                if !p[i].is_finite() {
+                    return Err("excess pressure diverged".into());
+                }
+            }
+            p[0] = 0.0;
+            t += dt;
+        }
+
+        // Strain from the converged excess-pressure profile.
+        (1..=n)
+            .map(|i| invert_sigma_eff(sigma_eff, sigma0 - p[i]))
+            .collect()
+    }
+
+    /// The creep displacement fraction `u/h = mean(e)` after marching to
+    /// `time` under `σ0` (zero undrained, `σ_eff⁻¹(σ0)` at equilibrium).
+    pub fn creep_with_laws(
+        &self,
+        sigma0: f64,
+        time: f64,
+        permeability: &impl PermeabilityLaw,
+        sigma_eff: &impl Fn(f64) -> f64,
+    ) -> Result<f64, String> {
+        let e = self.strain_profile(sigma0, time, permeability, sigma_eff)?;
+        Ok(e.iter().sum::<f64>() / e.len() as f64)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -811,5 +978,106 @@ mod tests {
         assert!(early > 0.1, "early pressure {early}");
         assert!(late < early);
         assert!(late < 0.05, "late pressure {late}");
+    }
+
+    // ---- Nonlinear solid-matrix stepper ----
+
+    #[test]
+    fn nonlinear_linear_law_reproduces_the_linear_stepper() {
+        // The cross-verification: sigma_eff = H_A (J - 1) makes the
+        // nonlinear stepper's diffusivity k*H_A and its Dirichlet stretch
+        // 1 + sigma0/H_A — the linear ConfinedCreepStepper's exact
+        // problem. The two independent steppers must agree.
+        let m = BiphasicMaterial::default();
+        let lin = ConfinedCreepStepper::new(m, 100).expect("valid");
+        let nl = NonlinearConfinedStepper::new(m.thickness, 100).expect("valid");
+        let sigma0 = 0.1;
+        let linear_law = ConstantPermeability { k: m.permeability };
+        // In strain form: sigma_eff(e) = H_A e — exactly the linear law.
+        let sigma_eff = |e: f64| m.aggregate_modulus * e;
+        let tg = m.gel_time();
+        for frac in [0.5, 1.0, 2.0] {
+            let from_linear = lin.creep_fraction_with_law(sigma0, tg * frac, &linear_law);
+            let from_nonlinear = nl
+                .creep_with_laws(sigma0, tg * frac, &linear_law, &sigma_eff)
+                .expect("marches");
+            assert!(
+                (from_linear - from_nonlinear).abs() < 0.01 * sigma0,
+                "t = {frac} t1/2: linear stepper {from_linear} vs nonlinear {from_nonlinear}"
+            );
+        }
+    }
+
+    #[test]
+    fn nonlinear_equilibrium_matches_the_inverted_law() {
+        let m = BiphasicMaterial::default();
+        let nl = NonlinearConfinedStepper::new(m.thickness, 100).expect("valid");
+        let linear_law = ConstantPermeability { k: m.permeability };
+        let sigma0 = 0.1;
+        // An exponentially stiffening solid matrix (caller-cited form):
+        // sigma_eff(e) = 0.3 (e^{0.5 e} - 1); its equilibrium strain is
+        // sigma_eff^{-1}(sigma0), computed here by the same bisection the
+        // stepper uses.
+        let m_stiff = 0.5f64;
+        let sigma_eff = |e: f64| (m_stiff * e).exp_m1() * 0.3;
+        let j_eq = {
+            let (mut lo, mut hi) = (0.05, 2.0);
+            for _ in 0..80 {
+                let mid = 0.5 * (lo + hi);
+                if sigma_eff(mid) < sigma0 {
+                    lo = mid;
+                } else {
+                    hi = mid;
+                }
+            }
+            0.5 * (lo + hi)
+        };
+        let late = nl
+            .creep_with_laws(sigma0, 3.0e4, &linear_law, &sigma_eff)
+            .expect("marches");
+        let expected = j_eq;
+        assert!(
+            (late - expected).abs() < 1e-3 * expected.abs().max(1e-6),
+            "late {late} vs equilibrium strain {expected}"
+        );
+    }
+
+    #[test]
+    fn nonlinear_stiffening_law_slows_the_creep() {
+        let m = BiphasicMaterial::default();
+        let nl = NonlinearConfinedStepper::new(m.thickness, 100).expect("valid");
+        let linear_law = ConstantPermeability { k: m.permeability };
+        let sigma0 = 0.1;
+        let linear = |e: f64| 0.7 * e;
+        // A monotone law that stiffens in compression: dSigma/de = 0.7 +
+        // 6 e^2 > 0 everywhere, and the stress rises faster than linear
+        // as e grows, so the same sigma0 needs less strain at equilibrium
+        // and the transient is slower.
+        let stiffening = |e: f64| 0.7 * e + 2.0 * e.powi(3);
+        let t = m.gel_time();
+        let u_lin = nl
+            .creep_with_laws(sigma0, t, &linear_law, &linear)
+            .expect("marches");
+        let u_stiff = nl
+            .creep_with_laws(sigma0, t, &linear_law, &stiffening)
+            .expect("marches");
+        assert!(
+            u_stiff < u_lin,
+            "stiffening law must creep less at the same time: {u_stiff} vs {u_lin}"
+        );
+    }
+
+    #[test]
+    fn nonlinear_stepper_validates_and_inverts() {
+        let nl = NonlinearConfinedStepper::new(2.0, 4);
+        assert!(nl.is_err());
+        let nl = NonlinearConfinedStepper::new(2.0, 8).expect("valid");
+        let linear_law = ConstantPermeability { k: 0.002 };
+        let non_monotone = |e: f64| 0.7 * e * e; // U-shaped: not increasing
+        assert!(
+            nl.creep_with_laws(0.1, 1.0, &linear_law, &non_monotone)
+                .is_err(),
+            "a non-monotone law must be rejected, not silently marched"
+        );
     }
 }

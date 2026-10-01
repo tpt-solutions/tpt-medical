@@ -349,6 +349,17 @@ items. RFC 0012 is delivered in full, including cutback load
 continuation for the mixed path (`max_cutbacks` mirroring the penalty
 solver's contract) — the fem-adapter's Planned list is empty.
 
+### Added — Cartilage nonlinear solid matrix (2026-10-01)
+`tpt-med-cartilage` (`NonlinearConfinedStepper`): confined creep under a
+caller-cited nonlinear drained stress law `σ_eff(e)` — the last roadmap
+item in the crate. The quasi-static substitution reduces the biphasic
+problem to a heat-like equation with state-dependent diffusivity
+`k(e)·σ_eff′(e)`; the linear law cross-verifies against the existing
+linear stepper (two independent discretizations agreeing across the
+transient), stiffening laws reach their analytic equilibrium strain, and
+non-monotone laws are rejected rather than silently marched. The
+cartilage roadmap is now complete.
+
 ### Added — Hip stem sizing (2026-10-01)
 `tpt-med-implant-sizing` (`HipLandmarks` + `size_hip`): the femoral-side
 landmarks and the three geometric stem-sizing measurements (canal

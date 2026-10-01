@@ -12,6 +12,20 @@ changes for consumers of this crate.
 ## [Unreleased]
 
 ### Added
+- **`NonlinearConfinedStepper` — the nonlinear solid matrix**, completing
+  the crate's roadmap. The drained effective stress `σ_eff(e)` is a
+  caller-supplied increasing function of the apparent compressive strain
+  (the mechanism ships, the law is caller-cited); the quasi-static
+  substitution `σ_eff(e) + p = σ₀` reduces the confined biphasic problem
+  to a heat-like equation for the excess pressure with the
+  state-dependent diffusivity `k(e)·σ_eff′(e)`, marched explicitly with
+  an adaptive CFL step. Verification: with `σ_eff(e) = H_A·e` the
+  nonlinear stepper reproduces the (independently verified) linear
+  `ConfinedCreepStepper` across the transient — two independent
+  discretizations of the same physics — and a stiffening law creeps
+  slower at the same time, reaching its own analytic equilibrium strain
+  `σ_eff⁻¹(σ₀)`; non-monotone laws are rejected rather than silently
+  marched.
 - `PermeabilityLaw` / `ConstantPermeability` /
   `StrainDependentPermeability`: the **strain-dependent permeability
   hook** — the mechanism half of the nonlinear-biphasic item. Callers
@@ -77,12 +91,13 @@ changes for consumers of this crate.
 - Crate README explaining why poroelastic rather than elastic: interstitial
 - Nonlinear biphasic theory proper (the strain-dependent permeability hook
   and the time-stepping solver for non-constant `k` are delivered; a full
-  nonlinear solid matrix remains).
-- (Lubrication, first slice delivered above: `SqueezeFilm` gives the
-  interface a film term — a contact solver evaluates `load_capacity`;
-  what remains is coupling that solver into the biphasic creep path
-  itself.)
 - Fibrous-cartilage support (a fibre-reinforced solid matrix).
+
+### Planned
+- (None: linear and nonlinear confined compression with constant or
+  strain-dependent permeability, unconfined limits, shear, and
+  squeeze-film lubrication are all delivered. Further needs arrive
+  through issues.)
 
 ### Notes
 - The **term count** is a runtime parameter, not a hard-coded truncation. The
