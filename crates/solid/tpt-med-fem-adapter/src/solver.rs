@@ -208,7 +208,7 @@ pub struct SolveResult {
 /// stiffness of `kappa` per active DOF, and a load of `kappa * lower` per active
 /// DOF — so the active-set bookkeeping is the substrate's, not a
 /// re-derivation of it here.
-fn contact_terms<E: ReferenceElement + crate::mesh::ElementFamily>(
+pub(crate) fn contact_terms<E: ReferenceElement + crate::mesh::ElementFamily>(
     mesh: &Mesh<E>,
     pairing: &ContactPairing,
     u: &[f64],

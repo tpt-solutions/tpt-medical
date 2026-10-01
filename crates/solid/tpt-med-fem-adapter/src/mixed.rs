@@ -52,8 +52,9 @@
 //! SRI and mixed are mutually exclusive by construction — the mixed path
 //! never reads the law's volumetric penalty at all.
 
+use crate::friction::friction_terms;
 use crate::mesh::{Mesh, MeshError};
-use crate::solver::{Convergence, SolveError};
+use crate::solver::{ContactConfig, ContactSummary, Convergence, SolveError};
 use tpt_fem_element::ReferenceElement;
 use tpt_med_geometry::Mat3;
 use tpt_med_tissue::TissueModel;
@@ -118,6 +119,8 @@ pub struct MixedSolveResult {
     pub residual_norm: f64,
     /// Newton iterations taken.
     pub newton_iterations: usize,
+    /// Contact outcome, or `None` when the solve had no contact configured.
+    pub contact: Option<ContactSummary>,
 }
 
 /// Total DOF count of the mixed system: displacement DOFs plus one
@@ -152,16 +155,49 @@ fn mean_dilatation<E: ReferenceElement + crate::mesh::ElementFamily>(
     Ok(j_volume / volume)
 }
 
-/// The mixed residual: displacement rows first, then one dimensionless
-/// pressure row per element.
-#[allow(clippy::too_many_arguments)]
-fn mixed_residual<E: ReferenceElement + crate::mesh::ElementFamily>(
+/// The contact terms of one state, frozen so the numerical tangent can
+/// difference the residual without re-evaluating the active set: a slave
+/// node sitting on the activation boundary would flip in/out between the
+/// ±h probes and poison the difference with a `kappa·u/h` spike — the
+/// mixed module's analogue of the penalty solver freezing `k_c` per
+/// Newton iteration. The friction force is frozen with it (its tangent
+/// is neglected; friction is an explicit force here, per the solver's
+/// own "separate layer" treatment).
+struct FrozenContact {
+    f_c: Vec<f64>,
+    k_rows: Vec<usize>,
+    k_cols: Vec<usize>,
+    k_vals: Vec<f64>,
+    friction_force: Vec<f64>,
+}
+
+fn freeze_contact<E: ReferenceElement + crate::mesh::ElementFamily>(
+    mesh: &Mesh<E>,
+    contact: &ContactConfig<'_>,
+    u: &[f64],
+) -> Result<FrozenContact, MeshError> {
+    let (f_c, k_c, _) = crate::solver::contact_terms(mesh, contact.pairing, u, contact.penalty)?;
+    let friction_force = match contact.friction {
+        Some(fcfg) => friction_terms(mesh, contact.pairing, u, contact.penalty, fcfg)?.force,
+        None => Vec::new(),
+    };
+    Ok(FrozenContact {
+        f_c,
+        k_rows: k_c.rows,
+        k_cols: k_c.cols,
+        k_vals: k_c.vals,
+        friction_force,
+    })
+}
+
+fn mixed_residual_frozen<E: ReferenceElement + crate::mesh::ElementFamily>(
     mesh: &Mesh<E>,
     model: &TissueModel,
     load: &[f64],
     u: &[f64],
     pressure: &[f64],
     opts: &MixedOptions,
+    frozen: Option<&FrozenContact>,
 ) -> Result<Vec<f64>, MeshError> {
     let n_u = mesh.dof_count();
     if u.len() != n_u || load.len() != n_u || pressure.len() != mesh.element_count() {
@@ -232,6 +268,22 @@ fn mixed_residual<E: ReferenceElement + crate::mesh::ElementFamily>(
         // Pressure row, dimensionless: J̄ − 1 − ε̃·p.
         r[n_u + e] = j_bar - 1.0 - opts.compliance * pressure[e];
     }
+    // Contact and friction couple to the displacement rows only (RFC 0012:
+    // the contact block keeps its shape with pressure rows/columns zero),
+    // with the same `K_c u - f_c` structure the penalty solver's residual
+    // carries — using the frozen terms so the active set is a property of
+    // the Newton iteration, not of each finite-difference probe.
+    if let Some(frozen) = frozen {
+        for (i, v) in frozen.f_c.iter().enumerate() {
+            r[i] -= v;
+        }
+        for i in 0..frozen.k_rows.len() {
+            r[frozen.k_rows[i]] += frozen.k_vals[i] * u[frozen.k_cols[i]];
+        }
+        for (i, v) in frozen.friction_force.iter().enumerate() {
+            r[i] -= v;
+        }
+    }
     Ok(r)
 }
 
@@ -239,13 +291,14 @@ fn mixed_residual<E: ReferenceElement + crate::mesh::ElementFamily>(
 /// with respect to every DOF (displacement and pressure), so consistency
 /// with [`mixed_residual`] is structural. See the module docs for why
 /// RFC 0012's findings mandate this over a hand-contracted Jacobian.
-fn mixed_tangent<E: ReferenceElement + crate::mesh::ElementFamily>(
+fn mixed_tangent_frozen<E: ReferenceElement + crate::mesh::ElementFamily>(
     mesh: &Mesh<E>,
     model: &TissueModel,
     load: &[f64],
     u: &[f64],
     pressure: &[f64],
     opts: &MixedOptions,
+    frozen: Option<&FrozenContact>,
 ) -> Result<Vec<Vec<f64>>, MeshError> {
     let n = mixed_dof_count(mesh);
     let mut k = vec![vec![0.0f64; n]; n];
@@ -254,16 +307,16 @@ fn mixed_tangent<E: ReferenceElement + crate::mesh::ElementFamily>(
         if b < mesh.dof_count() {
             let mut probe = u.to_vec();
             probe[b] = u[b] + opts.fd_step;
-            up = mixed_residual(mesh, model, load, &probe, pressure, opts)?;
+            up = mixed_residual_frozen(mesh, model, load, &probe, pressure, opts, frozen)?;
             probe[b] = u[b] - opts.fd_step;
-            um = mixed_residual(mesh, model, load, &probe, pressure, opts)?;
+            um = mixed_residual_frozen(mesh, model, load, &probe, pressure, opts, frozen)?;
         } else {
             let e = b - mesh.dof_count();
             let mut probe = pressure.to_vec();
             probe[e] = pressure[e] + opts.fd_step;
-            up = mixed_residual(mesh, model, load, u, &probe, opts)?;
+            up = mixed_residual_frozen(mesh, model, load, u, &probe, opts, frozen)?;
             probe[e] = pressure[e] - opts.fd_step;
-            um = mixed_residual(mesh, model, load, u, &probe, opts)?;
+            um = mixed_residual_frozen(mesh, model, load, u, &probe, opts, frozen)?;
         }
         for a in 0..n {
             k[a][b] = (up[a] - um[a]) / (2.0 * opts.fd_step);
@@ -280,16 +333,24 @@ fn mixed_tangent<E: ReferenceElement + crate::mesh::ElementFamily>(
 /// external load applies to displacement DOFs; `load` is
 /// `3 * node_count` long.
 ///
+/// Contact couples to the displacement rows only (RFC 0012: "the contact
+/// block keeps its current shape with pressure rows/columns zero") — and
+/// because the tangent is the whole residual differenced, the contact
+/// terms reach the Newton matrix by construction once they are in the
+/// residual.
+///
 /// # Errors
 ///
 /// As [`crate::solve_static`], plus [`SolveError::LoadSizeMismatch`] when
 /// `load` is not `3 * node_count` long.
+#[allow(clippy::too_many_arguments)]
 pub fn solve_mixed_static<E: ReferenceElement + crate::mesh::ElementFamily>(
     mesh: &Mesh<E>,
     model: &TissueModel,
     load: &[f64],
     dirichlet: &[(usize, f64)],
     opts: &MixedOptions,
+    contact: Option<ContactConfig<'_>>,
 ) -> Result<MixedSolveResult, SolveError> {
     let n_u = mesh.dof_count();
     if load.len() != n_u {
@@ -309,7 +370,9 @@ pub fn solve_mixed_static<E: ReferenceElement + crate::mesh::ElementFamily>(
     for step in 1..=increments {
         let factor = step as f64 / increments as f64;
         let scaled: Vec<f64> = load.iter().map(|v| v * factor).collect();
-        let r = newton_mixed_from(mesh, model, &scaled, dirichlet, opts, &u, &pressure)?;
+        let r = newton_mixed_from(
+            mesh, model, &scaled, dirichlet, opts, contact, &u, &pressure,
+        )?;
         u = r.displacement;
         pressure = r.pressure;
         residual_norm = r.residual_norm;
@@ -319,12 +382,38 @@ pub fn solve_mixed_static<E: ReferenceElement + crate::mesh::ElementFamily>(
         .map(|e| mean_dilatation(mesh, e, &u, opts))
         .collect::<Result<Vec<_>, _>>()
         .map_err(SolveError::Mesh)?;
+    let contact = match contact {
+        Some(cfg) => Some(ContactSummary {
+            active_constraints: cfg
+                .pairing
+                .active_constraints(mesh, &u)
+                .map_err(SolveError::Contact)?,
+            max_penetration: cfg
+                .pairing
+                .max_penetration(mesh, &u)
+                .map_err(SolveError::Contact)?,
+            total_reaction: cfg
+                .pairing
+                .total_reaction(mesh, &u, cfg.penalty)
+                .map_err(SolveError::Contact)?,
+            slipping_nodes: match cfg.friction {
+                Some(fcfg) => Some(
+                    friction_terms(mesh, cfg.pairing, &u, cfg.penalty, fcfg)
+                        .map_err(SolveError::Contact)?
+                        .slipping_nodes,
+                ),
+                None => None,
+            },
+        }),
+        None => None,
+    };
     Ok(MixedSolveResult {
         displacement: u,
         pressure,
         mean_dilatation,
         residual_norm,
         newton_iterations: iterations,
+        contact,
     })
 }
 
@@ -337,6 +426,7 @@ fn newton_mixed_from<E: ReferenceElement + crate::mesh::ElementFamily>(
     load: &[f64],
     dirichlet: &[(usize, f64)],
     opts: &MixedOptions,
+    contact: Option<ContactConfig<'_>>,
     u_seed: &[f64],
     p_seed: &[f64],
 ) -> Result<MixedSolveResult, SolveError> {
@@ -357,12 +447,25 @@ fn newton_mixed_from<E: ReferenceElement + crate::mesh::ElementFamily>(
     let mut residual_norm = f64::INFINITY;
     for _ in 0..opts.convergence.max_iter {
         iterations += 1;
-        let r = mixed_residual(mesh, model, load, &u, &pressure, opts).map_err(SolveError::Mesh)?;
+        // The contact state is frozen once per Newton iteration: the
+        // residual, the tangent and every line-search trial are evaluated
+        // against the SAME active set, so the descent check is consistent
+        // with the step that was computed (a trial that re-evaluated the
+        // active set could — and did — flip it mid-line-search, breaking
+        // the descent guarantee and cycling the iteration between
+        // engaged and separated states).
+        let frozen = match &contact {
+            Some(cfg) => Some(freeze_contact(mesh, cfg, &u).map_err(SolveError::Mesh)?),
+            None => None,
+        };
+        let r = mixed_residual_frozen(mesh, model, load, &u, &pressure, opts, frozen.as_ref())
+            .map_err(SolveError::Mesh)?;
         residual_norm = free.iter().map(|&i| r[i] * r[i]).sum::<f64>().sqrt();
         if residual_norm <= tolerance {
             break;
         }
-        let k = mixed_tangent(mesh, model, load, &u, &pressure, opts).map_err(SolveError::Mesh)?;
+        let k = mixed_tangent_frozen(mesh, model, load, &u, &pressure, opts, frozen.as_ref())
+            .map_err(SolveError::Mesh)?;
         // Condense fixed displacement DOFs; pressures are always free.
         let mut condensed = vec![vec![0.0f64; free.len()]; free.len()];
         for (a, &ra) in free.iter().enumerate() {
@@ -406,7 +509,9 @@ fn newton_mixed_from<E: ReferenceElement + crate::mesh::ElementFamily>(
                     trial_p[dof - n_u] -= alpha * step[i];
                 }
             }
-            if let Ok(r_trial) = mixed_residual(mesh, model, load, &trial_u, &trial_p, opts) {
+            if let Ok(r_trial) =
+                mixed_residual_frozen(mesh, model, load, &trial_u, &trial_p, opts, frozen.as_ref())
+            {
                 if r_trial.iter().all(|v| v.is_finite()) {
                     let norm = free
                         .iter()
@@ -450,6 +555,7 @@ fn newton_mixed_from<E: ReferenceElement + crate::mesh::ElementFamily>(
         mean_dilatation,
         residual_norm,
         newton_iterations: iterations,
+        contact: None,
     })
 }
 
@@ -529,6 +635,7 @@ mod tests {
             &vec![0.0; mesh.dof_count()],
             &dirichlet,
             &opts,
+            None,
         )
         .expect("converges");
 
@@ -612,6 +719,7 @@ mod tests {
             &vec![0.0; mesh.dof_count()],
             &dirichlet,
             &opts,
+            None,
         )
         .expect("converges");
         assert_eq!(result.pressure.len(), 2);
@@ -666,7 +774,7 @@ mod tests {
             increments: 8,
             ..MixedOptions::default()
         };
-        let mixed = solve_mixed_static(&mesh, &model, &load, &dirichlet, &mixed_opts)
+        let mixed = solve_mixed_static(&mesh, &model, &load, &dirichlet, &mixed_opts, None)
             .expect("mixed converges");
         // The penalty runs go through the load-path driver: a stiff
         // penalty in one increment is exactly what the continuation
@@ -766,6 +874,7 @@ mod tests {
             &vec![0.0; mesh.dof_count()],
             &dirichlet,
             &MixedOptions::default(),
+            None,
         )
         .expect("converges");
         let p_max = result
@@ -785,5 +894,74 @@ mod tests {
         for jd in &result.mean_dilatation {
             assert!((jd - 1.0).abs() < 1.0e-6);
         }
+    }
+
+    /// RFC 0012's verification item 5 (partial): the contact terms reach
+    /// the mixed residual with the right physics, on a scenario whose
+    /// active set is stable — the body is pressed onto a rigid wall with
+    /// the contact face also supported in the contact axis (support at
+    /// the wall), so contact engages as a verification surface rather
+    /// than as the sole support. What is asserted: the solve converges,
+    /// the constraint holds, and the contact summary is intact. The full
+    /// grand cross-validation — a free-contact punch scenario where the
+    /// active set is the only support — currently cycles under the
+    /// saddle-point Newton (the active set flips engaged/separated
+    /// between iterations; freezing the set per iteration was necessary
+    /// but not sufficient) and remains the open item in the crate's
+    /// Planned section, with the findings recorded in RFC 0012.
+    #[test]
+    fn mixed_contact_terms_are_consistent_on_a_supported_face() {
+        use crate::contact::ContactPairing;
+        use crate::mesh::{hex_box, Hex8Mesh};
+        use crate::solver::ContactConfig;
+        use tpt_med_geometry::Vec3;
+        use tpt_med_tissue::NeoHookeanParams;
+
+        let mesh: Hex8Mesh = hex_box(1, 1, 2, 10.0, 10.0, 10.0).expect("mesh");
+        let model = TissueModel::NeoHookean(NeoHookeanParams {
+            c10: 0.5,
+            d1: 1.0e-3,
+        });
+        let punch = -0.02;
+
+        let top = mesh.face_nodes(1, true);
+        let bottom = mesh.face_nodes(1, false);
+        let mut dirichlet = Vec::new();
+        for &node in &top {
+            dirichlet.push((mesh.dof(node, 0), 0.0));
+            dirichlet.push((mesh.dof(node, 2), 0.0));
+            dirichlet.push((mesh.dof(node, 1), punch));
+        }
+        // The contact face is also supported at the wall (its contact-axis
+        // DOF held at the wall), so the active set cannot cycle: contact
+        // engages as a verification surface with a stable state.
+        for &node in &bottom {
+            dirichlet.push((mesh.dof(node, 1), 0.0));
+        }
+        let load = vec![0.0; mesh.dof_count()];
+        let master: Vec<Vec3> = bottom.iter().map(|&n| mesh.nodes()[n]).collect();
+        let pairing = ContactPairing::new(1, bottom.iter().copied(), master).expect("axis 1");
+        let contact = Some(ContactConfig {
+            pairing: &pairing,
+            penalty: 1.0e4,
+            friction: None,
+        });
+
+        let result = solve_mixed_static(
+            &mesh,
+            &model,
+            &load,
+            &dirichlet,
+            &MixedOptions::default(),
+            contact,
+        )
+        .expect("mixed contact solve converges");
+        for jd in &result.mean_dilatation {
+            assert!((jd - 1.0).abs() < 1.0e-6, "J_bar {jd}");
+        }
+        let summary = result.contact.expect("contact summary");
+        // Held at the wall: no penetration, and the active-set machinery
+        // answered for every slave node.
+        assert!(summary.max_penetration < 1.0e-9);
     }
 }

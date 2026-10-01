@@ -219,6 +219,16 @@ mixed residual differenced, making Jacobian consistency structural
 (finding 3's mandatory tooling, sublimated). Verification items 1-4 pass
 (items 1 and 2 at exact-incompressibility tolerances; item 3 shows the
 full ladder — full integration locks ~18×, SRI over-stiffens ~25%, and
-the mixed constraint holds `J̄ = 1` to 1e-8); item 5 (the grand contact
-cross-validation) and cutback load continuation remain tracked in the
-crate's Planned section.
+the mixed constraint holds `J̄ = 1` to 1e-8); item 5's contact coupling
+is implemented (u-rows only, active set frozen once per Newton
+iteration — re-evaluating it inside the line search flips the set
+mid-descent and cycles the iteration), but the free-contact grand
+cross-validation still cycles engaged/separated under the saddle-point
+Newton: the step from the engaged state lands on the wall surface,
+deactivating the set, and the step from the separated state dives back
+through. Freezing and small increments were verified necessary but not
+sufficient; the candidates to try next are an Uzawa outer loop on the
+contact multipliers (candidate (b) extended to contact), a best-so-far
+line search across active-set changes, or an activation-tolerance
+ratchet — tracked with the findings in the crate's Planned section.
+Cutback load continuation also remains there.

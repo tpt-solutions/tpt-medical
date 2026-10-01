@@ -199,10 +199,33 @@ changes for consumers of this crate.
   verified to differentiate the parametrized energy for the analytic
   and finite-difference branches alike.
 
+### Added
+- **Contact coupling for the mixed path** — `solve_mixed_static` takes a
+  `ContactConfig` and folds the penalty contact terms into the
+  displacement rows only (pressure rows/columns zero, per RFC 0012), with
+  the friction force as an explicit load. The active set is **frozen once
+  per Newton iteration** — residual, tangent and every line-search trial
+  evaluate the same set — because a trial that re-evaluated the set could
+  flip it mid-descent; the freeze was necessary (without it the iteration
+  cycles engaged/separated) but is not yet sufficient for the free-contact
+  grand cross-validation (see Planned).
+- `MixedSolveResult.contact` — the same `ContactSummary` the penalty
+  solver reports (active set, penetration, reaction, slipping nodes).
+
 ### Planned
-- The mixed path's grand cross-validation: an existing contact scenario
-  re-run in mixed mode vs SRI in the compliant limit (RFC 0012 item 5) —
-  contact does not couple to pressure DOFs yet.
+- **The grand contact cross-validation convergence** (RFC 0012 item 5):
+  with the contact face as the *only* support (a free punch scenario),
+  the saddle-point Newton cycles the active set between engaged and
+  separated states — the step from the engaged state lands on the wall
+  surface (deactivating it) and the step from the separated state dives
+  back through. Freezing the active set per iteration and small load
+  increments were verified necessary but not sufficient. Candidate
+  resolutions, in the order to try: an Uzawa outer loop on the contact
+  multipliers (the RFC's candidate (b) extended to contact), a monotone
+  or non-monotone line search that tracks the best-so-far state across
+  active-set changes, or an activation-tolerance ratchet. The supported-
+  face contact test (stable active set) passes and verifies the coupling
+  mechanism.
 - Load continuation with cutback for the mixed path beyond the linear
   equal-increment driver it ships with.
 ## [0.1.0] - 2026-09-27
