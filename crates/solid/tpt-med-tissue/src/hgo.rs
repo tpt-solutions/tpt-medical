@@ -186,8 +186,18 @@ pub struct HgoParams {
     /// differs from `fiber_directions` is an API misuse and panics at
     /// evaluation, like the stent crate's paired-slice contracts. Note
     /// that crimp recruitment (when set) weights *every* family by the
-    /// same `R(λ)` — per-family recruitment windows stay open.
+    /// same `R(λ)` — use [`Self::family_crimp`] for per-family windows.
     pub family_moduli: Option<Vec<(f64, f64)>>,
+    /// Per-family crimp-recruitment overrides, parallel to
+    /// `fiber_directions` (the elastin-early / collagen-late staging the
+    /// shared `crimp` cannot express). `None` — the default — gives every
+    /// family the shared `crimp`; a `Some` slice pairs one-to-one with
+    /// `fiber_directions`, where a `None` entry means *that family is
+    /// never recruited* (uncrimped-inactive is not representable, so the
+    /// entry is a plain `None`: the family simply carries no crimp and
+    /// engages from `E > 0`). Same pairing assert as
+    /// [`Self::family_moduli`].
+    pub family_crimp: Option<Vec<Option<CrimpRecruitment>>>,
 }
 
 impl HgoParams {
@@ -222,6 +232,27 @@ fn outer(a: Vec3) -> Mat3 {
     )
 }
 
+/// The HGO energy with the volumetric penalty dropped — its ground-substance
+/// and fiber terms carry no `J^{-2/3}` dilatation factor, so this is also
+/// exactly the mean-dilatation energy of the model for any `j_bar`.
+pub(crate) fn deviatoric_energy(f: &Mat3, p: &HgoParams) -> f64 {
+    let f = *f;
+    let c_mat = f.transpose() * f;
+    let i1 = c_mat.trace();
+    let mut w = p.c * 0.5 * (i1 - 3.0);
+    for (i, a0) in p.fiber_directions.iter().enumerate() {
+        let (k1, k2) = p.family_k(i);
+        let a = a0.normalize();
+        let i4 = a.dot(c_mat * a);
+        let e = fiber_exponent(i1, i4, p.kappa);
+        if e > 0.0 {
+            let weight = p.recruitment_weight(i, i4);
+            w += weight * k1 / (2.0 * k2) * ((k2 * e * e).exp_m1());
+        }
+    }
+    w
+}
+
 impl HgoParams {
     /// Strain energy `W(F)`.
     pub fn strain_energy(&self, f: &Mat3) -> f64 {
@@ -237,20 +268,48 @@ impl HgoParams {
             let i4 = a.dot(c_mat * a);
             let e = fiber_exponent(i1, i4, self.kappa);
             if e > 0.0 {
-                let weight = self.recruitment_weight(i4);
+                let weight = self.recruitment_weight(i, i4);
                 w += weight * k1 / (2.0 * k2) * ((k2 * e * e).exp_m1());
             }
         }
         w + (j - 1.0).powi(2) / self.d1
     }
 
-    /// The recruited fraction of a family at fiber stretch `λ = √I4`:
-    /// `R(λ)` under crimp, exactly `1.0` without.
-    fn recruitment_weight(&self, i4: f64) -> f64 {
-        match &self.crimp {
+    /// The recruited fraction of family `i` at fiber stretch `λ = √I4`:
+    /// that family's `R(λ)` under its crimp, exactly `1.0` without.
+    fn recruitment_weight(&self, family: usize, i4: f64) -> f64 {
+        let crimp = match &self.family_crimp {
+            Some(per_family) => {
+                assert_eq!(
+                    per_family.len(),
+                    self.fiber_directions.len(),
+                    "family_crimp must pair one entry per fiber_directions"
+                );
+                per_family[family].as_ref()
+            }
+            None => self.crimp.as_ref(),
+        };
+        match crimp {
             Some(c) => c.recruited_fraction(i4.max(0.0).sqrt()),
             None => 1.0,
         }
+    }
+
+    /// The crimp-derivative factor for family `i` (`Some(dR/dλ)` when that
+    /// family is crimped).
+    fn recruitment_derivative(&self, family: usize, lambda: f64) -> Option<f64> {
+        let crimp = match &self.family_crimp {
+            Some(per_family) => {
+                assert_eq!(
+                    per_family.len(),
+                    self.fiber_directions.len(),
+                    "family_crimp must pair one entry per fiber_directions"
+                );
+                per_family[family].as_ref()
+            }
+            None => self.crimp.as_ref(),
+        };
+        crimp.map(|c| c.recruited_fraction_derivative(lambda))
     }
 
     /// Analytic first Piola–Kirchhoff stress:
@@ -273,18 +332,17 @@ impl HgoParams {
             let i4 = a.dot(c_mat * a);
             let e = fiber_exponent(i1, i4, self.kappa);
             if e > 0.0 {
-                let r = self.recruitment_weight(i4);
+                let r = self.recruitment_weight(f, i4);
                 let coef = k1 * r * e * (k2 * e * e).exp();
                 dw_dc = dw_dc + (identity * self.kappa + aot * (1.0 - 3.0 * self.kappa)) * coef;
-                if let Some(c) = &self.crimp {
-                    // The chain-rule term through R(λ), λ = √I4: dR/dI4 =
-                    // R′(λ)/(2λ) — a Gaussian density, active only inside
-                    // the recruitment window.
-                    let lambda = i4.max(0.0).sqrt();
-                    if lambda > 0.0 {
-                        let dr = c.recruited_fraction_derivative(lambda) / (2.0 * lambda)
-                            * (k1 / (2.0 * k2))
-                            * (k2 * e * e).exp_m1();
+                // The chain-rule term through R(λ), λ = √I4: dR/dI4 =
+                // R′(λ)/(2λ) — a Gaussian density, active only inside
+                // that family's recruitment window.
+                let lambda = i4.max(0.0).sqrt();
+                if lambda > 0.0 {
+                    if let Some(dr_lambda) = self.recruitment_derivative(f, lambda) {
+                        let dr =
+                            dr_lambda / (2.0 * lambda) * (k1 / (2.0 * k2)) * (k2 * e * e).exp_m1();
                         dw_dc = dw_dc + aot * dr;
                     }
                 }
@@ -339,6 +397,7 @@ mod tests {
             d1: 100.0,
             crimp: None,
             family_moduli: None,
+            family_crimp: None,
         }
     }
 
@@ -389,6 +448,7 @@ mod tests {
             d1: 100.0,
             crimp: None,
             family_moduli: None,
+            family_crimp: None,
         };
         let f = uniaxial_f(1.1);
         // κ = 0 → E = I4 − 1; with the lateral contraction the y-fiber sees
@@ -404,6 +464,7 @@ mod tests {
             d1: 100.0,
             crimp: None,
             family_moduli: None,
+            family_crimp: None,
         };
         let base = HgoParams {
             c: 0.8,
@@ -414,6 +475,7 @@ mod tests {
             d1: 100.0,
             crimp: None,
             family_moduli: None,
+            family_crimp: None,
         };
         assert!(
             (inactive_only.strain_energy(&f) - base.strain_energy(&f)).abs() < 1e-12,
@@ -434,6 +496,7 @@ mod tests {
             d1: 100.0,
             crimp: CrimpRecruitment::new(mean, spread),
             family_moduli: None,
+            family_crimp: None,
         }
     }
 
@@ -606,12 +669,14 @@ mod tests {
             d1: 100.0,
             crimp: None,
             family_moduli: Some(vec![(k1a, k2a), (k1b, k2b)]),
+            family_crimp: None,
         };
         let only_a = HgoParams {
             k1: k1a,
             k2: k2a,
             fiber_directions: vec![Vec3::X],
             family_moduli: Some(vec![(k1a, k2a)]),
+            family_crimp: None,
             ..two.clone()
         };
         let only_b = HgoParams {
@@ -619,6 +684,7 @@ mod tests {
             k2: k2b,
             fiber_directions: vec![Vec3::Y],
             family_moduli: Some(vec![(k1b, k2b)]),
+            family_crimp: None,
             ..two.clone()
         };
         let expected = only_a.strain_energy(&f) + only_b.strain_energy(&f) - ground(&only_a, &f);
@@ -637,6 +703,7 @@ mod tests {
         let mut two = crimped_params(1.2, 0.02);
         two.fiber_directions = vec![Vec3::X, Vec3::Y];
         two.family_moduli = Some(vec![(50.0, 12.0), (5.0, 3.0)]);
+        two.family_crimp = None;
         for lam in [1.1, 1.19, 1.25] {
             let f = uniaxial_f(lam);
             let pa = two.first_piola(&f);
@@ -661,6 +728,7 @@ mod tests {
         shared.fiber_directions = vec![Vec3::X, Vec3::new(1.0, 1.0, 0.0)];
         let explicit = HgoParams {
             family_moduli: Some(vec![(50.0, 12.0), (50.0, 12.0)]),
+            family_crimp: None,
             ..shared.clone()
         };
         let f = biaxial_f();
@@ -681,6 +749,98 @@ mod tests {
         let mut p = crimped_params(1.2, 0.02);
         p.fiber_directions = vec![Vec3::X, Vec3::Y];
         p.family_moduli = Some(vec![(50.0, 12.0)]);
+        p.family_crimp = None;
         let _ = p.strain_energy(&uniaxial_f(1.1));
+    }
+
+    #[test]
+    fn per_family_crimp_stages_the_two_families() {
+        // The classic elastin-early / collagen-late wall: two x-families —
+        // elastin (soft, uncrimped, engaged from E > 0) and collagen
+        // (stiff, crimp-recruited at λ̄ = 1.2). In the shared-crimp model
+        // this is inexpressible: one R(λ) gates both families.
+        let wall = HgoParams {
+            c: 0.8,
+            k1: 0.0,
+            k2: 1.0,
+            kappa: 0.0,
+            fiber_directions: vec![Vec3::X, Vec3::X],
+            d1: 100.0,
+            crimp: None,
+            family_moduli: Some(vec![(2.0, 2.0), (50.0, 12.0)]),
+            family_crimp: Some(vec![None, CrimpRecruitment::new(1.2, 0.02)]),
+        };
+        let fiber_stress = |lam: f64| {
+            let f = uniaxial_f(lam);
+            let w = wall.strain_energy(&f);
+            let ground = 0.8 * 0.5 * ((f.transpose() * f).trace() - 3.0);
+            (w - ground) / lam
+        };
+        // Below the collagen window only elastin works.
+        let early = fiber_stress(1.05);
+        // Above it both do.
+        let late = fiber_stress(1.4);
+        // The collagen family, once recruited, dominates: the stress rise
+        // across the window is much steeper than elastin alone predicts.
+        let elastin_only_rise = {
+            let mut elastin = wall.clone();
+            elastin.family_moduli = Some(vec![(2.0, 2.0), (0.0, 1.0)]);
+            let f = uniaxial_f(1.4);
+            (elastin.strain_energy(&f) - 0.8 * 0.5 * ((f.transpose() * f).trace() - 3.0)) / 1.4
+        };
+        assert!(late > 4.0 * early, "two-stage rise: {early} -> {late}");
+        assert!(
+            late - early > 4.0 * elastin_only_rise,
+            "collagen must dominate once recruited: {late} vs elastin {elastin_only_rise}"
+        );
+        // Finite differences agree with the analytic per-family stress.
+        for lam in [1.1, 1.2, 1.25] {
+            let f = uniaxial_f(lam);
+            let pa = wall.first_piola(&f);
+            let pn = fd_stress(&wall, &f);
+            for i in 0..3 {
+                for j in 0..3 {
+                    let scale = pa.at(i, j).abs().max(1e-3);
+                    assert!(
+                        (pa.at(i, j) - pn.at(i, j)).abs() < 1e-5 * scale,
+                        "λ={lam} ({i},{j}): {} vs {}",
+                        pa.at(i, j),
+                        pn.at(i, j)
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "family_crimp must pair")]
+    fn family_crimp_length_mismatch_is_an_api_error() {
+        let mut p = crimped_params(1.2, 0.02);
+        p.fiber_directions = vec![Vec3::X, Vec3::Y];
+        p.family_crimp = Some(vec![None]);
+        let _ = p.strain_energy(&uniaxial_f(1.1));
+    }
+
+    #[test]
+    fn shared_crimp_and_per_family_uniform_are_identical() {
+        let mut shared = crimped_params(1.2, 0.02);
+        shared.fiber_directions = vec![Vec3::X, Vec3::new(1.0, 1.0, 0.0)];
+        let per_family = HgoParams {
+            family_crimp: Some(vec![
+                CrimpRecruitment::new(1.2, 0.02),
+                CrimpRecruitment::new(1.2, 0.02),
+            ]),
+            ..shared.clone()
+        };
+        let f = biaxial_f();
+        assert_eq!(shared.strain_energy(&f), per_family.strain_energy(&f));
+        for i in 0..3 {
+            for j in 0..3 {
+                assert_eq!(
+                    shared.first_piola(&f).at(i, j),
+                    per_family.first_piola(&f).at(i, j)
+                );
+            }
+        }
     }
 }

@@ -289,6 +289,122 @@ impl TissueModel {
         a
     }
 
+    /// Deviatoric energy with the **mean dilatation** `j_bar` substituted
+    /// for the pointwise `J` in the isochoric factors, and the volumetric
+    /// penalty dropped — the constitutive half of a mixed `u`-`p` or
+    /// mean-dilatation (`B-bar`) formulation.
+    ///
+    /// The point of the substitution: for the workspace's laws the
+    /// isochoric factors are the only place the pointwise `J` enters
+    /// (e.g. Neo-Hookean's `J^{-2/3} I1`), so replacing `J -> j_bar`
+    /// exactly removes the pointwise volumetric coupling a penalty or a
+    /// constraint must otherwise fight — while `j_bar = J` reproduces the
+    /// plain deviatoric response, which is the identity
+    /// `mean_dilatation_energy(f, f.det()) == strain_energy(f) -
+    /// (f.det()-1)^2/d1` the test suite pins. The fiber terms of HGO
+    /// carry no dilatation factor and pass through unchanged.
+    ///
+    /// Pair with [`Self::mean_dilatation_first_piola`], whose stress then
+    /// needs the constraint term `p * cof(F)` supplied by the
+    /// formulation.
+    pub fn mean_dilatation_energy(&self, f: &Mat3, j_bar: f64) -> f64 {
+        let f = *f;
+        let c_mat = f.transpose() * f;
+        let i1 = c_mat.trace();
+        let j_bar_factor = j_bar.powf(-2.0 / 3.0);
+        match self {
+            TissueModel::NeoHookean(p) => p.c10 * (j_bar_factor * i1 - 3.0),
+            TissueModel::MooneyRivlin(p) => {
+                let i2 = invariant_i2(&f);
+                p.c10 * (j_bar_factor * i1 - 3.0) + p.c01 * (j_bar_factor * j_bar_factor * i2 - 3.0)
+            }
+            TissueModel::Yeoh(p) => {
+                let s = j_bar_factor * i1 - 3.0;
+                p.c1 * s + p.c2 * s * s + p.c3 * s * s * s
+            }
+            TissueModel::Ogden(p) => {
+                let stretches = principal_stretches(&f);
+                let mut w = 0.0;
+                let j_bar13 = j_bar.powf(1.0 / 3.0);
+                for (mu, alpha) in p.mu.iter().zip(&p.alpha) {
+                    let sum: f64 = stretches.iter().map(|l| (l / j_bar13).powf(*alpha)).sum();
+                    w += 2.0 * mu / (alpha * alpha) * (sum - 3.0);
+                }
+                w
+            }
+            TissueModel::HolzapfelGasserOgden(p) => {
+                // The ground-substance and fiber terms carry no (J^-2/3)
+                // dilatation factor: the substitution is a no-op, the
+                // volumetric penalty is simply dropped.
+                crate::hgo::deviatoric_energy(&f, p)
+            }
+            #[allow(unreachable_patterns)]
+            _ => unreachable!("all five variants matched"),
+        }
+    }
+
+    /// First Piola of [`Self::mean_dilatation_energy`] — the derivative of
+    /// the substituted energy with `j_bar` treated as the independent
+    /// parameter it is in a mixed or B-bar formulation. Because the
+    /// substituted energy drops the pointwise `J`-dependence, this stress
+    /// carries **no** `F^{-T}` term — the hydrostatic contribution the
+    /// classical deviatoric Piola carries through `dJ/dF` is exactly what
+    /// the formulation's constraint stress `p * cof(F)` reinstates through
+    /// the pressure field. Analytic for the invariant-based laws
+    /// (Neo-Hookean, Mooney-Rivlin, Yeoh); central differences through the
+    /// energy for Ogden and HGO, matching the crate's established
+    /// analytic/numerical split in [`Self::first_piola`].
+    ///
+    /// Zero for `J <= 0`, matching every other stress guard here: an
+    /// inverted configuration has no valid response.
+    pub fn mean_dilatation_first_piola(&self, f: &Mat3, j_bar: f64) -> Mat3 {
+        if f.det() <= EPS_F64 {
+            return Mat3::ZERO;
+        }
+        match self {
+            TissueModel::NeoHookean(p) => 2.0 * p.c10 * j_bar.powf(-2.0 / 3.0) * *f,
+            TissueModel::MooneyRivlin(p) => {
+                let f = *f;
+                let i1 = invariant_i1(&f);
+                let c_mat = f.transpose() * f;
+                // d/dF [I2] = 2 (I1 F - F C).
+                2.0 * p.c10 * j_bar.powf(-2.0 / 3.0) * f
+                    + 2.0 * p.c01 * j_bar.powf(-4.0 / 3.0) * (i1 * f - f * c_mat)
+            }
+            TissueModel::Yeoh(p) => {
+                let f = *f;
+                let i1 = invariant_i1(&f);
+                let s = j_bar.powf(-2.0 / 3.0) * i1 - 3.0;
+                let dw = p.c1 + 2.0 * p.c2 * s + 3.0 * p.c3 * s * s;
+                2.0 * j_bar.powf(-2.0 / 3.0) * dw * f
+            }
+            TissueModel::Ogden(_) | TissueModel::HolzapfelGasserOgden(_) => {
+                // Eigenvector-derivative territory, exactly as in
+                // `first_piola`: the finite-difference reference through the
+                // energy is the crate's verified path for these two.
+                const H: f64 = 1.0e-6;
+                let f = *f;
+                let mut p = Mat3::ZERO;
+                for r in 0..3 {
+                    for c in 0..3 {
+                        let mut fp = f;
+                        fp.set(r, c, fp.at(r, c) + H);
+                        let mut fm = f;
+                        fm.set(r, c, fm.at(r, c) - H);
+                        p.set(
+                            r,
+                            c,
+                            (self.mean_dilatation_energy(&fp, j_bar)
+                                - self.mean_dilatation_energy(&fm, j_bar))
+                                / (2.0 * H),
+                        );
+                    }
+                }
+                p
+            }
+        }
+    }
+
     /// Linearization at `F = I`: the small-strain `(shear, bulk)` moduli
     /// (MPa) of the model — the values a linear-elastic solver needs to
     /// include soft tissue in a model that also carries linear bone

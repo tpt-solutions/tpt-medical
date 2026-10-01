@@ -203,7 +203,9 @@ in `src/tests.rs`.
 | `a_tet_element_uses_a_simplex_rule_not_a_tensor_product_one` | Every selectable tet rule is valid on the reference simplex |
 | `the_substrate_keast4_tet_rule_is_defective` | Regression pin on an upstream bug — fails intentionally once fixed |
 
-Not verified: mixed `u`-`p` incompressibility, meshing a curved surface from
+Mixed `u`-`p` incompressibility is now verified (see `solve_mixed_static` —
+the closed-form uniaxial, patch, locking-ladder and spurious-mode checks of
+RFC 0012's items 1-4). Not verified: contact in mixed mode, meshing a curved surface from
 image data, friction at RFC 0004 Level 3 study parameter ranges (the friction
 checks above are single-fixture mechanism tests, not a sensitivity study),
 dynamic or quasi-static inertia, and any clinical or ex-vivo data.

@@ -55,6 +55,9 @@ use tpt_fem_sparse::{solve, Coo};
 /// Maximum number of step halvings the line search will try.
 const MAX_HALVINGS: usize = 12;
 
+/// The mixed solver's line-search cap — same policy, separate module.
+pub(crate) const MAX_HALVINGS_MIXED: usize = 12;
+
 /// Errors returned by [`solve_static`].
 #[derive(Debug)]
 pub enum SolveError {

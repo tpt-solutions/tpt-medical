@@ -173,6 +173,7 @@ fn all_analytic_stresses_match_finite_difference() {
             d1: 100.0,
             crimp: None,
             family_moduli: None,
+            family_crimp: None,
         }),
     ];
     // Simple shear + stretch states.
@@ -280,9 +281,121 @@ fn all_models() -> Vec<(&'static str, TissueModel)> {
                 d1: 100.0,
                 crimp: None,
                 family_moduli: None,
+                family_crimp: None,
             }),
         ),
     ]
+}
+
+#[test]
+fn mean_dilatation_at_j_bar_equal_to_j_is_the_deviatoric_part() {
+    // The substitution's defining identity: with j_bar = J the modified
+    // energy/stress reduce exactly to strain_energy minus the shared
+    // (J-1)^2/d1 penalty — for every law, analytic or numerical path.
+    let models: Vec<TissueModel> = vec![
+        TissueModel::NeoHookean(NeoHookeanParams {
+            c10: 0.49,
+            d1: 10.0,
+        }),
+        TissueModel::MooneyRivlin(MooneyRivlinParams {
+            c10: 1.3,
+            c01: 0.7,
+            d1: 10.0,
+        }),
+        TissueModel::Yeoh(YeohParams {
+            c1: 0.3,
+            c2: -0.05,
+            c3: 0.02,
+            d1: 10.0,
+        }),
+        TissueModel::Ogden(OgdenParams {
+            mu: vec![0.4, 0.1],
+            alpha: vec![2.0, -2.0],
+            d1: 0.5,
+        }),
+    ];
+    for model in &models {
+        let mut f = Mat3::IDENTITY;
+        f.set(0, 0, 1.17);
+        f.set(1, 1, 0.95);
+        f.set(2, 1, 0.08);
+        f.set(0, 2, -0.05);
+        let j = f.det();
+        let d1 = match model {
+            TissueModel::NeoHookean(p) => p.d1,
+            TissueModel::MooneyRivlin(p) => p.d1,
+            TissueModel::Yeoh(p) => p.d1,
+            TissueModel::Ogden(p) => p.d1,
+            TissueModel::HolzapfelGasserOgden(p) => p.d1,
+        };
+        let expected_energy = model.strain_energy(&f) - (j - 1.0).powi(2) / d1;
+        let got_energy = model.mean_dilatation_energy(&f, j);
+        assert!(
+            (got_energy - expected_energy).abs() < 1e-9,
+            "{model:?}: {got_energy} vs {expected_energy}"
+        );
+        // The STRESS at j_bar = J is deliberately NOT the classical
+        // deviatoric Piola: with j_bar an independent parameter the
+        // substituted energy loses the pointwise J-dependence whose
+        // derivative produced the classical F^-T term — that hydrostatic
+        // part is exactly what a mixed formulation's constraint stress
+        // p*cof(F) reinstates. What must hold instead is that the
+        // parametrized stress differentiates the parametrized energy,
+        // asserted by
+        // `mean_dilatation_first_piola_matches_its_energy_for_every_law`.
+    }
+}
+
+#[test]
+fn mean_dilatation_first_piola_matches_its_energy_for_every_law() {
+    // The analytic invariant-law branches and the finite-difference
+    // Ogden/HGO branch must all differentiate the same energy.
+    let models: Vec<TissueModel> = vec![
+        TissueModel::NeoHookean(NeoHookeanParams {
+            c10: 0.49,
+            d1: 10.0,
+        }),
+        TissueModel::MooneyRivlin(MooneyRivlinParams {
+            c10: 1.3,
+            c01: 0.7,
+            d1: 10.0,
+        }),
+        TissueModel::Yeoh(YeohParams {
+            c1: 0.3,
+            c2: -0.05,
+            c3: 0.02,
+            d1: 10.0,
+        }),
+        TissueModel::Ogden(OgdenParams {
+            mu: vec![0.4, 0.1],
+            alpha: vec![2.0, -2.0],
+            d1: 0.5,
+        }),
+    ];
+    const H: f64 = 1.0e-6;
+    for model in &models {
+        let mut f = Mat3::IDENTITY;
+        f.set(0, 0, 1.12);
+        f.set(1, 1, 1.05);
+        let j_bar = 0.98;
+        for r in 0..3 {
+            for c in 0..3 {
+                let mut fp = f;
+                fp.set(r, c, fp.at(r, c) + H);
+                let mut fm = f;
+                fm.set(r, c, fm.at(r, c) - H);
+                let fd = (model.mean_dilatation_energy(&fp, j_bar)
+                    - model.mean_dilatation_energy(&fm, j_bar))
+                    / (2.0 * H);
+                let got = model.mean_dilatation_first_piola(&f, j_bar).at(r, c);
+                let scale = got.abs().max(1e-3);
+                assert!(
+                    (got - fd).abs() < 1e-5 * scale,
+                    "{model:?} ({r},{c}): {got} vs {fd}"
+                );
+            }
+        }
+    }
 }
 
 #[test]
@@ -447,6 +560,7 @@ fn linearized_constants_match_the_closed_forms() {
         d1: 100.0,
         crimp: None,
         family_moduli: None,
+        family_crimp: None,
     });
     let (mu, k) = hgo.linearized_elastic_constants();
     assert!((mu - 1.6).abs() < 1e-12);

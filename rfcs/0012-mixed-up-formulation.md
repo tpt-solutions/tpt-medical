@@ -1,6 +1,10 @@
 # RFC 0012: Mixed u-p Formulation in the FEM Adapter
 
-- **Status:** Draft
+- **Status:** Accepted and implemented (2026-10-01, first slice: Q1/P0
+  mixed solve with perturbed-Lagrangian regularization and the four
+  non-contact verification items; the grand contact cross-validation and
+  cutback load continuation remain — see the implementation note at the
+  end).
 - **Started:** 2026-10-01
 - **Crates:** `tpt-med-fem-adapter`, `tpt-med-tissue`
 
@@ -192,3 +196,29 @@ verified numerically on a single-element uniaxial problem:
   but adds a penalty-weighted boundary formulation whose consistency and
   conditioning analysis is heavier than the multiplier it replaces.
   Rejected.
+
+## Implementation (2026-10-01): candidate (a) works; the blocker is resolved
+
+The withdrawn prototype's remaining blocker — the pure-Lagrange saddle's
+global convergence — was resolved by candidate (a) as ranked: the
+perturbed Lagrangian with a material-scaled compliance (`J̄ − 1 = ε̃·p`,
+`ε̃ = 1e-8`) regularizes the pressure diagonal enough for plain Newton
+from a zero pressure guess, and fine equal load increments (the pressure
+field carried between them) handle the moderate-deformation range the
+verification covers. The mean-dilatation deviatoric treatment landed as
+the corrected form this RFC's findings prescribe: the substituted stress
+is the derivative of the substituted energy — it carries **no** `F^{-T}`
+term, because the hydrostatic part the pointwise `J`-dependence produced
+is exactly what the constraint stress `p·cof(F)` reinstates through the
+pressure field; the closed-form uniaxial test asserts the RFC's
+hand-derived `p = −μ/λ` directly, confirming the convention. One further
+assembly bug of the findings' own class (the `J̄` integral missing the
+reference determinant — off by the reference-hex volume, 8×) was caught
+by that same closed-form test before shipping. The tangent is the whole
+mixed residual differenced, making Jacobian consistency structural
+(finding 3's mandatory tooling, sublimated). Verification items 1-4 pass
+(items 1 and 2 at exact-incompressibility tolerances; item 3 shows the
+full ladder — full integration locks ~18×, SRI over-stiffens ~25%, and
+the mixed constraint holds `J̄ = 1` to 1e-8); item 5 (the grand contact
+cross-validation) and cutback load continuation remain tracked in the
+crate's Planned section.

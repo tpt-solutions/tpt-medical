@@ -162,13 +162,49 @@ changes for consumers of this crate.
     which `solve_load_path` reuses so the stepping and the single solve cannot
     drift apart. `solve_static`'s own signature and behaviour are unchanged.
 
+### Added
+- **`solve_mixed_static`: the mixed `u`-`p` formulation** — Q1/P0 on the
+  existing `Hex8`, delivering the exact incompressibility the RFC 0012
+  design prescribed and the prototype had withdrawn. The element's
+  deviatoric response is the tissue model's
+  `mean_dilatation_first_piola` with the element-mean `J̄` substituted
+  for the pointwise `J`; the constraint `J̄ − 1 − ε̃·p = 0` carries one
+  element-constant pressure per element through the global system; and
+  the saddle solver is RFC 0012's candidate (a), the **perturbed
+  Lagrangian**: a compliance `ε̃ = 1e-8` regularizes the zero pressure
+  diagonal that stalled the first attempt, with fine load increments
+  (`MixedOptions::increments`) carrying the pressure field between them.
+  The tangent is the whole mixed residual differenced — RFC 0012's
+  finding that assembly bugs (a missing `1/V` in the `J̄` gradient; the
+  constraint stress evaluated at a mean-deformed `F`) are caught by
+  finite-difference-vs-assembled checks is honored by making the
+  Jacobian's consistency structural; one more bug of exactly that class
+  (the `J̄` integral missing the reference determinant, off by the
+  reference-hex volume) was caught by the closed-form test before it
+  could ship. Verification, per the RFC's strategy: the closed-form
+  uniaxial test asserts the RFC's hand-derived values — lateral stretch
+  `λ^{-1/2}`, Cauchy `σ11 = μ(λ² − 1/λ)`, traction-free laterals, and
+  the pressure `p = −μ/λ` — at the compliance scale; the uniform patch
+  gives constant pressure; the locking benchmark shows the full ladder
+  (full integration locks 18×, SRI over-stiffens ~25%, mixed enforces
+  the constraint at `J̄ = 1` to 1e-8); and the structured-mesh pressure
+  field is checkerboard-free. Remaining, tracked in Planned: the grand
+  contact cross-validation (RFC item 5) and load-path integration with
+  cutback.
+- **`TissueModel::mean_dilatation_energy` / `mean_dilatation_first_piola`**
+  (`tpt-med-tissue`): the deviatoric energy and stress with `j̄`
+  substituted for the pointwise `J` in the isochoric factors. The
+  identity `mean_dilatation_energy(f, f.det()) == strain_energy(f) −
+  volumetric` is pinned for every law, and the parametrized stress is
+  verified to differentiate the parametrized energy for the analytic
+  and finite-difference branches alike.
+
 ### Planned
-- A mixed `u`-`p` formulation for exact incompressibility — now designed
-  in `rfcs/0012-mixed-up-formulation.md` (Draft): global pressure DOFs
-  (element-level condensation is impossible — the Lagrange block diagonal
-  is zero), the Q1/P0 pairing recommended for structured voxel hexes, and
-  a five-part verification strategy including the spurious-mode check.
-  Implementation pending acceptance.
+- The mixed path's grand cross-validation: an existing contact scenario
+  re-run in mixed mode vs SRI in the compliant limit (RFC 0012 item 5) —
+  contact does not couple to pressure DOFs yet.
+- Load continuation with cutback for the mixed path beyond the linear
+  equal-increment driver it ships with.
 ## [0.1.0] - 2026-09-27
 
 Initial release: the 3-D `Hex8` nonlinear hyperelastic assembly and unilateral

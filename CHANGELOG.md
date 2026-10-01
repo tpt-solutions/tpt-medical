@@ -329,6 +329,21 @@ Tracked in `todo.md`. Summary of the user-visible change here:
   (foundation ⊕ interface layer `E/t`), the screening step from rigid
   punch toward compliant-implant evaluation.
 
+### Added — Mixed u-p FEM (exact incompressibility) and per-family HGO recruitment (2026-10-01)
+`tpt-med-fem-adapter` (**`solve_mixed_static`**: the mixed Q1/P0
+formulation RFC 0012 designed, with the perturbed-Lagrangian
+regularization that resolves the saddle-solver blocker which withdrew
+the first prototype — the closed-form uniaxial test asserts the RFC's
+own hand-derived pressure `p = −μ/λ`, the locking ladder shows full
+integration at 18× / SRI at ~25% over-stiffening / mixed exact, and one
+more assembly bug of the findings' class was caught by the closed-form
+test before shipping), and `tpt-med-tissue` (`family_crimp`: per-family
+recruitment windows — the elastin-early/collagen-late staging — plus
+the mean-dilatation energy/stress pair the mixed formulation's
+deviatoric path is built on). RFC 0012 moves to Accepted-and-implemented
+(first slice); the grand contact cross-validation and cutback load
+continuation remain in the crate's Planned.
+
 ### Added — NIfTI-2 support (2026-10-01)
 `tpt-med-nifti` (RFC 0006 deferred NIfTI-2 "until a dataset needs it";
 delivered on direction to lift the gate, with the layout taken from the

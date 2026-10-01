@@ -101,6 +101,7 @@ pub mod contact;
 pub mod friction;
 pub mod loadpath;
 pub mod mesh;
+pub mod mixed;
 pub mod solver;
 
 pub use assembly::{
@@ -117,6 +118,7 @@ pub use mesh::{
     hex_box, hex_box_of, tet_box, tet_box_of, ElementFamily, Hex8Mesh, HexFamily, Mesh, MeshError,
     TetFamily,
 };
+pub use mixed::{solve_mixed_static, MixedOptions, MixedSolveResult};
 pub use solver::{
     residual, solve_static, ContactConfig, ContactSummary, SolveError, SolveOptions, SolveResult,
 };
