@@ -41,14 +41,28 @@ changes for consumers of this crate.
   0.05 of the way from size 4 to size 5 is a different clinical situation from
   one 0.45 of the way.
 
-### Planned
-- Automatic landmark detection from a CT, which is the hard part of the problem
-  and is not attempted here.
+### Added
+- **Hip stem sizing: `HipLandmarks` + `size_hip`** — the femoral-side
+  landmarks (head centre, lesser trochanter, isthmus edges, canal entry)
+  and the three geometric measurements they define: endosteal canal
+  width at the isthmus (drives the distal size), femoral offset
+  (head-centre-to-canal-axis perpendicular distance, the standard
+  geometric definition), and a head-to-lesser-trochanter axial
+  projection (a femoral-side leg-length proxy — documented as a proxy,
+  since the clinical definition references a pelvis landmark). The
+  caller-supplied stem chart feeds the same precedence-resolved
+  multi-measurement machinery as the knee path; no clinical chart data
+  ships with the crate. Verified: exact geometric measurements on
+  hand-placed landmarks, precedence resolution on disagreement, and
+  monotone sizing in canal width.
 
+### Planned
+- Shoulder and ankle sizing beyond the knee and hip anatomies.
+- Automatic landmark detection from a CT, which is the hard part of the
+  problem and is not attempted here.
 - Ligament balance assessment proper (tension, stability): the gap-balance
   check above is the geometric half. Sizing is necessary for a good plan and
   not sufficient.
-- Hip, shoulder and ankle sizing beyond the knee-specific `KneeLandmarks`.
 
 ### Notes
 - **Ties round up.** At exactly `t = 0.5` between two sizes the larger size is

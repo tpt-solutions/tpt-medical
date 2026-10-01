@@ -586,6 +586,7 @@ gating input is a purchase of ISO/IEC 15444-2, not engineering time.
   **Gap-check half delivered (2026-10-01): `check_gap_balance` — extension/flexion gaps from resection-vs-thickness arithmetic, overstuffed and imbalance flags. Ligament tension proper stays open (needs soft-tissue structures).**
 - [ ] **Ligament balance assessment proper (tension and stability), split out of the delivered gap-balance check — needs soft-tissue structures the crate does not model.**
 - [ ] **Hip, shoulder and ankle sizing beyond the knee-specific `KneeLandmarks`.**
+  **Hip delivered (2026-10-01): `HipLandmarks` + `size_hip` — canal isthmus width, femoral offset (head-centre-to-canal-axis perpendicular distance), and a femoral-side leg-length proxy feed the same precedence-resolved chart machinery as the knee. Shoulder and ankle remain.**
 - [x] **Schema validation and reporting for a caller-supplied chart, so a mis-transcribed chart is caught rather than silently producing a recommendation.**
   **Done (2026-09-29): `SizeChart::validate` + `ChartError` — empty/non-positive/unsorted/duplicate-label detection.**
 

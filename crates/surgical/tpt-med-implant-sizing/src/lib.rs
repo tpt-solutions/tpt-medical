@@ -476,6 +476,98 @@ pub fn size_tka(
     })
 }
 
+/// Femoral-side landmarks for hip stem sizing: the canal geometry, the
+/// head centre, and the lesser trochanter. All the stem-sizing
+/// measurements derive from these geometrically; the size chart itself
+/// stays caller-supplied (vendor data with citations), exactly as for
+/// the knee.
+#[derive(Debug, Clone, Copy)]
+pub struct HipLandmarks {
+    /// Centre of femoral head rotation.
+    pub head_center: Vec3,
+    /// Tip of the lesser trochanter (the femoral-side leg-length
+    /// reference).
+    pub lesser_trochanter: Vec3,
+    /// Medial endosteal edge of the canal at the isthmus (the narrowest
+    /// point).
+    pub isthmus_medial: Vec3,
+    /// Lateral endosteal edge of the canal at the isthmus.
+    pub isthmus_lateral: Vec3,
+    /// A point on the proximal canal axis (piriformis fossa / entry
+    /// region) — anchors the canal axis the offset is measured against.
+    pub canal_entry: Vec3,
+}
+
+impl HipLandmarks {
+    /// The femoral canal axis: unit line through `canal_entry` toward the
+    /// isthmus midpoint. The offset and the leg-length projection are
+    /// measured against it.
+    pub fn canal_axis(&self) -> Vec3 {
+        let mid = (self.isthmus_medial + self.isthmus_lateral) * 0.5;
+        (mid - self.canal_entry).normalize()
+    }
+
+    /// Endosteal canal width at the isthmus (mm): the medial–lateral
+    /// isthmus edge separation. This drives the distal stem size.
+    pub fn canal_width(&self) -> f64 {
+        (self.isthmus_lateral - self.isthmus_medial).norm()
+    }
+
+    /// Femoral offset (mm): the perpendicular distance from the head
+    /// centre to the canal axis — the standard geometric definition, and
+    /// the measurement that decides the proximal body / head offset.
+    pub fn femoral_offset(&self) -> f64 {
+        let axis = self.canal_axis();
+        let d = self.head_center - self.canal_entry;
+        (d - axis * d.dot(axis)).norm()
+    }
+
+    /// Femoral leg length (mm): the head centre's axial projection past
+    /// the lesser trochanter along the canal axis. A femoral-side proxy
+    /// for the leg-length measurement (the clinical definition references
+    /// a pelvis landmark these landmarks do not include) — documented as
+    /// a proxy.
+    pub fn head_to_lesser_trochanter(&self) -> f64 {
+        let axis = self.canal_axis();
+        let d = self.head_center - self.lesser_trochanter;
+        d.dot(axis).abs()
+    }
+
+    /// The three stem-sizing measurements with the canonical precedence
+    /// order (canal width, then offset, then leg length).
+    pub fn stem_measurements(&self) -> [MeasurementInput; 3] {
+        [
+            MeasurementInput {
+                name: "canal_width",
+                value_mm: self.canal_width(),
+                precedence: 1,
+            },
+            MeasurementInput {
+                name: "femoral_offset",
+                value_mm: self.femoral_offset(),
+                precedence: 2,
+            },
+            MeasurementInput {
+                name: "head_to_lesser_trochanter",
+                value_mm: self.head_to_lesser_trochanter(),
+                precedence: 3,
+            },
+        ]
+    }
+}
+
+/// Sizes a femoral stem from hip landmarks against a caller-supplied
+/// stem chart: the same precedence-resolved multi-measurement decision
+/// as the knee path, over the canal-width / offset / leg-length triple.
+///
+/// # Errors
+///
+/// Returns `None` when the chart is empty or a measurement falls outside
+/// every chart entry's reach (mirroring [`size_from_measurements`]).
+pub fn size_hip(chart: &SizeChart, landmarks: &HipLandmarks) -> Option<MultiMeasurementDecision> {
+    size_from_measurements(chart, &landmarks.stem_measurements())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -767,5 +859,130 @@ mod tests {
         // Screening geometry: angles finite and within plausible bands.
         assert!((0.0..=45.0).contains(&s.femorotibial_angle_deg));
         assert!((0.0..=30.0).contains(&s.tibial_slope_deg));
+    }
+
+    #[test]
+    fn hip_offset_and_canal_width_are_exact_geometric_measurements() {
+        // Canal axis along +z through (0, 0), head offset 4 mm in +x,
+        // isthmus width 12 mm in x, lesser trochanter 3 mm below the head
+        // along the axis.
+        let hip = HipLandmarks {
+            head_center: Vec3::new(4.0, 0.0, 5.0),
+            lesser_trochanter: Vec3::new(0.0, 0.0, 2.0),
+            isthmus_medial: Vec3::new(-6.0, 0.0, 12.0),
+            isthmus_lateral: Vec3::new(6.0, 0.0, 12.0),
+            canal_entry: Vec3::new(0.0, 0.0, 0.0),
+        };
+        assert!((hip.canal_width() - 12.0).abs() < 1e-12);
+        // The offset is the |x| distance: the head sits 4 mm off the axis.
+        assert!((hip.femoral_offset() - 4.0).abs() < 1e-12);
+        // The axis direction is +z: axial head-to-trochanter = 3 mm.
+        assert!((hip.head_to_lesser_trochanter() - 3.0).abs() < 1e-12);
+        // The canal axis is unit and along +z.
+        let axis = hip.canal_axis();
+        assert!((axis.norm() - 1.0).abs() < 1e-12);
+        assert!(axis.z > 0.99);
+    }
+
+    #[test]
+    fn hip_sizing_resolves_by_precedence_like_the_knee() {
+        let chart = SizeChart {
+            family: "hip-stem-test".into(),
+            entries: vec![
+                SizeEntry {
+                    label: 1,
+                    nominal: 10.0,
+                },
+                SizeEntry {
+                    label: 2,
+                    nominal: 12.0,
+                },
+                SizeEntry {
+                    label: 3,
+                    nominal: 14.0,
+                },
+                SizeEntry {
+                    label: 4,
+                    nominal: 16.0,
+                },
+            ],
+        };
+        chart.validate().expect("chart valid");
+
+        // Consensus: all three measurements land inside the chart near
+        // label 3 (nominal 14). The head sits 14 mm off the canal axis,
+        // the isthmus is 14 mm wide, and the head trails the lesser
+        // trochanter by 13 mm along the axis — offsets the chart can see.
+        let hip = HipLandmarks {
+            head_center: Vec3::new(14.0, 0.0, 5.0),
+            lesser_trochanter: Vec3::new(0.0, 0.0, -8.0),
+            isthmus_medial: Vec3::new(-7.0, 0.0, 12.0),
+            isthmus_lateral: Vec3::new(7.0, 0.0, 12.0),
+            canal_entry: Vec3::new(0.0, 0.0, 0.0),
+        };
+        let decision = size_hip(&chart, &hip).expect("sizes");
+        assert!(decision.is_unanimous());
+        assert_eq!(decision.label, 3);
+
+        // Disagreement: canal width votes low (label 1 at 10.5 mm),
+        // offset votes high (label 3) — the canal width wins by
+        // precedence.
+        let narrow = HipLandmarks {
+            isthmus_medial: Vec3::new(-5.25, 0.0, 12.0),
+            isthmus_lateral: Vec3::new(5.25, 0.0, 12.0),
+            ..hip
+        };
+        let decision = size_hip(&chart, &narrow).expect("sizes");
+        assert_eq!(decision.label, 1);
+        assert!(matches!(
+            decision.resolved_by,
+            Resolution::Precedence("canal_width")
+        ));
+        assert_eq!(decision.votes.len(), 3);
+    }
+
+    #[test]
+    fn hip_sizing_is_monotone_in_canal_width() {
+        let chart = SizeChart {
+            family: "hip-stem-test".into(),
+            entries: vec![
+                SizeEntry {
+                    label: 1,
+                    nominal: 10.0,
+                },
+                SizeEntry {
+                    label: 2,
+                    nominal: 12.0,
+                },
+                SizeEntry {
+                    label: 3,
+                    nominal: 14.0,
+                },
+                SizeEntry {
+                    label: 4,
+                    nominal: 16.0,
+                },
+            ],
+        };
+        let base = HipLandmarks {
+            head_center: Vec3::new(4.0, 0.0, 5.0),
+            lesser_trochanter: Vec3::new(0.0, 0.0, 2.0),
+            isthmus_medial: Vec3::new(-6.0, 0.0, 12.0),
+            isthmus_lateral: Vec3::new(6.0, 0.0, 12.0),
+            canal_entry: Vec3::new(0.0, 0.0, 0.0),
+        };
+        // Widening the canal never decreases the selected stem size.
+        let mut previous = 0;
+        for width in [10.5, 11.5, 12.5, 13.5, 14.5, 15.5] {
+            let half = width / 2.0;
+            let hip = HipLandmarks {
+                isthmus_medial: Vec3::new(-half, 0.0, 12.0),
+                isthmus_lateral: Vec3::new(half, 0.0, 12.0),
+                ..base
+            };
+            let label = size_hip(&chart, &hip).expect("sizes").label;
+            assert!(label >= previous, "width {width}: {label} after {previous}");
+            previous = label;
+        }
     }
 }

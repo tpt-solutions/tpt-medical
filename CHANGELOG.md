@@ -349,6 +349,14 @@ items. RFC 0012 is delivered in full, including cutback load
 continuation for the mixed path (`max_cutbacks` mirroring the penalty
 solver's contract) — the fem-adapter's Planned list is empty.
 
+### Added — Hip stem sizing (2026-10-01)
+`tpt-med-implant-sizing` (`HipLandmarks` + `size_hip`): the femoral-side
+landmarks and the three geometric stem-sizing measurements (canal
+isthmus width, femoral offset, head-to-lesser-trochanter axial
+projection — documented as a femoral-side proxy), feeding the same
+precedence-resolved chart machinery as the knee path against
+caller-supplied vendor charts. Shoulder and ankle anatomies remain.
+
 ### Added — Hemodynamics heat/scalar transport (2026-10-01)
 `tpt-med-hemodynamics` (`heat` module): the fluid side of the
 conjugate-heat-transfer item — conservative flux-form upwind advection

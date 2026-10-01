@@ -43,6 +43,10 @@ which side of the midpoint they are on. Collapsing that to a bare integer
 throws away the information the surgeon uses to decide whether to upsize.
 
 ## Features
+- **Hip stem sizing** — `HipLandmarks` + `size_hip`: canal isthmus
+  width, femoral offset (head-centre-to-canal-axis distance), and a
+  femoral-side leg-length proxy feed the same precedence-resolved chart
+  machinery as the knee path. Caller-supplied vendor charts.
 
 - **`SizeEntry { label, nominal }`** — one chart row: a manufacturer-specific
   size label and the measurement value it represents (mm).
