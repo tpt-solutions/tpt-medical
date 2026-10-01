@@ -349,6 +349,14 @@ items. RFC 0012 is delivered in full, including cutback load
 continuation for the mixed path (`max_cutbacks` mirroring the penalty
 solver's contract) — the fem-adapter's Planned list is empty.
 
+### Added — Finite-strain internal-variable viscoelasticity (2026-10-01)
+`tpt-med-viscoelastic` (`FiniteStrainViscoelastic`: Simo-type isochoric
+free energy with per-branch internal deformation tensors and an exact
+per-step update — instant, equilibrium, and linear limits pinned
+exactly, the linear limit machine-precision-matching the Prony closed
+form; the thermodynamically complete counterpart to the Fung-type QLV,
+completing the viscoelastic crate's roadmap).
+
 ### Added — NIfTI-2 support (2026-10-01)
 `tpt-med-nifti` (RFC 0006 deferred NIfTI-2 "until a dataset needs it";
 delivered on direction to lift the gate, with the layout taken from the

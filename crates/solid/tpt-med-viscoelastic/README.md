@@ -32,6 +32,12 @@ solver without reparameterisation, which is the difference between a research
 artifact and something a design engineer can use.
 
 ## Features
+- **`FiniteStrainViscoelastic`** — finite-strain internal-variable
+  viscoelasticity (Simo-type): isochoric free energy with per-branch
+  internal tensors `Γᵢ` and an exact per-step update. The linear limit
+  is machine-precision-identical to the Prony series; the equilibrium
+  and instant limits are the relaxed and full-modulus neo-Hookean
+  responses exactly.
 
 - **Generalized Maxwell in shear:** `G(t) = G∞ + Σᵢ Gᵢ exp(−t/τᵢ)`
 - **Frequency domain:** `G'(ω) = G∞ + Σᵢ Gᵢ(ωτᵢ)²/(1+(ωτᵢ)²)` and

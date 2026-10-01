@@ -20,7 +20,11 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
+pub mod finite_strain;
+
 use tpt_med_tissue::TissueModel;
+
+pub use finite_strain::{FiniteStrainViscoelastic, FsViscoelasticState, ViscousBranch};
 
 /// One Maxwell element: relative modulus and relaxation time.
 #[derive(Debug, Clone, Copy, PartialEq)]

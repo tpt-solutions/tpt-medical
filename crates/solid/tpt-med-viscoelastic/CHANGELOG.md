@@ -34,11 +34,31 @@ changes for consumers of this crate.
   (`gᵢ = Gᵢ/G₀`, `Σgᵢ ≤ 1`) and why a relative series is preferred: a
   glass-modulus change does not invalidate a fitted series.
 
+### Added
+- **`FiniteStrainViscoelastic` (module `finite_strain`)** — the
+  internal-variable finite-strain formulation the Planned section
+  carried: Simo-type isochoric free energy
+  `Ψ = U(J) + (μ∞/2)(tr C̄ − 3) + Σ(μᵢ/2)(tr(C̄Γᵢ⁻¹) − 3)` on `C̄ =
+  J^{-2/3}C`, one internal symmetric tensor `Γᵢ` per Maxwell branch
+  evolving by `Γ̇ᵢ = (C̄ − Γᵢ)/τᵢ`, with the per-step update **exact**
+  for the branch ODE at frozen `C̄`:
+  `Γᵢ⁺ = Γᵢ + (1 − e^{−Δt/τᵢ})(C̄ − Γᵢ)` — an interpolation that keeps
+  `Γᵢ` symmetric positive definite. The three limits are pinned
+  exactly, not approximately: instant (`Γᵢ = I`) is the full-modulus
+  neo-Hookean response `G(0) = μ∞ + Σμᵢ`; equilibrium (`Γᵢ = C̄`) has
+  every branch stress vanish identically, leaving the relaxed μ∞; and
+  the linear regime reduces to machine-precision agreement with the
+  closed-form Prony relaxation `γ(μ∞ + Σμᵢe^{−t/τᵢ})` — tying the model
+  to the linear-regime-verified `PronyIntegrator`. Monotone relaxation
+  and symmetric/invertible internal tensors are asserted along the way;
+  `two half steps == one full step` pins the recurrence's exactness.
+  Unlike the Fung-type QLV superposition (a hereditary integral over a
+  linear kernel), this form is thermodynamically consistent at large
+  3-D deformations: finite internal variables, non-negative
+  dissipation, and an exactly relaxable equilibrium branch.
+
 ### Planned
-- The internal-variable finite-strain formulation (multiplicatively split
-  branches with an exact per-step update) — the thermodynamically complete
-  alternative to the delivered Fung-type QLV superposition, needed only when
-  large 3-D deformations and full tangent consistency are required together.
+- (None.)
 
 ### Notes
 - The series is defined **in shear**; the volumetric response comes from the

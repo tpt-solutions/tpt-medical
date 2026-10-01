@@ -647,7 +647,7 @@ gating input is a purchase of ISO/IEC 15444-2, not engineering time.
 
 - [x] **Temperature shifting of relaxation times (WLF and Arrhenius relations), so `τᵢ` values can be generated rather than supplied.**
   **Done (2026-09-29): `TemperatureShift::Wlf/Arrhenius` + `shifted_material` — τᵢ(T) generated from cited C1/C2 or Eₐ.**
-- [ ] **Non-linear hyperviscoelastic formulations, applying the Prony series to the hyperelastic energy in finite strain rather than in the linear-viscoelastic regime.**
+- [x] **Non-linear hyperviscoelastic formulations, applying the Prony series to the hyperelastic energy in finite strain rather than in the linear-viscoelastic regime.** Delivered in full (2026-10-01): `FiniteStrainViscoelastic` — Simo-type internal-variable formulation with per-branch internal tensors and an exact per-step update; the instant, equilibrium, and linear limits pinned exactly (the linear limit machine-precision-matches the Prony closed form), monotone relaxation and SPD internal tensors asserted. Both halves of this item are now delivered (QLV superposition above, internal-variable finite strain here).
   **Fung-type QLV delivered (2026-10-01): `QuasiLinearViscoelastic` — the Prony kernel convolved with a hyperelastic stress history (step histories exact; linear-regime equivalence with `PronyIntegrator` asserted). The internal-variable finite-strain formulation remains open as the thermodynamically complete alternative.**
 - [x] **A time-integration helper, so callers driving a finite-element inner loop do not each reimplement the recurrence.**
   **Done (2026-09-29): `PronyIntegrator` — exact exponential recurrence; matches G(dt) exactly and the analytic ramp response.**
