@@ -341,12 +341,12 @@ test before shipping), and `tpt-med-tissue` (`family_crimp`: per-family
 recruitment windows — the elastin-early/collagen-late staging — plus
 the mean-dilatation energy/stress pair the mixed formulation's
 deviatoric path is built on). Contact coupling
-(item 5) is implemented — u-rows only, active set frozen per Newton
-iteration — with the free-contact grand cross-validation convergence
-still cycling (finding + ranked fixes recorded in the crate's Planned).
-RFC 0012 moves to Accepted-and-implemented
-(first slice); the grand cross-validation convergence and cutback load
-continuation remain in the crate's Planned.
+(item 5) is delivered in full: an activation-tolerance ratchet breaks
+the engaged/separated active-set cycle, and the free-contact punch mixed
+solve cross-validates against SRI within a few percent at
+near-incompressible d1 — completing all five RFC 0012 verification
+items. RFC 0012 is delivered; cutback load continuation remains as an
+incremental improvement in the crate's Planned.
 
 ### Added — NIfTI-2 support (2026-10-01)
 `tpt-med-nifti` (RFC 0006 deferred NIfTI-2 "until a dataset needs it";

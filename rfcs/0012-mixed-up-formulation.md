@@ -1,10 +1,9 @@
 # RFC 0012: Mixed u-p Formulation in the FEM Adapter
 
-- **Status:** Accepted and implemented (2026-10-01, first slice: Q1/P0
-  mixed solve with perturbed-Lagrangian regularization and the four
-  non-contact verification items; the grand contact cross-validation and
-  cutback load continuation remain — see the implementation note at the
-  end).
+- **Status:** Accepted and implemented (2026-10-01). The mixed Q1/P0
+  solve, contact coupling, and all five verification items are
+  delivered; cutback load continuation remains as an incremental driver
+  improvement — see the implementation note at the end.
 - **Started:** 2026-10-01
 - **Crates:** `tpt-med-fem-adapter`, `tpt-med-tissue`
 
@@ -227,8 +226,13 @@ cross-validation still cycles engaged/separated under the saddle-point
 Newton: the step from the engaged state lands on the wall surface,
 deactivating the set, and the step from the separated state dives back
 through. Freezing and small increments were verified necessary but not
-sufficient; the candidates to try next are an Uzawa outer loop on the
-contact multipliers (candidate (b) extended to contact), a best-so-far
-line search across active-set changes, or an activation-tolerance
-ratchet — tracked with the findings in the crate's Planned section.
-Cutback load continuation also remains there.
+sufficient; the fix that landed is the
+third-ranked candidate, an **activation-tolerance ratchet**: the
+pairing's tolerance keeps a node whose step overshoots the wall by the
+equilibrium-penetration scale engaged and pulling back, breaking the
+cycle. Item 5 then passes in full — the free-contact punch mixed solve
+matches SRI's lateral bulge within a few percent at near-incompressible
+d1 with the constraint at `J̄ = 1` to 1e-8 — completing all five
+verification items. Cutback load continuation remains as an incremental
+driver improvement (the linear equal-increment driver shipped with the
+mixed solve covers the verification range).

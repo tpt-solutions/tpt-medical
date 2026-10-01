@@ -896,21 +896,22 @@ mod tests {
         }
     }
 
-    /// RFC 0012's verification item 5 (partial): the contact terms reach
-    /// the mixed residual with the right physics, on a scenario whose
-    /// active set is stable — the body is pressed onto a rigid wall with
-    /// the contact face also supported in the contact axis (support at
-    /// the wall), so contact engages as a verification surface rather
-    /// than as the sole support. What is asserted: the solve converges,
-    /// the constraint holds, and the contact summary is intact. The full
-    /// grand cross-validation — a free-contact punch scenario where the
-    /// active set is the only support — currently cycles under the
-    /// saddle-point Newton (the active set flips engaged/separated
-    /// between iterations; freezing the set per iteration was necessary
-    /// but not sufficient) and remains the open item in the crate's
-    /// Planned section, with the findings recorded in RFC 0012.
+    /// RFC 0012's verification item 5, the grand cross-validation: a
+    /// free-contact punch — the contact face as the *only* support —
+    /// re-run in mixed mode, cross-validated against SRI at a compliant
+    /// penalty.
+    ///
+    /// The active-set stabilization: the pairing carries an activation
+    /// tolerance of 1e-2 mm, so a node whose Newton step overshoots the
+    /// wall by the equilibrium-penetration scale (contact force divided
+    /// by penalty stiffness, ~1e-4 mm here) stays engaged and is pulled
+    /// back, instead of deactivating and free-diving — the
+    /// engaged/separated cycle that otherwise stalls the iteration.
+    /// Contact-chatter damping of exactly this shape is standard in
+    /// penalty contact; the tolerance is three orders of magnitude below
+    /// the geometric scale and two below the punch.
     #[test]
-    fn mixed_contact_terms_are_consistent_on_a_supported_face() {
+    fn mixed_contact_cross_validates_against_sri_in_the_compliant_limit() {
         use crate::contact::ContactPairing;
         use crate::mesh::{hex_box, Hex8Mesh};
         use crate::solver::ContactConfig;
@@ -922,46 +923,80 @@ mod tests {
             c10: 0.5,
             d1: 1.0e-3,
         });
-        let punch = -0.02;
+        let punch = -0.075; // 0.75 % compression, per node
 
         let top = mesh.face_nodes(1, true);
-        let bottom = mesh.face_nodes(1, false);
+        let slave = mesh.face_nodes(1, false);
         let mut dirichlet = Vec::new();
         for &node in &top {
             dirichlet.push((mesh.dof(node, 0), 0.0));
             dirichlet.push((mesh.dof(node, 2), 0.0));
             dirichlet.push((mesh.dof(node, 1), punch));
         }
-        // The contact face is also supported at the wall (its contact-axis
-        // DOF held at the wall), so the active set cannot cycle: contact
-        // engages as a verification surface with a stable state.
-        for &node in &bottom {
-            dirichlet.push((mesh.dof(node, 1), 0.0));
-        }
         let load = vec![0.0; mesh.dof_count()];
-        let master: Vec<Vec3> = bottom.iter().map(|&n| mesh.nodes()[n]).collect();
-        let pairing = ContactPairing::new(1, bottom.iter().copied(), master).expect("axis 1");
+        let master: Vec<Vec3> = slave.iter().map(|&n| mesh.nodes()[n]).collect();
+        let pairing = ContactPairing::new(1, slave.iter().copied(), master)
+            .expect("axis 1")
+            .with_activation_tolerance(1.0e-2);
         let contact = Some(ContactConfig {
             pairing: &pairing,
             penalty: 1.0e4,
             friction: None,
         });
 
-        let result = solve_mixed_static(
+        let mixed = solve_mixed_static(
             &mesh,
             &model,
             &load,
             &dirichlet,
-            &MixedOptions::default(),
+            &MixedOptions {
+                increments: 4,
+                ..MixedOptions::default()
+            },
             contact,
         )
         .expect("mixed contact solve converges");
-        for jd in &result.mean_dilatation {
+        let summary = mixed.contact.as_ref().expect("contact summary");
+        assert_eq!(summary.active_constraints.len(), slave.len());
+        assert!(
+            summary.max_penetration < 1.0e-2,
+            "penetrated by {}",
+            summary.max_penetration
+        );
+        for jd in &mixed.mean_dilatation {
             assert!((jd - 1.0).abs() < 1.0e-6, "J_bar {jd}");
         }
-        let summary = result.contact.expect("contact summary");
-        // Held at the wall: no penetration, and the active-set machinery
-        // answered for every slave node.
-        assert!(summary.max_penetration < 1.0e-9);
+
+        // Cross-validation: SRI's lateral bulge approaches the mixed one
+        // as the penalty compliance shrinks.
+        let bulge = |u: &[f64]| {
+            mesh.face_nodes(0, true)
+                .iter()
+                .map(|&n| u[3 * n])
+                .sum::<f64>()
+                / mesh.face_nodes(0, true).len() as f64
+        };
+        let mixed_bulge = bulge(&mixed.displacement);
+        assert!(mixed_bulge > 0.0, "incompressible bulge must be outward");
+        // The bands widen with d1 on purpose: a compressible material
+        // (large d1) bulges legitimately *less* than the exactly
+        // incompressible one, so the cross-validation claim is the
+        // convergence as the compliance shrinks — near-incompressible d1
+        // agrees to a few percent.
+        for (d1, band) in [(1.0e-1, 0.15), (1.0e-2, 0.08), (1.0e-3, 0.05)] {
+            let sri_model = TissueModel::NeoHookean(NeoHookeanParams { c10: 0.5, d1 });
+            let sri_opts = crate::solver::SolveOptions {
+                assembly: crate::assembly::AssemblyOptions::with_volumetric_quadrature_order(1),
+                ..crate::solver::SolveOptions::default()
+            };
+            let sri = crate::solve_static(&mesh, &sri_model, &load, &dirichlet, &sri_opts, contact)
+                .unwrap_or_else(|e| panic!("sri converges at d1={d1}: {e}"));
+            let sri_bulge = bulge(&sri.displacement);
+            let gap = (sri_bulge - mixed_bulge).abs();
+            assert!(
+                gap < band * mixed_bulge.abs(),
+                "d1={d1}: sri bulge {sri_bulge} vs mixed {mixed_bulge} (gap {gap})"
+            );
+        }
     }
 }
