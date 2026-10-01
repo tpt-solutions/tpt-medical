@@ -349,6 +349,16 @@ items. RFC 0012 is delivered in full, including cutback load
 continuation for the mixed path (`max_cutbacks` mirroring the penalty
 solver's contract) — the fem-adapter's Planned list is empty.
 
+### Added — Hemodynamics heat/scalar transport (2026-10-01)
+`tpt-med-hemodynamics` (`heat` module): the fluid side of the
+conjugate-heat-transfer item — conservative flux-form upwind advection
+plus centered diffusion for a passive scalar on the MAC grid, with
+isothermal or adiabatic-and-impermeable walls and an explicit-step
+stability bound. Verified against the exact discrete Fourier eigenmodes
+of both wall closures, machine-precision conservation on a
+divergence-free field, and monotone thermal-entry decay in Poiseuille
+flow (the coarse-grid Nusselt number deliberately not asserted).
+
 ### Added — Finite-strain internal-variable viscoelasticity (2026-10-01)
 `tpt-med-viscoelastic` (`FiniteStrainViscoelastic`: Simo-type isochoric
 free energy with per-branch internal deformation tensors and an exact

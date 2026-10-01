@@ -43,6 +43,11 @@ The value is not that it replaces Fluent. It is that a surgeon can run it, in a
 browser, in seconds, without a licence.
 
 ## Features
+- **`heat` module — scalar / temperature transport** on the MAC grid:
+  conservative flux-form upwind advection plus centered diffusion, with
+  isothermal (`Fixed`) or adiabatic-and-impermeable (`Insulated`) walls,
+  and an explicit-step stability bound. The fluid side of conjugate
+  heat transfer.
 
 - **Projection-method Navier–Stokes** on a MAC grid: convection (optional),
   viscous diffusion, and an SOR (Gauss–Seidel with over-relaxation, ω = 1.9)

@@ -46,12 +46,35 @@ changes for consumers of this crate.
   golden datasets and benchmark baselines are unchanged; switching a
   production run to CG is a one-line config change and a golden re-run.
 
-### Planned
-- Conjugate heat transfer and wall compliance, enabling a coupled
-  fluid–structure boundary.
-- Optional local wall refinement, so peak WSS at a geometric corner stops being
-  resolution dependent.
+### Added
+- **`heat` module: passive scalar / temperature transport on the MAC
+  grid** — the fluid side of the conjugate-heat-transfer item.
+  Conservative flux-form upwind advection plus centered 7-point
+  diffusion with thermal diffusivity κ (mm²/s; blood ≈ 0.12), wall
+  treatment per `ScalarWall` (`Fixed(t)`: isothermal wall with the
+  half-cell flux; `Insulated`: adiabatic AND impermeable — no advective
+  flux crosses it, which is what makes the insulated conservation test
+  exact). `stable_time_step` bounds the explicit step by the stricter of
+  the advective and three-dimensional diffusive limits. Verification:
+  the insulated and fixed-wall discrete Fourier eigenmodes decay by
+  exactly the discrete amplification factor (the initial conditions are
+  the operator's exact eigenvectors — cell-centered Neumann
+  `cos(π(i+½)/N)` and half-cell Dirichlet `sin(π(i+½)/N)` product modes);
+  flux-form advection on a stream-function-built divergence-free field
+  conserves the total scalar to machine precision; the thermal-entry
+  scenario in a developed Poiseuille tube decays monotonically toward
+  cold walls and retains advected heat under insulated walls (the exact
+  Nusselt number is deliberately not asserted on a stair-step coarse
+  grid). Remaining for full CHT: the solid-side conduction solver and a
+  two-way coupled interface.
 
+### Planned
+- Wall compliance, enabling a coupled fluid–structure boundary.
+- **The solid side of conjugate heat transfer** — a conduction solver
+  for the wall/solid with a two-way coupled fluid interface (the fluid
+  side is delivered in the `heat` module above).
+- Optional local wall refinement, so peak WSS at a geometric corner stops
+  being resolution dependent.
 - Multigrid pressure solve (a level beyond the new CG option) if CG's
   √-condition-number scaling is ever insufficient on production grids.
 
