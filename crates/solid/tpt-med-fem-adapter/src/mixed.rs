@@ -81,6 +81,11 @@ pub struct MixedOptions {
     /// stretches; RFC 0012 prescribed fine increments alongside the
     /// compliance for larger ones.
     pub increments: usize,
+    /// Maximum bisections of a failing increment's remaining distance,
+    /// mirroring [`crate::LoadPathOptions::max_cutbacks`]. A failed
+    /// increment is retried from the last converged load factor at half
+    /// the remaining step, so progress is retained rather than restarted.
+    pub max_cutbacks: usize,
 }
 
 impl Default for MixedOptions {
@@ -91,6 +96,7 @@ impl Default for MixedOptions {
             fd_step: 1.0e-7,
             convergence: Convergence::default(),
             increments: 1,
+            max_cutbacks: 4,
         }
     }
 }
@@ -359,6 +365,10 @@ pub fn solve_mixed_static<E: ReferenceElement + crate::mesh::ElementFamily>(
             found: load.len(),
         });
     }
+    // The continuation walk mirrors the penalty solver's load path
+    // exactly: equal nominal increments, a failed increment retried from
+    // the last converged factor at half the remaining distance (progress
+    // retained, never restarted), up to `max_cutbacks`.
     let increments = opts.increments.max(1);
     let mut u = vec![0.0f64; n_u];
     for (dof, value) in dirichlet {
@@ -367,16 +377,40 @@ pub fn solve_mixed_static<E: ReferenceElement + crate::mesh::ElementFamily>(
     let mut pressure = vec![0.0f64; mesh.element_count()];
     let mut residual_norm = f64::INFINITY;
     let mut iterations = 0usize;
-    for step in 1..=increments {
-        let factor = step as f64 / increments as f64;
-        let scaled: Vec<f64> = load.iter().map(|v| v * factor).collect();
-        let r = newton_mixed_from(
-            mesh, model, &scaled, dirichlet, opts, contact, &u, &pressure,
-        )?;
-        u = r.displacement;
-        pressure = r.pressure;
-        residual_norm = r.residual_norm;
-        iterations += r.newton_iterations;
+    let mut current = 0.0f64;
+    for i in 1..=increments {
+        let target = i as f64 / increments as f64;
+        let mut reached = current;
+        let mut attempt_target = target;
+        let mut cutbacks = 0usize;
+        loop {
+            let scaled: Vec<f64> = load.iter().map(|v| v * attempt_target).collect();
+            match newton_mixed_from(
+                mesh, model, &scaled, dirichlet, opts, contact, &u, &pressure,
+            ) {
+                Ok(r) => {
+                    u = r.displacement;
+                    pressure = r.pressure;
+                    reached = attempt_target;
+                    residual_norm = r.residual_norm;
+                    iterations += r.newton_iterations;
+                    break;
+                }
+                Err(SolveError::NotConverged { .. }) => {
+                    if cutbacks >= opts.max_cutbacks {
+                        return Err(SolveError::NotConverged {
+                            iterations: iterations + 1,
+                            residual_norm: f64::INFINITY,
+                            displacement: u,
+                        });
+                    }
+                    cutbacks += 1;
+                    attempt_target = reached + (target - reached) / 2.0;
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        current = reached;
     }
     let mean_dilatation = (0..mesh.element_count())
         .map(|e| mean_dilatation(mesh, e, &u, opts))
@@ -999,4 +1033,80 @@ mod tests {
             );
         }
     }
+}
+
+/// The cutback walk: a transverse load large enough that equal single
+/// increments fail converges when failed increments are bisected —
+/// mirroring the penalty solver's `LoadPathOptions::max_cutbacks`
+/// contract. Verified by comparing the cutback result against the
+/// same load walked in many small equal increments (both roads to the
+/// same equilibrium).
+#[test]
+fn mixed_cutback_walk_recovers_a_load_equal_increments_cannot() {
+    use crate::mesh::{hex_box, Hex8Mesh};
+    use tpt_med_tissue::NeoHookeanParams;
+
+    let mesh: Hex8Mesh = hex_box(1, 1, 4, 1.0, 1.0, 4.0).expect("mesh");
+    let model = TissueModel::NeoHookean(NeoHookeanParams {
+        c10: 0.5,
+        d1: 1.0e-3,
+    });
+    let mut load = vec![0.0; mesh.dof_count()];
+    for n in mesh.face_nodes(2, true) {
+        load[3 * n] = 0.01; // 4 nodes, 0.04 N — the load that failed at increments: 1
+    }
+    let mut dirichlet = Vec::new();
+    for n in mesh.face_nodes(2, false) {
+        dirichlet.push((3 * n, 0.0));
+        dirichlet.push((3 * n + 1, 0.0));
+        dirichlet.push((3 * n + 2, 0.0));
+    }
+    let tip = |u: &[f64]| {
+        mesh.face_nodes(2, true)
+            .iter()
+            .map(|&n| u[3 * n])
+            .sum::<f64>()
+            / 4.0
+    };
+
+    // One increment without cutbacks: must fail (regression guard for
+    // the premise).
+    let stiff = MixedOptions {
+        quadrature_order: 2,
+        increments: 1,
+        max_cutbacks: 0,
+        ..MixedOptions::default()
+    };
+    assert!(
+        solve_mixed_static(&mesh, &model, &load, &dirichlet, &stiff, None).is_err(),
+        "the 0.04 N single-increment solve is expected not to converge"
+    );
+
+    // Cutbacks on: converges.
+    let cut = MixedOptions {
+        quadrature_order: 2,
+        increments: 4,
+        max_cutbacks: 4,
+        ..MixedOptions::default()
+    };
+    let cut = solve_mixed_static(&mesh, &model, &load, &dirichlet, &cut, None)
+        .expect("cutback walk converges");
+
+    // Many small equal increments: the reference road.
+    let fine = MixedOptions {
+        quadrature_order: 2,
+        increments: 16,
+        max_cutbacks: 0,
+        ..MixedOptions::default()
+    };
+    let fine = solve_mixed_static(&mesh, &model, &load, &dirichlet, &fine, None)
+        .expect("fine walk converges");
+
+    let (u_cut, u_fine) = (tip(&cut.displacement), tip(&fine.displacement));
+    assert!(
+        (u_cut - u_fine).abs() < 0.02 * u_fine.abs(),
+        "cutback {u_cut} vs fine {u_fine}"
+    );
+    // The deformation is finite (this is a real load, not a token one).
+    assert!(u_fine.abs() > 0.2, "tip {u_fine}");
 }

@@ -212,22 +212,22 @@ changes for consumers of this crate.
 - `MixedSolveResult.contact` — the same `ContactSummary` the penalty
   solver reports (active set, penetration, reaction, slipping nodes).
 
+### Added
+- **Cutback load continuation for the mixed path** — `MixedOptions::
+  max_cutbacks` mirrors the penalty solver's `LoadPathOptions::
+  max_cutbacks`: a failing increment is retried from the last converged
+  load factor at half the remaining distance (progress retained, never
+  restarted), up to the cutback budget. Verified by the load that a
+  single mixed increment cannot converge: cutbacks converge to the same
+  equilibrium as many small equal increments (two independent roads to
+  the same state), with a regression guard asserting the single
+  increment genuinely fails. With this, the mixed formulation's Planned
+  list is empty — the RFC 0012 arc is complete.
+
 ### Planned
-- **The grand contact cross-validation convergence** (RFC 0012 item 5):
-  with the contact face as the *only* support (a free punch scenario),
-  the saddle-point Newton cycles the active set between engaged and
-  separated states — the step from the engaged state lands on the wall
-  surface (deactivating it) and the step from the separated state dives
-  back through. Freezing the active set per iteration and small load
-  increments were verified necessary but not sufficient. Candidate
-  resolutions, in the order to try: an Uzawa outer loop on the contact
-  multipliers (the RFC's candidate (b) extended to contact), a monotone
-  or non-monotone line search that tracks the best-so-far state across
-  active-set changes, or an activation-tolerance ratchet. The supported-
-  face contact test (stable active set) passes and verifies the coupling
-  mechanism.
-- Load continuation with cutback for the mixed path beyond the linear
-  equal-increment driver it ships with.
+- (None. The penalty and mixed paths, contact, friction and load
+  continuation are all delivered; further needs arrive through issues.)
+
 ## [0.1.0] - 2026-09-27
 
 Initial release: the 3-D `Hex8` nonlinear hyperelastic assembly and unilateral

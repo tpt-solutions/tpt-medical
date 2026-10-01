@@ -345,8 +345,9 @@ deviatoric path is built on). Contact coupling
 the engaged/separated active-set cycle, and the free-contact punch mixed
 solve cross-validates against SRI within a few percent at
 near-incompressible d1 — completing all five RFC 0012 verification
-items. RFC 0012 is delivered; cutback load continuation remains as an
-incremental improvement in the crate's Planned.
+items. RFC 0012 is delivered in full, including cutback load
+continuation for the mixed path (`max_cutbacks` mirroring the penalty
+solver's contract) — the fem-adapter's Planned list is empty.
 
 ### Added — NIfTI-2 support (2026-10-01)
 `tpt-med-nifti` (RFC 0006 deferred NIfTI-2 "until a dataset needs it";
