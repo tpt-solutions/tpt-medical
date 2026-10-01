@@ -16,7 +16,7 @@ are not implemented here.
 | **Status** | Alpha, `0.1.0` |
 | **Scope** | RFC 0002 — hyperelastic tissue |
 | **License** | MIT OR Apache-2.0 |
-| **MSRV** | 1.82 |
+| **MSRV** | 1.84 |
 | **Dependencies** | [`tpt-med-geometry`](../../core/tpt-med-geometry), [`tpt-med-units`](../../core/tpt-med-units) (declared, currently unused); optional `tpt-fem-hyperelastic`/`tpt-fem-mesh` behind `substrate-cross-check` |
 | **Changelog** | [CHANGELOG.md](CHANGELOG.md) |
 

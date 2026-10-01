@@ -10,7 +10,7 @@ TODO: one line, lowercase, describing what this crate does.
 | **Layer** | TODO: `core` / `imaging` / `solid` / `fluid` / `devices` / `surgical` / `regulatory` |
 | **Status** | Alpha, `0.1.0` |
 | **License** | MIT OR Apache-2.0 |
-| **MSRV** | 1.82 |
+| **MSRV** | 1.84 |
 | **Dependencies** | TODO: list them, or say "none" deliberately |
 | **Changelog** | [CHANGELOG.md](CHANGELOG.md) |
 

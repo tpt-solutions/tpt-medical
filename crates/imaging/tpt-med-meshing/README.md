@@ -11,7 +11,7 @@ CT Hounsfield volume and a finite-element mesh.
 | **Layer** | `imaging` |
 | **Status** | Alpha, `0.1.0` |
 | **License** | MIT OR Apache-2.0 |
-| **MSRV** | 1.82 |
+| **MSRV** | 1.84 |
 | **Dependencies** | [`tpt-med-core`](../../core/tpt-med-core), [`tpt-med-dicom`](../tpt-med-dicom), [`tpt-med-geometry`](../../core/tpt-med-geometry), [`tpt-med-nifti`](../tpt-med-nifti), [`tpt-med-units`](../../core/tpt-med-units) |
 | **Changelog** | [CHANGELOG.md](CHANGELOG.md) |
 

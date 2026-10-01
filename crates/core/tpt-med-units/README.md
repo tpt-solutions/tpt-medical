@@ -11,7 +11,7 @@ newtons, g/cm³ — with no implicit cross-unit arithmetic.
 | **Layer** | `core` (leaf — no workspace dependencies) |
 | **Status** | Alpha, `0.1.0` |
 | **License** | MIT OR Apache-2.0 |
-| **MSRV** | 1.82 |
+| **MSRV** | 1.84 |
 | **Dependencies** | none (`std` only) |
 | **Changelog** | [CHANGELOG.md](CHANGELOG.md) |
 
@@ -43,7 +43,7 @@ is left to the domain crates that actually know the physics).
 - `Display` renders as `"12.345000 mm"`, so audit trails and CSV exports carry
   an unambiguous unit suffix.
 - `const fn` constructors usable in `const` contexts and statics (this is why
-  the workspace MSRV is 1.82).
+  const float arithmetic needs 1.82; the workspace MSRV is 1.84 because of tpt-math).
 
 ## Conventions
 

@@ -12,7 +12,7 @@ for the three hot paths: DICOM parsing and meshing, hex FEM, and CFD.
 | **Status** | Alpha, `0.1.0` — `publish = false` |
 | **Harness** | `false` (custom `main`, prints timings) |
 | **License** | MIT OR Apache-2.0 |
-| **MSRV** | 1.82 |
+| **MSRV** | 1.84 |
 | **Dependencies** | `tpt-med-dicom`, `-meshing`, `-biomechanics`, `-tissue`, `-hemodynamics`, `-geometry`, `-units` |
 | **Changelog** | [CHANGELOG.md](CHANGELOG.md) |
 

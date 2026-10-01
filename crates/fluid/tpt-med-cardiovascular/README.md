@@ -11,7 +11,7 @@ conditions, fractional flow reserve (FFR), and cardiac flow waveforms.
 | **Layer** | `fluid` |
 | **Status** | Alpha, `0.1.0` |
 | **License** | MIT OR Apache-2.0 |
-| **MSRV** | 1.82 |
+| **MSRV** | 1.84 |
 | **Dependencies** | none (leaf within `fluid`) |
 | **Changelog** | [CHANGELOG.md](CHANGELOG.md) |
 

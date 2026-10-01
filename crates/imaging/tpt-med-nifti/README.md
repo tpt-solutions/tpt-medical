@@ -13,7 +13,7 @@ adds one pure-Rust dependency (`flate2`).
 | **Status** | Alpha, `0.1.0` |
 | **Scope** | RFC 0006 — NIfTI ingestion |
 | **License** | MIT OR Apache-2.0 |
-| **MSRV** | 1.82 |
+| **MSRV** | 1.84 |
 | **Dependencies** | [`tpt-med-geometry`](../../core/tpt-med-geometry); optional [`flate2`](https://crates.io/crates/flate2) (`gzip` feature, pure-Rust backend) |
 | **Changelog** | [CHANGELOG.md](CHANGELOG.md) |
 

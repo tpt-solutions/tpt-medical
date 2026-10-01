@@ -12,7 +12,7 @@ are meant to be composed.
 | **Layer** | `applications` |
 | **Status** | Alpha, `0.1.0` — `publish = false` |
 | **License** | MIT OR Apache-2.0 |
-| **MSRV** | 1.82 |
+| **MSRV** | 1.84 |
 | **Dependencies** | all 21 library crates |
 | **Changelog** | [CHANGELOG.md](CHANGELOG.md) |
 

@@ -11,7 +11,7 @@ frequency-domain storage and loss moduli, and loss tangent.
 | **Layer** | `solid` |
 | **Status** | Alpha, `0.1.0` |
 | **License** | MIT OR Apache-2.0 |
-| **MSRV** | 1.82 |
+| **MSRV** | 1.84 |
 | **Dependencies** | [`tpt-med-tissue`](../tpt-med-tissue), [`tpt-med-geometry`](../../core/tpt-med-geometry) (declared, currently unused) |
 | **Changelog** | [CHANGELOG.md](CHANGELOG.md) |
 

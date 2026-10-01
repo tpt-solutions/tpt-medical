@@ -11,7 +11,7 @@ vocabulary every other crate in the stack speaks.
 | **Layer** | `core` |
 | **Status** | Alpha, `0.1.0` |
 | **License** | MIT OR Apache-2.0 |
-| **MSRV** | 1.82 |
+| **MSRV** | 1.84 |
 | **Dependencies** | [`tpt-med-geometry`](../tpt-med-geometry), [`tpt-med-units`](../tpt-med-units) |
 | **Changelog** | [CHANGELOG.md](CHANGELOG.md) |
 

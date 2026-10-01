@@ -11,7 +11,7 @@ pure-Rust, dependency-free, FIPS 180-4 and RFC 2104 conformant.
 | **Layer** | `regulatory` |
 | **Status** | Alpha, `0.1.0` |
 | **License** | MIT OR Apache-2.0 |
-| **MSRV** | 1.82 |
+| **MSRV** | 1.84 |
 | **Dependencies** | none (`std` only) |
 | **Changelog** | [CHANGELOG.md](CHANGELOG.md) |
 

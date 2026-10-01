@@ -11,7 +11,7 @@ gait-cycle extrapolation, for ISO 14879 / ASTM F2028-style screening.
 | **Layer** | `devices` |
 | **Status** | Alpha, `0.1.0` |
 | **License** | MIT OR Apache-2.0 |
-| **MSRV** | 1.82 |
+| **MSRV** | 1.84 |
 | **Dependencies** | [`tpt-med-units`](../../core/tpt-med-units) |
 | **Changelog** | [CHANGELOG.md](CHANGELOG.md) |
 

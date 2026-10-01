@@ -1,5 +1,5 @@
 [workspace]
-resolver = "2"
+resolver = "3"
 members = [
     # Core & imaging
     "crates/core/tpt-med-core",
@@ -40,8 +40,9 @@ members = [
 version = "0.1.0"
 edition = "2021"
 # MSRV floor: const float arithmetic in tpt-med-units (1.82) and
-# wasm-bindgen 0.2.128 in tpt-med-wasm (1.77). CI enforces this.
-rust-version = "1.82"
+# wasm-bindgen 0.2.128 in tpt-med-wasm (1.77), raised to 1.84 by the
+# tpt-math-linalg-dense and tpt-math-numeric dependencies. CI enforces this.
+rust-version = "1.84"
 license = "MIT OR Apache-2.0"
 authors = ["TPT Solutions"]
 repository = "https://github.com/tpt-solutions/tpt-medical"

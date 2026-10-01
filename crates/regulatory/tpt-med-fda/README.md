@@ -12,7 +12,7 @@ electronic signatures with meaning, and a signed export package.
 | **Status** | Alpha, `0.1.0` |
 | **Scope** | RFC 0003 — FDA audit trail |
 | **License** | MIT OR Apache-2.0 |
-| **MSRV** | 1.82 |
+| **MSRV** | 1.84 |
 | **Dependencies** | [`tpt-med-audit`](../tpt-med-audit), [`tpt-med-core`](../../core/tpt-med-core) |
 | **Changelog** | [CHANGELOG.md](CHANGELOG.md) |
 

@@ -14,7 +14,7 @@ re-evaluated at every iteration.
 | **Status** | Alpha, `0.1.0` |
 | **Scope** | RFC 0009 — the 3-D assembly and contact coupling the substrate does not ship |
 | **License** | MIT OR Apache-2.0 |
-| **MSRV** | 1.82 |
+| **MSRV** | 1.84 |
 | **Dependencies** | [`tpt-med-tissue`](../../solid/tpt-med-tissue), `tpt-fem-element`, `tpt-fem-quadrature`, `tpt-fem-sparse`, `tpt-fem-solve`, `tpt-fem-contact` |
 | **Changelog** | [CHANGELOG.md](CHANGELOG.md) |
 

@@ -11,7 +11,7 @@ Lai 1980) in the confined-compression configuration.
 | **Layer** | `solid` |
 | **Status** | Alpha, `0.1.0` |
 | **License** | MIT OR Apache-2.0 |
-| **MSRV** | 1.82 |
+| **MSRV** | 1.84 |
 | **Dependencies** | [`tpt-med-geometry`](../../core/tpt-med-geometry), [`tpt-med-units`](../../core/tpt-med-units) (declared, currently unused) |
 | **Changelog** | [CHANGELOG.md](CHANGELOG.md) |
 

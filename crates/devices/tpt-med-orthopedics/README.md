@@ -10,7 +10,7 @@ Implant–bone micromotion and stress-shielding analysis for orthopedic devices.
 | **Layer** | `devices` |
 | **Status** | Alpha, `0.1.0` |
 | **License** | MIT OR Apache-2.0 |
-| **MSRV** | 1.82 |
+| **MSRV** | 1.84 |
 | **Dependencies** | [`tpt-med-biomechanics`](../../solid/tpt-med-biomechanics), [`tpt-med-geometry`](../../core/tpt-med-geometry), [`tpt-med-units`](../../core/tpt-med-units) (only `tpt-med-units` is currently used by the code) |
 | **Changelog** | [CHANGELOG.md](CHANGELOG.md) |
 

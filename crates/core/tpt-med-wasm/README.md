@@ -13,7 +13,7 @@ exposed to JavaScript.
 | **Target** | `wasm32-unknown-unknown` (also builds natively for tests) |
 | **Status** | Alpha, `0.1.0` |
 | **License** | MIT OR Apache-2.0 |
-| **MSRV** | 1.82 (`wasm-bindgen 0.2.128` needs 1.77) |
+| **MSRV** | 1.84 (`wasm-bindgen 0.2.128` needs 1.77) |
 | **Dependencies** | `wasm-bindgen` (exact-pinned), plus `tpt-med-dicom`, `-meshing`, `-biomechanics`, `-stents`, `-geometry`, `-units` |
 | **Changelog** | [CHANGELOG.md](CHANGELOG.md) |
 

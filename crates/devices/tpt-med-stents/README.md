@@ -13,7 +13,7 @@ ASTM F2394 / F2079 metric family.
 | **Status** | Alpha, `0.1.0` |
 | **Scope** | RFC 0004 — Nitinol superelasticity |
 | **License** | MIT OR Apache-2.0 |
-| **MSRV** | 1.82 |
+| **MSRV** | 1.84 |
 | **Dependencies** | [`tpt-med-geometry`](../../core/tpt-med-geometry), [`tpt-med-units`](../../core/tpt-med-units) |
 | **Changelog** | [CHANGELOG.md](CHANGELOG.md) |
 
