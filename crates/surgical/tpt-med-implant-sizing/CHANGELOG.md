@@ -12,6 +12,21 @@ changes for consumers of this crate.
 ## [Unreleased]
 
 ### Added
+- **`StabilityScreen::opening_response` / `opening_at_moment` — the
+  opening response and laxity measurement.** The collaterals' lengths,
+  spring tensions and restoring moment under a prescribed opening (the
+  tibial attachments rotated about a caller-supplied hinge — where the
+  joint actually hinges, classically the side opposite the measured
+  gap), plus the laxity measurement: the opening angle at which the
+  restoring moment first reaches a target, bracket-bisected on the
+  monotone lengthening response. The hinge is prescribed, not solved
+  from articulating surfaces — that remains the crate's tracked
+  boundary. Verified: the rotated length matches the textbook rotation
+  written independently in the test; a hinge on the lateral insertion
+  leaves that collateral exactly at slack while the medial tensionises;
+  the laxity bisection reproduces its target moment to bisection
+  precision and orders stiffer targets later; unreachable targets,
+  invalid angles and zero hinge axes are rejected.
 - **`StabilityScreen` — the stability moment balance.** Converts the
   tension screen into a varus/valgus moment statement: each collateral's
   moment arm (the perpendicular distance from the joint centre to its
@@ -118,10 +133,8 @@ changes for consumers of this crate.
 ### Planned
 - Automatic landmark detection from a CT, which is the hard part of the
   problem and is not attempted here.
-- Stability *response* (the joint's opening under a prescribed varus/valgus
-  stress) — needs the articulating kinematics this crate does not model;
-  the moment balance of the plan's configuration is delivered
-  (`StabilityScreen`).
+- Solved opening kinematics (the hinge is prescribed, not computed from
+  articulating surfaces).
 
 ### Notes
 - **Ties round up.** At exactly `t = 0.5` between two sizes the larger size is

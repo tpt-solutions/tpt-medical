@@ -63,9 +63,15 @@ throws away the information the surgeon uses to decide whether to upsize.
 - **Stability moment balance** — `StabilityScreen`: the tension balance
   converted into a varus/valgus moment statement — per-ligament moment
   arms (point-line distance from the joint centre to the line of
-  action) and the net moment `Σ ±arm·tension`, medial-positive. Still
-  out of scope by design: the joint's opening *response* to a prescribed
-  stress (kinematics the crate does not model).
+  action) and the net moment `Σ ±arm·tension`, medial-positive.
+- **Opening response and laxity** — `StabilityScreen::opening_response` /
+  `opening_at_moment`: the collaterals' lengths, tensions and restoring
+  moment under a prescribed opening about a caller-supplied hinge (the
+  joint's opening axis, where the gap actually hinges), and the laxity
+  measurement — the opening angle at which the restoring moment first
+  reaches a target (bracketed bisection on the monotone response). The
+  hinge is prescribed, not solved: articulating surfaces stay out of
+  scope.
 - **Ligament balance proper** — `LigamentModel` + `assess_ligament_balance`:
   each collateral as a 1-D spring with a slack range (origin, insertion,
   slack length, stiffness, side); the screen reports the anatomical vs
@@ -211,6 +217,8 @@ fn main() {
 | `LigamentModel { origin, insertion, slack_length_mm, stiffness_n_per_mm, side }` | One collateral as a spring with a slack range |
 | `assess_ligament_balance(&[(LigamentModel, Vec3, Vec3)], tolerance_n)` | Ligament-balance screen: per-collateral tension plus mediolateral imbalance |
 | `StabilityScreen::{moment_arm_mm, net_moment_nmm, assess}` | The stability moment balance: arms from the lines of action, net varus/valgus moment |
+| `StabilityScreen::opening_response(ligaments, hinge, axis, angle, center)` | Lengths, tensions and restoring moment under a prescribed opening |
+| `StabilityScreen::opening_at_moment(.., target, max_angle)` | Laxity: the opening angle reaching the target moment |
 | `Vec3` from `tpt-med-geometry` | Landmark positions in patient space (mm) |
 
 ## Verification
@@ -261,6 +269,12 @@ fn main() {
   ligament's line of action measures past the segment); a symmetric
   taut pair cancels to zero net moment while a taut-medial/slack-lateral
   pair reads exactly arm × tension; empty input is rejected.
+- **Opening response** — the rotated length matches the textbook
+  rotation written independently in the test; a hinge on the lateral
+  insertion leaves that collateral exactly at slack while the medial one
+  tensionises; the laxity bisection self-consistently reproduces its
+  target moment, a stiffer target needs more opening, an unreachable
+  target reports `None`, and a zero hinge axis is rejected.
 
 ## Known Limitations
 

@@ -9,7 +9,7 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
-use tpt_med_geometry::Vec3;
+use tpt_med_geometry::{Mat3, Vec3};
 
 /// One size in a manufacturer chart.
 #[derive(Debug, Clone, Copy)]
@@ -1089,6 +1089,113 @@ pub struct StabilityReport {
     pub net_moment_nmm: f64,
 }
 
+/// The response to a **prescribed opening**: the tibial attachments
+/// rotated by an angle about a caller-supplied hinge (where the joint
+/// opens — classically the collateral side opposite the measured gap),
+/// each ligament's length and spring tension at that opening, and the
+/// net restoring moment. The hinge is *prescribed*, not solved: the
+/// articulating surfaces that would determine it are out of scope, so
+/// this screen answers "given the opening, what do the collaterals
+/// do" — the standard laxity-measurement direction (a moment target and
+/// the opening that produces it).
+#[derive(Debug, Clone)]
+pub struct OpeningResponse {
+    /// The prescribed opening angle (degrees).
+    pub angle_deg: f64,
+    /// Ligament lengths (mm) at the opening, input order.
+    pub lengths_mm: Vec<f64>,
+    /// Ligament tensions (N) at the opening, input order.
+    pub tensions_n: Vec<f64>,
+    /// Net restoring moment (N·mm), medial-positive by side pairing.
+    pub net_moment_nmm: f64,
+}
+
+impl StabilityScreen {
+    /// The collaterals' response to an opening of `angle_deg` about the
+    /// axis through `hinge` (direction `hinge_axis`, normalized
+    /// internally; every planned *insertion* rotates, the origins stay
+    /// on the fixed femur).
+    pub fn opening_response(
+        ligaments: &[(LigamentModel, Vec3, Vec3)],
+        hinge: Vec3,
+        hinge_axis: Vec3,
+        angle_deg: f64,
+        joint_center: Vec3,
+    ) -> Option<OpeningResponse> {
+        let axis2 = hinge_axis.norm_squared();
+        if ligaments.is_empty() || !angle_deg.is_finite() || !axis2.is_finite() || axis2 <= 0.0 {
+            return None;
+        }
+        let rotation = Mat3::rotation_axis_angle(hinge_axis.normalize(), angle_deg.to_radians());
+        let mut lengths = Vec::with_capacity(ligaments.len());
+        let mut tensions = Vec::with_capacity(ligaments.len());
+        let mut moment = 0.0f64;
+        for (lig, origin, insertion) in ligaments {
+            let rotated = hinge + rotation * (*insertion - hinge);
+            let length = lig.planned_length(*origin, rotated);
+            let tension = lig.tension(length);
+            let arm = Self::moment_arm_mm(lig, joint_center, *origin, rotated);
+            let signed = match lig.side {
+                CollateralSide::Medial => arm * tension,
+                CollateralSide::Lateral => -(arm * tension),
+            };
+            moment += signed;
+            lengths.push(length);
+            tensions.push(tension);
+        }
+        Some(OpeningResponse {
+            angle_deg,
+            lengths_mm: lengths,
+            tensions_n: tensions,
+            net_moment_nmm: moment,
+        })
+    }
+
+    /// The laxity measurement: the opening angle (degrees, in
+    /// `[0, max_angle_deg]`) at which the net restoring moment first
+    /// reaches `target_moment_nmm` — bracketed bisection on the
+    /// (monotone-lengthening) response. `None` when the moment is not
+    /// reached within `max_angle_deg` or the inputs are invalid.
+    pub fn opening_at_moment(
+        ligaments: &[(LigamentModel, Vec3, Vec3)],
+        hinge: Vec3,
+        hinge_axis: Vec3,
+        joint_center: Vec3,
+        target_moment_nmm: f64,
+        max_angle_deg: f64,
+    ) -> Option<f64> {
+        if ligaments.is_empty()
+            || !target_moment_nmm.is_finite()
+            || !max_angle_deg.is_finite()
+            || max_angle_deg <= 0.0
+        {
+            return None;
+        }
+        let moment_at = |deg: f64| {
+            Self::opening_response(ligaments, hinge, hinge_axis, deg, joint_center)
+                .map(|r| r.net_moment_nmm)
+                .unwrap_or(f64::NAN)
+        };
+        let at_max = moment_at(max_angle_deg);
+        if !at_max.is_finite() || at_max < target_moment_nmm {
+            return None;
+        }
+        if moment_at(0.0) >= target_moment_nmm {
+            return Some(0.0);
+        }
+        let (mut lo, mut hi) = (0.0f64, max_angle_deg);
+        for _ in 0..60 {
+            let mid = 0.5 * (lo + hi);
+            if moment_at(mid) < target_moment_nmm {
+                lo = mid;
+            } else {
+                hi = mid;
+            }
+        }
+        Some(0.5 * (lo + hi))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1966,5 +2073,113 @@ mod tests {
     fn stability_screen_rejects_empty_input() {
         assert!(StabilityScreen::assess(&[], Vec3::ZERO).is_none());
         assert!(StabilityScreen::net_moment_nmm(&[], Vec3::ZERO).is_none());
+    }
+
+    fn opening_fixture() -> Vec<(LigamentModel, Vec3, Vec3)> {
+        // Medial and lateral collaterals, both at slack at rest; the
+        // hinge sits ON the lateral insertion line, so opening rotates
+        // the medial attachment away and leaves the lateral one fixed.
+        let medial = LigamentModel {
+            origin: Vec3::new(0.0, 5.0, 0.0),
+            insertion: Vec3::new(0.0, 5.0, -40.0),
+            slack_length_mm: 40.0,
+            stiffness_n_per_mm: 25.0,
+            side: CollateralSide::Medial,
+        };
+        let lateral = LigamentModel {
+            origin: Vec3::new(0.0, -5.0, 0.0),
+            insertion: Vec3::new(0.0, -5.0, -40.0),
+            slack_length_mm: 40.0,
+            stiffness_n_per_mm: 25.0,
+            side: CollateralSide::Lateral,
+        };
+        vec![
+            (medial.clone(), medial.origin, medial.insertion),
+            (lateral.clone(), lateral.origin, lateral.insertion),
+        ]
+    }
+
+    #[test]
+    fn opening_response_tracks_the_rotated_geometry_exactly() {
+        let ligaments = opening_fixture();
+        let hinge = Vec3::new(0.0, -5.0, -40.0);
+        // The axis sign is the opening direction: about −x, positive
+        // angles lengthen the medial collateral.
+        let axis = Vec3::new(-1.0, 0.0, 0.0);
+        let center = Vec3::new(0.0, 0.0, -20.0);
+        // θ = 0.1 rad: the medial insertion swings (0, 10 sin θ, −10(1−cos θ))
+        // about the hinge — written here as the textbook rotation.
+        let theta = 0.1f64;
+        let (c, sn) = (theta.cos(), theta.sin());
+        let expected_medial = {
+            let insertion = Vec3::new(0.0, -5.0 + 10.0 * c, -40.0 - 10.0 * sn);
+            (insertion - Vec3::new(0.0, 5.0, 0.0)).norm()
+        };
+        let response =
+            StabilityScreen::opening_response(&ligaments, hinge, axis, theta.to_degrees(), center)
+                .expect("non-empty");
+        assert!((response.lengths_mm[0] - expected_medial).abs() < 1e-12);
+        assert!(
+            (response.tensions_n[0] - 25.0 * (expected_medial - 40.0)).abs() < 1e-9,
+            "{}",
+            response.tensions_n[0]
+        );
+        // The hinge is on the lateral insertion: it does not move, and
+        // the lateral collateral stays exactly at slack.
+        assert!((response.lengths_mm[1] - 40.0).abs() < 1e-12);
+        assert_eq!(response.tensions_n[1], 0.0);
+        // The restoring moment is the medial contribution alone.
+        assert!(
+            response.net_moment_nmm > 100.0,
+            "{}",
+            response.net_moment_nmm
+        );
+    }
+
+    #[test]
+    fn laxity_at_moment_bisects_the_monotone_response() {
+        let ligaments = opening_fixture();
+        let hinge = Vec3::new(0.0, -5.0, -40.0);
+        let axis = Vec3::new(-1.0, 0.0, 0.0);
+        let center = Vec3::new(0.0, 0.0, -20.0);
+        let laxity =
+            StabilityScreen::opening_at_moment(&ligaments, hinge, axis, center, 100.0, 30.0)
+                .expect("reachable within 30 degrees");
+        assert!(laxity > 0.0 && laxity < 30.0, "{laxity}");
+        // Self-consistent: at the reported angle the moment hits the
+        // target (to bisection precision), and more target needs more
+        // opening.
+        let response = StabilityScreen::opening_response(&ligaments, hinge, axis, laxity, center)
+            .expect("non-empty");
+        assert!(
+            (response.net_moment_nmm - 100.0).abs() < 0.1,
+            "{}",
+            response.net_moment_nmm
+        );
+        let stiffer =
+            StabilityScreen::opening_at_moment(&ligaments, hinge, axis, center, 200.0, 30.0)
+                .expect("reachable");
+        assert!(stiffer > laxity);
+    }
+
+    #[test]
+    fn opening_response_rejects_unreachable_and_invalid_input() {
+        let ligaments = opening_fixture();
+        let hinge = Vec3::new(0.0, -5.0, -40.0);
+        let axis = Vec3::new(-1.0, 0.0, 0.0);
+        let center = Vec3::new(0.0, 0.0, -20.0);
+        // A 1e6 N·mm target is unreachable in 5 degrees.
+        assert!(
+            StabilityScreen::opening_at_moment(&ligaments, hinge, axis, center, 1.0e6, 5.0)
+                .is_none()
+        );
+        assert!(
+            StabilityScreen::opening_at_moment(&ligaments, hinge, axis, center, 100.0, -1.0)
+                .is_none()
+        );
+        assert!(StabilityScreen::opening_response(&[], hinge, axis, 5.0, center).is_none());
+        assert!(
+            StabilityScreen::opening_response(&ligaments, hinge, Vec3::ZERO, 5.0, center).is_none()
+        );
     }
 }
