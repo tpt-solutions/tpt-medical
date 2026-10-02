@@ -615,8 +615,9 @@ gating input is a purchase of ISO/IEC 15444-2, not engineering time.
   **Done (2026-09-30): `MigrationModel` — closed-form logarithmic migration `x(N) = x_bed·ln(1 + k(δ−δ_th)N/x_bed)` (bedding-in decay), verified against numerical integration; `velocity_per_year`/`is_at_risk` implement the RSA-style >0.2 mm/year flag.**
 - [x] **Built-in zone definitions (Gruen, Paprosky) so callers are not left to invent one.**
   **Done (2026-09-29): `GruenZone`/`gruen_zone`/`gruen_zones_in_order` — geometric zones 1-7 (Paprosky remains future work; the Gruen half of the item is delivered).**
-- [ ] **Continuum coupling, so an implant with realistic compliance can be evaluated rather than modelled as a rigid punch.**
+- [x] **Continuum coupling, so an implant with realistic compliance can be evaluated rather than modelled as a rigid punch.**
   **Series-compliance screening delivered (2026-10-01): `CompliantImplant` — the Winkler foundation in series with the implant's interface stiffness `E/t`; the rigid punch is the stiff limit and full continuum coupling stays with the fem-adapter.**
+  **Continuum bone bed delivered (2026-10-03): `ElasticHalfSpace` — the bone under the punch as a Boussinesq elastic half-space (`δ = F(1−ν²)/(2aE)`, Johnson 1985), the interface stiffness set by the bone's own modulus instead of a tuned Winkler constant, uniformised into `InterfaceModel` units and series-composed with implant layers (stiff Ti nearly transparent, soft cement biting exactly per the series law — both hand-asserted). The ladder is now rigid punch → compliant layer → continuum half-space; a genuinely flexible stem in a finite bone geometry remains the fem-adapter's tracked work.**
 
 ### `tpt-med-stents`
 

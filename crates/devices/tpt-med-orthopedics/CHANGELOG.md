@@ -12,6 +12,19 @@ changes for consumers of this crate.
 ## [Unreleased]
 
 ### Added
+- **`ElasticHalfSpace` — the continuum step of the interface-compliance
+  ladder**: the bone bed as an elastic half-space under a rigid circular
+  punch, with the classical Boussinesq settlement
+  `δ = F(1−ν²)/(2aE)` (Johnson, *Contact Mechanics*, 1985) and stiffness
+  `K = 2aE/(1−ν²)` set by the bone's own modulus instead of a
+  caller-invented foundation constant. Uniformises into
+  `InterfaceModel`'s N/mm³ units (`K/A`, documented as a screening
+  reduction) and composes in series with an implant interface layer —
+  where a stiff Ti-alloy layer is nearly transparent (the continuum
+  dominates) and a soft cement mantle bites exactly as the series law
+  says, both asserted against hand-computed values alongside the exact
+  closed form, the settlement's linearity in load, and the physical
+  1/E settlement scaling on halved bone modulus.
 - `CompliantImplant` (+ `effective_stiffness` / `interface_model`): the
   **screening step from rigid punch toward compliant implant** — the
   Winkler foundation in series with the implant's interface-layer
@@ -48,9 +61,9 @@ changes for consumers of this crate.
   growth shape.
 
 ### Planned
-- Full continuum coupling (the series-compliance screening for compliant
-  interface layers is delivered; a genuinely flexible stem needs the
-  fem-adapter).
+- Full continuum coupling (the series-compliance screening and the
+  Boussinesq half-space punch are delivered; a genuinely flexible stem in
+  a finite bone geometry needs the fem-adapter).
 
 ### Notes
 - `zone_micromotion` reports **`NaN` for zero-area zones** deliberately, to

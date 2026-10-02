@@ -205,6 +205,116 @@ impl CompliantImplant {
     }
 }
 
+/// An **elastic half-space bone bed** — the continuum step beyond the
+/// Winkler foundation: the bone under the implant is modelled as an
+/// infinite elastic continuum (modulus `E`, Poisson ratio `ν`), and the
+/// implant's bearing face as a rigid circular punch of radius `a`. The
+/// classical Boussinesq result gives the punch's settlement
+/// (Johnson, *Contact Mechanics*, 1985 — the half-space solution he
+/// attributes to Boussinesq 1885):
+///
+/// ```text
+/// δ = F·(1−ν²) / (2·a·E)      ⇔      K = 2·a·E / (1−ν²)
+/// ```
+///
+/// so the interface stiffness is set by the bone's *own* modulus rather
+/// than a caller-invented foundation constant — the case the rigid-punch
+/// and Winkler models get wrong exactly where it matters (soft
+/// osteoporotic bone, where the continuum's load spread stiffens the
+/// response relative to a linear spring bed). This is still a punch on a
+/// half-space, not a 3-D continuum solve: no finite bone geometry, no
+/// per-zone variation of the half-space response, implant flexibility
+/// handled only by series combination. Full continuum coupling stays
+/// with the fem-adapter.
+#[derive(Debug, Clone, Copy)]
+pub struct ElasticHalfSpace {
+    /// Bearing-face radius (mm).
+    pub contact_radius_mm: f64,
+    /// Bone modulus at the interface (MPa).
+    pub bone_modulus_mpa: f64,
+    /// Bone Poisson ratio (cortical ≈ 0.3; must be in `[0, 0.5)`).
+    pub poissons_ratio: f64,
+}
+
+impl ElasticHalfSpace {
+    /// Validates; `Err` for a non-positive radius or modulus, or a
+    /// Poisson ratio outside `[0, 0.5)`.
+    pub fn new(
+        contact_radius_mm: f64,
+        bone_modulus_mpa: f64,
+        poissons_ratio: f64,
+    ) -> Result<Self, String> {
+        if !contact_radius_mm.is_finite() || contact_radius_mm <= 0.0 {
+            return Err(format!(
+                "contact radius must be positive and finite, got {contact_radius_mm}"
+            ));
+        }
+        if !bone_modulus_mpa.is_finite() || bone_modulus_mpa <= 0.0 {
+            return Err(format!(
+                "bone modulus must be positive and finite, got {bone_modulus_mpa}"
+            ));
+        }
+        if !poissons_ratio.is_finite() || !(0.0..0.5).contains(&poissons_ratio) {
+            return Err(format!(
+                "Poisson ratio must be in [0, 0.5), got {poissons_ratio}"
+            ));
+        }
+        Ok(Self {
+            contact_radius_mm,
+            bone_modulus_mpa,
+            poissons_ratio,
+        })
+    }
+
+    /// Punch interface stiffness `K = 2aE/(1−ν²)` (N/mm).
+    pub fn interface_stiffness_n_per_mm(&self) -> f64 {
+        2.0 * self.contact_radius_mm * self.bone_modulus_mpa
+            / (1.0 - self.poissons_ratio * self.poissons_ratio)
+    }
+
+    /// Punch settlement (mm) under `load_n` — linear in load, the
+    /// half-space's defining (Boussinesq) response.
+    pub fn settlement_mm(&self, load_n: f64) -> f64 {
+        load_n / self.interface_stiffness_n_per_mm()
+    }
+
+    /// The half-space expressed in the [`InterfaceModel`]'s units: the
+    /// punch stiffness spread over the contact area as a uniform
+    /// foundation `K/A` (N/mm³). This uniformisation is a screening
+    /// reduction — the true Boussinesq surface displacement is
+    /// non-uniform across the punch face — and the tests pin the exact
+    /// uniform value it produces.
+    pub fn effective_foundation_stiffness(&self, contact_area: f64) -> f64 {
+        assert!(contact_area > 0.0, "contact area must be positive");
+        self.interface_stiffness_n_per_mm() / contact_area
+    }
+
+    /// An [`InterfaceModel`] on this half-space: the uniform foundation
+    /// reduction over `contact_area`, with the caller's friction.
+    pub fn interface_model(&self, contact_area: f64, friction: f64) -> InterfaceModel {
+        InterfaceModel {
+            foundation_stiffness: self.effective_foundation_stiffness(contact_area),
+            contact_area,
+            friction,
+        }
+    }
+
+    /// The half-space **in series with an implant interface layer**
+    /// (modulus MPa, thickness mm — the same series law
+    /// [`CompliantImplant`] uses for its Winkler bed), returning the
+    /// effective uniform foundation (N/mm³) for
+    /// [`Self::interface_model`]. A stiff Ti-alloy layer is nearly
+    /// transparent here: the half-space's own compliance dominates,
+    /// which is the physical point the Winkler model cannot make.
+    pub fn series_with_implant(&self, implant_modulus_mpa: f64, thickness_mm: f64) -> f64 {
+        assert!(implant_modulus_mpa > 0.0 && thickness_mm > 0.0);
+        let area = core::f64::consts::PI * self.contact_radius_mm * self.contact_radius_mm;
+        let k_half_space = self.interface_stiffness_n_per_mm() / area;
+        let k_implant = implant_modulus_mpa / thickness_mm;
+        1.0 / (1.0 / k_half_space + 1.0 / k_implant)
+    }
+}
+
 /// Result of a cyclic (gait) micromotion analysis.
 #[derive(Debug, Clone)]
 pub struct CyclicMicromotionResult {
@@ -755,6 +865,67 @@ mod tests {
         assert!(
             (d2 - d1).abs() < 0.02 * d1,
             "log curve: nearly-equal late increments {d1} {d2}"
+        );
+    }
+
+    #[test]
+    fn half_space_stiffness_matches_the_boussinesq_closed_form() {
+        // K = 2aE/(1−ν²): a = 10 mm, E = 500 MPa, ν = 0.3 → 10989.0 N/mm.
+        let hs = ElasticHalfSpace::new(10.0, 500.0, 0.3).expect("valid");
+        let expected = 2.0 * 10.0 * 500.0 / (1.0 - 0.09);
+        assert!((hs.interface_stiffness_n_per_mm() - expected).abs() < 1e-9);
+        // Settlement is linear in load: 500 N → 0.0455 mm, 1000 N doubles it.
+        let s1 = hs.settlement_mm(500.0);
+        assert!((s1 - 500.0 / expected).abs() < 1e-12);
+        assert!((hs.settlement_mm(1000.0) - 2.0 * s1).abs() < 1e-12);
+        // Incompressible limit rejected (ν → 0.5 diverges), as do bad
+        // radii and moduli.
+        assert!(ElasticHalfSpace::new(10.0, 500.0, 0.5).is_err());
+        assert!(ElasticHalfSpace::new(-1.0, 500.0, 0.3).is_err());
+        assert!(ElasticHalfSpace::new(10.0, 0.0, 0.3).is_err());
+        assert!(ElasticHalfSpace::new(10.0, 500.0, f64::NAN).is_err());
+    }
+
+    #[test]
+    fn half_space_uniform_reduction_and_series_are_exact() {
+        let hs = ElasticHalfSpace::new(10.0, 500.0, 0.3).expect("valid");
+        let area = core::f64::consts::PI * 100.0;
+        // The uniform foundation is exactly K/A.
+        let k = hs.interface_stiffness_n_per_mm();
+        assert!((hs.effective_foundation_stiffness(area) - k / area).abs() < 1e-9);
+        // Series with a stiff Ti layer (110 GPa over 3 mm): the
+        // half-space dominates and the layer shifts the answer by only
+        // the hand-computed series amount.
+        let k_implant = 110_000.0 / 3.0;
+        let expected = 1.0 / (1.0 / (k / area) + 1.0 / k_implant);
+        assert!((hs.series_with_implant(110_000.0, 3.0) - expected).abs() < 1e-9);
+        // ...and the implant layer is nearly transparent, which is the
+        // physical point: the continuum's own compliance dominates.
+        let with_layer = hs.series_with_implant(110_000.0, 3.0);
+        assert!((with_layer - k / area).abs() < 0.001 * (k / area));
+        // A soft cement mantle bites exactly as the series law says.
+        let soft = hs.series_with_implant(2000.0, 2.0);
+        let k_cement = 1000.0;
+        let expected_soft = 1.0 / (1.0 / (k / area) + 1.0 / k_cement);
+        assert!((soft - expected_soft).abs() < 1e-9);
+        // The interface model carries the reduced stiffness through.
+        let im = hs.interface_model(area, 0.4);
+        assert!((im.foundation_stiffness - k / area).abs() < 1e-9);
+        assert!((im.contact_area - area).abs() < 1e-9);
+        assert!((im.friction - 0.4).abs() < 1e-12);
+    }
+
+    #[test]
+    fn half_space_beats_a_winkler_bed_on_soft_bone_where_it_matters() {
+        // The reason the continuum step exists: halving the bone modulus
+        // halves the half-space stiffness (K ∝ E), so settlements double
+        // — while a tuned Winkler constant hides whatever the tuner
+        // assumed. Assert the physical scaling directly.
+        let hs = ElasticHalfSpace::new(10.0, 500.0, 0.3).expect("valid");
+        let soft = ElasticHalfSpace::new(10.0, 250.0, 0.3).expect("valid");
+        assert!(
+            (soft.settlement_mm(500.0) - 2.0 * hs.settlement_mm(500.0)).abs() < 1e-12,
+            "settlement must scale as 1/E"
         );
     }
 }

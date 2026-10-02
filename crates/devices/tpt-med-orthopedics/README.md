@@ -74,6 +74,16 @@ as a first-class input rather than assuming perfect bonding.
   (`E/t`), so a porous coating or cement mantle softens the interface
   before the micromotion screen; the rigid punch is the stiff limit.
 
+- **Elastic half-space bone bed** — `ElasticHalfSpace` replaces the
+  invented Winkler constant with the continuum's own: the Boussinesq
+  rigid-punch result `δ = F(1−ν²)/(2aE)` (Johnson, *Contact Mechanics*,
+  1985) gives an interface stiffness `2aE/(1−ν²)` set by the bone
+  modulus, composable in series with an implant layer (a stiff Ti layer
+  is nearly transparent — the continuum dominates — while a soft cement
+  mantle bites exactly as the series law says). Uniformised into
+  `InterfaceModel` units for the micromotion screens; still a punch on a
+  half-space, not a 3-D continuum solve.
+
 ## Conventions
 
 - `foundation_stiffness` in **N/mm³**; `contact_area` in **mm²**;
