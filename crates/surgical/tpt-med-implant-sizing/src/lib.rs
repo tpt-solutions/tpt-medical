@@ -568,6 +568,296 @@ pub fn size_hip(chart: &SizeChart, landmarks: &HipLandmarks) -> Option<MultiMeas
     size_from_measurements(chart, &landmarks.stem_measurements())
 }
 
+/// Humeral landmarks for shoulder stem sizing: the canal geometry, the
+/// head centre and anatomical neck, and the elbow epicondyles that anchor
+/// the distal (transepicondylar) retroversion reference. All stem-sizing
+/// measurements derive from these geometrically; the chart itself stays
+/// caller-supplied (vendor data with citations), exactly as for the knee
+/// and hip.
+#[derive(Debug, Clone, Copy)]
+pub struct ShoulderLandmarks {
+    /// Centre of the humeral head.
+    pub head_center: Vec3,
+    /// Centre of the anatomical neck (the base of the head — the
+    /// resection-plane reference).
+    pub anatomical_neck_center: Vec3,
+    /// Medial endosteal edge of the diaphyseal canal at the isthmus (the
+    /// narrowest point).
+    pub isthmus_medial: Vec3,
+    /// Lateral endosteal edge of the canal at the isthmus.
+    pub isthmus_lateral: Vec3,
+    /// A point on the proximal canal axis (entry region) — anchors the
+    /// canal axis the offset and angles are measured against.
+    pub canal_entry: Vec3,
+    /// Medial humeral epicondyle — one end of the distal retroversion
+    /// reference.
+    pub medial_epicondyle: Vec3,
+    /// Lateral humeral epicondyle.
+    pub lateral_epicondyle: Vec3,
+}
+
+impl ShoulderLandmarks {
+    /// The humeral canal axis: unit line through `canal_entry` toward the
+    /// isthmus midpoint (pointing distal). The offset and both alignment
+    /// angles are measured against it.
+    pub fn canal_axis(&self) -> Vec3 {
+        let mid = (self.isthmus_medial + self.isthmus_lateral) * 0.5;
+        (mid - self.canal_entry).normalize()
+    }
+
+    /// Endosteal canal width at the isthmus (mm). This drives the stem
+    /// size.
+    pub fn canal_width(&self) -> f64 {
+        (self.isthmus_lateral - self.isthmus_medial).norm()
+    }
+
+    /// The neck axis: unit direction from the anatomical neck centre up
+    /// to the head centre (pointing proximal).
+    pub fn neck_axis(&self) -> Vec3 {
+        (self.head_center - self.anatomical_neck_center).normalize()
+    }
+
+    /// Head height (mm): the head centre's axial height above the
+    /// anatomical neck centre along the canal axis. A proxy for the
+    /// calcar-to-apex head height (the clinical definition references
+    /// the calcar and the head apex, which these landmarks do not
+    /// include) — documented as a proxy.
+    pub fn head_height(&self) -> f64 {
+        (self.head_center - self.anatomical_neck_center)
+            .dot(self.canal_axis())
+            .abs()
+    }
+
+    /// Head offset (mm): the perpendicular distance from the head centre
+    /// to the canal axis — the medial–lateral head position the implant
+    /// restores, the standard geometric definition.
+    pub fn head_offset(&self) -> f64 {
+        let axis = self.canal_axis();
+        let d = self.head_center - self.canal_entry;
+        (d - axis * d.dot(axis)).norm()
+    }
+
+    /// Neck–shaft angle (degrees): the angle between the neck axis
+    /// (pointing proximal, toward the head) and the distal canal axis.
+    /// The normal band is ≈ 130–140°; a screening alignment output, not
+    /// a sizing input.
+    pub fn neck_shaft_angle_deg(&self) -> f64 {
+        self.neck_axis()
+            .dot(self.canal_axis())
+            .clamp(-1.0, 1.0)
+            .acos()
+            .to_degrees()
+    }
+
+    /// Humeral retroversion (degrees): the angle, in the plane
+    /// perpendicular to the canal axis, between the projected neck axis
+    /// and the projected transepicondylar axis — the standard distal
+    /// reference for humeral version. The normal band is ≈ 20–30°;
+    /// reported as a magnitude (screening output, not a sizing input).
+    pub fn retroversion_deg(&self) -> f64 {
+        let axis = self.canal_axis();
+        let project = |v: Vec3| v - axis * v.dot(axis);
+        let neck = project(self.neck_axis());
+        let tea = project(self.lateral_epicondyle - self.medial_epicondyle);
+        neck.normalize()
+            .dot(tea.normalize())
+            .clamp(-1.0, 1.0)
+            .acos()
+            .to_degrees()
+    }
+
+    /// The three stem-sizing measurements with the canonical precedence
+    /// order (canal width, then head offset, then head height).
+    pub fn stem_measurements(&self) -> [MeasurementInput; 3] {
+        [
+            MeasurementInput {
+                name: "canal_width",
+                value_mm: self.canal_width(),
+                precedence: 1,
+            },
+            MeasurementInput {
+                name: "head_offset",
+                value_mm: self.head_offset(),
+                precedence: 2,
+            },
+            MeasurementInput {
+                name: "head_height",
+                value_mm: self.head_height(),
+                precedence: 3,
+            },
+        ]
+    }
+}
+
+/// Shoulder sizing recommendation bundle: the precedence-resolved stem
+/// decision plus the measurements and both alignment outputs.
+#[derive(Debug, Clone)]
+pub struct ShoulderSizing {
+    /// The stem decision (votes, resolution, label).
+    pub stem: MultiMeasurementDecision,
+    /// Canal width at the isthmus (mm).
+    pub canal_width_mm: f64,
+    /// Head offset from the canal axis (mm).
+    pub head_offset_mm: f64,
+    /// Head height above the neck (mm).
+    pub head_height_mm: f64,
+    /// Neck–shaft angle (degrees).
+    pub neck_shaft_angle_deg: f64,
+    /// Humeral retroversion relative to the transepicondylar axis
+    /// (degrees).
+    pub retroversion_deg: f64,
+}
+
+/// Sizes a humeral stem from shoulder landmarks against a
+/// caller-supplied stem chart: the same precedence-resolved
+/// multi-measurement decision as the knee and hip paths, over the
+/// canal-width / head-offset / head-height triple, with the neck–shaft
+/// angle and retroversion reported alongside.
+///
+/// # Errors
+///
+/// Returns `None` when the chart is empty or a measurement falls outside
+/// every chart entry's reach (mirroring [`size_from_measurements`]).
+pub fn size_shoulder(chart: &SizeChart, landmarks: &ShoulderLandmarks) -> Option<ShoulderSizing> {
+    Some(ShoulderSizing {
+        stem: size_from_measurements(chart, &landmarks.stem_measurements())?,
+        canal_width_mm: landmarks.canal_width(),
+        head_offset_mm: landmarks.head_offset(),
+        head_height_mm: landmarks.head_height(),
+        neck_shaft_angle_deg: landmarks.neck_shaft_angle_deg(),
+        retroversion_deg: landmarks.retroversion_deg(),
+    })
+}
+
+/// Landmarks for total ankle arthroplasty sizing: the tibial plafond
+/// edges (medial/lateral for width, anterior/posterior for depth), the
+/// talar dome edges and centre, and a proximal point on the tibial
+/// anatomical axis for the alignment measurement. The charts stay
+/// caller-supplied (vendor data with citations), exactly as for the
+/// knee, hip and shoulder.
+#[derive(Debug, Clone, Copy)]
+pub struct AnkleLandmarks {
+    /// Medial edge of the tibial plafond (distal tibia articular
+    /// surface).
+    pub plafond_medial: Vec3,
+    /// Lateral edge of the tibial plafond.
+    pub plafond_lateral: Vec3,
+    /// Anterior edge of the plafond at its mid-width.
+    pub plafond_anterior: Vec3,
+    /// Posterior edge of the plafond at its mid-width.
+    pub plafond_posterior: Vec3,
+    /// Medial edge of the talar dome.
+    pub talar_medial: Vec3,
+    /// Lateral edge of the talar dome.
+    pub talar_lateral: Vec3,
+    /// Centre of the talar dome.
+    pub talar_center: Vec3,
+    /// A point proximal on the tibial anatomical axis — anchors the
+    /// tibial axis the alignment angle is measured from.
+    pub tibial_axis_point: Vec3,
+}
+
+impl AnkleLandmarks {
+    /// Tibial plafond medial–lateral width (mm) — drives the tibial
+    /// component size.
+    pub fn plafond_width(&self) -> f64 {
+        (self.plafond_lateral - self.plafond_medial).norm()
+    }
+
+    /// Tibial plafond anterior–posterior depth (mm) — the second tibial
+    /// sizing measurement.
+    pub fn plafond_depth(&self) -> f64 {
+        (self.plafond_posterior - self.plafond_anterior).norm()
+    }
+
+    /// Talar dome medial–lateral width (mm) — drives the talar
+    /// component size.
+    pub fn talar_width(&self) -> f64 {
+        (self.talar_lateral - self.talar_medial).norm()
+    }
+
+    /// Tibiotalar alignment deviation (degrees): the angle between the
+    /// tibial anatomical axis and the talar dome line's perpendicular —
+    /// zero when the axis is perpendicular to the dome (neutral), larger
+    /// with varus/valgus tilt. A frontal-plane screening proxy computed
+    /// from the dome line, not the full clinical tibiotalar angle.
+    pub fn tibiotalar_angle_deg(&self) -> f64 {
+        let plafond_center = (self.plafond_medial + self.plafond_lateral) * 0.5;
+        let axis = (plafond_center - self.tibial_axis_point).normalize();
+        let dome = (self.talar_lateral - self.talar_medial).normalize();
+        axis.dot(dome).clamp(-1.0, 1.0).abs().asin().to_degrees()
+    }
+
+    /// The tibial component's two sizing measurements with the canonical
+    /// precedence order (plafond width, then plafond depth).
+    pub fn tibial_measurements(&self) -> [MeasurementInput; 2] {
+        [
+            MeasurementInput {
+                name: "plafond_width",
+                value_mm: self.plafond_width(),
+                precedence: 1,
+            },
+            MeasurementInput {
+                name: "plafond_depth",
+                value_mm: self.plafond_depth(),
+                precedence: 2,
+            },
+        ]
+    }
+
+    /// The talar component's sizing measurement (dome width).
+    pub fn talar_measurements(&self) -> [MeasurementInput; 1] {
+        [MeasurementInput {
+            name: "talar_width",
+            value_mm: self.talar_width(),
+            precedence: 1,
+        }]
+    }
+}
+
+/// Ankle sizing recommendation bundle: precedence-resolved decisions for
+/// both components plus the measurements and the alignment deviation.
+#[derive(Debug, Clone)]
+pub struct AnkleSizing {
+    /// The tibial component decision (votes, resolution, label).
+    pub tibial: MultiMeasurementDecision,
+    /// The talar component decision (votes, resolution, label).
+    pub talar: MultiMeasurementDecision,
+    /// Plafond medial–lateral width (mm).
+    pub plafond_width_mm: f64,
+    /// Plafond anterior–posterior depth (mm).
+    pub plafond_depth_mm: f64,
+    /// Talar dome width (mm).
+    pub talar_width_mm: f64,
+    /// Tibiotalar alignment deviation (degrees).
+    pub tibiotalar_angle_deg: f64,
+}
+
+/// Sizes a tibial and talar component from ankle landmarks against two
+/// caller-supplied charts: the tibial decision weighs plafond width and
+/// depth (width takes precedence), the talar decision maps the dome
+/// width, and the tibiotalar deviation is reported alongside.
+///
+/// # Errors
+///
+/// Returns `None` when either chart is empty or a measurement falls
+/// outside every chart entry's reach (mirroring
+/// [`size_from_measurements`]).
+pub fn size_ankle(
+    tibial_chart: &SizeChart,
+    talar_chart: &SizeChart,
+    landmarks: &AnkleLandmarks,
+) -> Option<AnkleSizing> {
+    Some(AnkleSizing {
+        tibial: size_from_measurements(tibial_chart, &landmarks.tibial_measurements())?,
+        talar: size_from_measurements(talar_chart, &landmarks.talar_measurements())?,
+        plafond_width_mm: landmarks.plafond_width(),
+        plafond_depth_mm: landmarks.plafond_depth(),
+        talar_width_mm: landmarks.talar_width(),
+        tibiotalar_angle_deg: landmarks.tibiotalar_angle_deg(),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -981,6 +1271,240 @@ mod tests {
                 ..base
             };
             let label = size_hip(&chart, &hip).expect("sizes").label;
+            assert!(label >= previous, "width {width}: {label} after {previous}");
+            previous = label;
+        }
+    }
+
+    /// Canal along +z through the origin, isthmus 12 mm wide at z = 12;
+    /// neck axis 10 mm long at 135° to the distal axis, its in-plane
+    /// component at `retroversion` degrees from the +x TEA.
+    fn shoulder_landmarks(retroversion_deg: f64) -> ShoulderLandmarks {
+        let s = 45.0f64.to_radians().sin(); // in-plane magnitude of the neck axis
+        let rv = retroversion_deg.to_radians();
+        // Unit neck axis: in-plane component at angle rv from the TEA
+        // (+x), axial component −s so the neck–shaft angle is 135°.
+        let neck_axis = Vec3::new(s * rv.cos(), s * rv.sin(), -s);
+        ShoulderLandmarks {
+            anatomical_neck_center: Vec3::new(0.0, 0.0, 2.0),
+            head_center: Vec3::new(0.0, 0.0, 2.0) + neck_axis * 10.0,
+            isthmus_medial: Vec3::new(-6.0, 0.0, 12.0),
+            isthmus_lateral: Vec3::new(6.0, 0.0, 12.0),
+            canal_entry: Vec3::new(0.0, 0.0, 0.0),
+            medial_epicondyle: Vec3::new(-20.0, 0.0, -10.0),
+            lateral_epicondyle: Vec3::new(20.0, 0.0, -10.0),
+        }
+    }
+
+    #[test]
+    fn shoulder_measurements_are_exact_geometry() {
+        // Neck axis at 135° to the distal canal axis, in-plane component
+        // along +x (TEA along x): retroversion is exactly zero.
+        let sh = shoulder_landmarks(0.0);
+        assert!((sh.canal_width() - 12.0).abs() < 1e-12);
+        // The neck vector is 10 mm at 45° to the axis: axial height and
+        // in-plane offset are both 10·sin45°.
+        let in_plane = 10.0 * std::f64::consts::FRAC_1_SQRT_2;
+        assert!((sh.head_height() - in_plane).abs() < 1e-12);
+        assert!((sh.head_offset() - in_plane).abs() < 1e-12);
+        assert!((sh.neck_shaft_angle_deg() - 135.0).abs() < 1e-9);
+        assert!((sh.retroversion_deg() - 0.0).abs() < 1e-9);
+        // The canal axis is unit and distal.
+        assert!((sh.canal_axis().norm() - 1.0).abs() < 1e-12);
+        assert!(sh.canal_axis().z > 0.99);
+
+        // Rotating the in-plane neck component 25° off the TEA reads as
+        // 25° of retroversion, without touching any other measurement.
+        let rv = shoulder_landmarks(25.0);
+        assert!((rv.retroversion_deg() - 25.0).abs() < 1e-9);
+        assert!((rv.neck_shaft_angle_deg() - 135.0).abs() < 1e-9);
+        assert!((rv.head_height() - sh.head_height()).abs() < 1e-9);
+        assert!((rv.head_offset() - sh.head_offset()).abs() < 1e-9);
+    }
+
+    #[test]
+    fn shoulder_sizing_resolves_by_precedence_like_the_hip() {
+        let chart = SizeChart {
+            family: "shoulder-stem-test".into(),
+            entries: (1..=4)
+                .map(|i| SizeEntry {
+                    label: i,
+                    nominal: 8.0 + 2.0 * i as f64, // 10, 12, 14, 16 mm
+                })
+                .collect(),
+        };
+        chart.validate().expect("chart valid");
+
+        // Consensus: canal width exactly 14 (entry 3), and a neck long
+        // enough that head offset AND head height both read 14.5 mm
+        // (t = 0.25 toward entry 4 → label 3).
+        let s = 45.0f64.to_radians().sin();
+        let rv = 20.0f64.to_radians();
+        let neck_axis = Vec3::new(s * rv.cos(), s * rv.sin(), -s);
+        let wide = ShoulderLandmarks {
+            head_center: Vec3::new(0.0, 0.0, 2.0) + neck_axis * (14.5 / s),
+            anatomical_neck_center: Vec3::new(0.0, 0.0, 2.0),
+            isthmus_medial: Vec3::new(-7.0, 0.0, 12.0),
+            isthmus_lateral: Vec3::new(7.0, 0.0, 12.0),
+            canal_entry: Vec3::new(0.0, 0.0, 0.0),
+            medial_epicondyle: Vec3::new(-20.0, 0.0, -10.0),
+            lateral_epicondyle: Vec3::new(20.0, 0.0, -10.0),
+        };
+        assert!((wide.head_offset() - 14.5).abs() < 1e-9);
+        assert!((wide.head_height() - 14.5).abs() < 1e-9);
+        let sizing = size_shoulder(&chart, &wide).expect("sizes");
+        assert!(sizing.stem.is_unanimous());
+        assert_eq!(sizing.stem.label, 3);
+        assert!((sizing.neck_shaft_angle_deg - 135.0).abs() < 1e-9);
+        assert!((sizing.retroversion_deg - 20.0).abs() < 1e-9);
+
+        // Disagreement: narrowing the canal to 10.5 mm votes label 1
+        // while offset and height still vote 3 — the canal width wins by
+        // precedence.
+        let narrow = ShoulderLandmarks {
+            isthmus_medial: Vec3::new(-5.25, 0.0, 12.0),
+            isthmus_lateral: Vec3::new(5.25, 0.0, 12.0),
+            ..wide
+        };
+        let sizing = size_shoulder(&chart, &narrow).expect("sizes");
+        assert_eq!(sizing.stem.label, 1);
+        assert!(matches!(
+            sizing.stem.resolved_by,
+            Resolution::Precedence("canal_width")
+        ));
+        assert_eq!(sizing.stem.votes.len(), 3);
+    }
+
+    #[test]
+    fn shoulder_sizing_is_monotone_in_canal_width() {
+        let chart = SizeChart {
+            family: "shoulder-stem-test".into(),
+            entries: (1..=4)
+                .map(|i| SizeEntry {
+                    label: i,
+                    nominal: 8.0 + 2.0 * i as f64,
+                })
+                .collect(),
+        };
+        let base = shoulder_landmarks(20.0);
+        let mut previous = 0;
+        for width in [10.5, 11.5, 12.5, 13.5, 14.5, 15.5] {
+            let half = width / 2.0;
+            let sh = ShoulderLandmarks {
+                isthmus_medial: Vec3::new(-half, 0.0, 12.0),
+                isthmus_lateral: Vec3::new(half, 0.0, 12.0),
+                ..base
+            };
+            let label = size_shoulder(&chart, &sh).expect("sizes").stem.label;
+            assert!(label >= previous, "width {width}: {label} after {previous}");
+            previous = label;
+        }
+    }
+
+    /// Plafond 30 mm wide (±15 in x) and 24 mm deep (±12 in y) at z = −30;
+    /// dome 28 mm wide at z = −32; tibial axis point placed so the axis
+    /// tilts exactly `tilt_deg` from the dome normal (30° tilt with a
+    /// 50 mm axis arm: `sin 30° = 0.5`).
+    fn ankle_landmarks(tilt_deg: f64) -> AnkleLandmarks {
+        let arm = 50.0f64;
+        let tilt = tilt_deg.to_radians();
+        // Axis direction (distal) tilted `tilt` into −x from −z.
+        let axis = Vec3::new(-tilt.sin(), 0.0, -tilt.cos());
+        AnkleLandmarks {
+            plafond_medial: Vec3::new(-15.0, 0.0, -30.0),
+            plafond_lateral: Vec3::new(15.0, 0.0, -30.0),
+            plafond_anterior: Vec3::new(0.0, 12.0, -30.0),
+            plafond_posterior: Vec3::new(0.0, -12.0, -30.0),
+            talar_medial: Vec3::new(-14.0, 0.0, -32.0),
+            talar_lateral: Vec3::new(14.0, 0.0, -32.0),
+            talar_center: Vec3::new(0.0, 0.0, -32.0),
+            tibial_axis_point: Vec3::new(0.0, 0.0, -30.0) - axis * arm,
+        }
+    }
+
+    #[test]
+    fn ankle_measurements_are_exact_geometry() {
+        let neutral = ankle_landmarks(0.0);
+        assert!((neutral.plafond_width() - 30.0).abs() < 1e-12);
+        assert!((neutral.plafond_depth() - 24.0).abs() < 1e-12);
+        assert!((neutral.talar_width() - 28.0).abs() < 1e-12);
+        // Axis perpendicular to the dome: zero deviation.
+        assert!(neutral.tibiotalar_angle_deg().abs() < 1e-12);
+
+        // A 30° axis tilt reads exactly 30° of deviation (sin 30° = 0.5).
+        let tilted = ankle_landmarks(30.0);
+        assert!((tilted.tibiotalar_angle_deg() - 30.0).abs() < 1e-9);
+        // The width measurements are tilt-independent.
+        assert!((tilted.plafond_width() - 30.0).abs() < 1e-12);
+        assert!((tilted.talar_width() - 28.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn ankle_sizing_bundles_both_components() {
+        let tibial_chart = SizeChart {
+            family: "taa-tibial-test".into(),
+            entries: (1..=5)
+                .map(|i| SizeEntry {
+                    label: i,
+                    nominal: 21.0 + 5.0 * i as f64, // 26, 31, 36, 41, 46 mm
+                })
+                .collect(),
+        };
+        let talar_chart = SizeChart {
+            family: "taa-talar-test".into(),
+            entries: (1..=3)
+                .map(|i| SizeEntry {
+                    label: i,
+                    nominal: 20.0 + 4.0 * i as f64, // 24, 28, 32 mm
+                })
+                .collect(),
+        };
+        tibial_chart.validate().expect("tibial chart valid");
+        talar_chart.validate().expect("talar chart valid");
+
+        let sizing = size_ankle(&tibial_chart, &talar_chart, &ankle_landmarks(0.0)).expect("sizes");
+        // Plafond width 30 → between 26 and 31, t = 0.8 → label 2;
+        // depth 24 falls below the chart and votes label 1 — width wins
+        // by precedence.
+        assert_eq!(sizing.tibial.label, 2);
+        assert!(matches!(
+            sizing.tibial.resolved_by,
+            Resolution::Precedence("plafond_width")
+        ));
+        assert!(sizing.tibial.votes.iter().any(|v| v.below_chart));
+        // Dome width 28 sits exactly on talar entry 2: consensus (a
+        // single vote is unanimous by construction).
+        assert!(sizing.talar.is_unanimous());
+        assert_eq!(sizing.talar.label, 2);
+        assert!((sizing.plafond_width_mm - 30.0).abs() < 1e-12);
+        assert!((sizing.tibiotalar_angle_deg - 0.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn ankle_sizing_is_monotone_in_plafond_width() {
+        let tibial_chart = SizeChart {
+            family: "taa-tibial-test".into(),
+            entries: (1..=5)
+                .map(|i| SizeEntry {
+                    label: i,
+                    nominal: 21.0 + 5.0 * i as f64,
+                })
+                .collect(),
+        };
+        let talar_chart = tibial_chart.clone();
+        let base = ankle_landmarks(0.0);
+        let mut previous = 0;
+        for width in [26.0, 30.0, 34.0, 38.0, 42.0, 46.0] {
+            let half = width / 2.0;
+            let ankle = AnkleLandmarks {
+                plafond_medial: Vec3::new(-half, 0.0, -30.0),
+                plafond_lateral: Vec3::new(half, 0.0, -30.0),
+                ..base
+            };
+            let label = size_ankle(&tibial_chart, &talar_chart, &ankle)
+                .expect("sizes")
+                .tibial
+                .label;
             assert!(label >= previous, "width {width}: {label} after {previous}");
             previous = label;
         }

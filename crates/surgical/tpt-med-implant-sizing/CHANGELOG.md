@@ -12,6 +12,38 @@ changes for consumers of this crate.
 ## [Unreleased]
 
 ### Added
+- **Shoulder stem sizing: `ShoulderLandmarks` + `size_shoulder`** — the
+  humeral landmarks (head centre, anatomical neck, isthmus edges, canal
+  entry, elbow epicondyles) and the measurements they define: endosteal
+  canal width at the isthmus (drives the stem size), head offset
+  (head-centre-to-canal-axis perpendicular distance, the standard
+  geometric definition), and a head-height axial projection (a proxy for
+  the calcar-to-apex head height — documented as a proxy, since the
+  clinical definition references the calcar and the head apex).
+  `ShoulderSizing` reports the precedence-resolved stem decision plus
+  two alignment outputs, neck–shaft angle (normal ≈ 130–140°) and
+  humeral retroversion (the in-plane neck-axis/TEA angle, normal ≈
+  20–30°); the alignment quantities are diagnostics, not sizing inputs.
+  The caller-supplied stem chart feeds the same precedence-resolved
+  multi-measurement machinery as the knee and hip paths; no clinical
+  chart data ships with the crate. Verified: exact measurements on
+  hand-placed landmarks, a neck axis built at 135° to the shaft reading
+  exactly 135°, a 25° in-plane rotation reading exactly 25° retroversion
+  without disturbing any other measurement, precedence resolution on
+  disagreement, and monotone sizing in canal width.
+- **Ankle component sizing: `AnkleLandmarks` + `size_ankle`** — the
+  tibial plafond edges (medial/lateral, anterior/posterior), the talar
+  dome edges and centre, and a proximal tibial axis point. The tibial
+  decision weighs plafond width and depth (width takes precedence), the
+  talar decision maps dome width, and the tibiotalar deviation — the
+  angle between the tibial anatomical axis and the dome line's
+  perpendicular, 0° at neutral — is reported alongside in `AnkleSizing`.
+  Verified: exact measurements on axis-aligned landmarks, a 30° axis
+  tilt constructed on a `sin 30° = 0.5` triangle reading exactly 30°,
+  precedence resolution with the out-of-chart vote recorded, and
+  monotone tibial sizing in plafond width.
+
+### Added
 - `ResectionPlan` / `GapReport` / `check_gap_balance`: the **geometric
   half of soft-tissue assessment** — extension and flexion gaps from
   resection-vs-component-thickness arithmetic, flagged for overstuffed
@@ -57,7 +89,6 @@ changes for consumers of this crate.
   monotone sizing in canal width.
 
 ### Planned
-- Shoulder and ankle sizing beyond the knee and hip anatomies.
 - Automatic landmark detection from a CT, which is the hard part of the
   problem and is not attempted here.
 - Ligament balance assessment proper (tension, stability): the gap-balance

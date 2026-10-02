@@ -48,6 +48,18 @@ throws away the information the surgeon uses to decide whether to upsize.
   femoral-side leg-length proxy feed the same precedence-resolved chart
   machinery as the knee path. Caller-supplied vendor charts.
 
+- **Shoulder stem sizing** — `ShoulderLandmarks` + `size_shoulder`:
+  canal isthmus width, head offset (head-centre-to-canal-axis distance)
+  and a head-height proxy decide the stem; neck–shaft angle and humeral
+  retroversion (against the transepicondylar reference) are reported
+  alongside as alignment outputs. Caller-supplied vendor charts.
+
+- **Ankle component sizing** — `AnkleLandmarks` + `size_ankle`: the
+  tibial decision weighs plafond width and depth (width takes
+  precedence), the talar decision maps dome width, and the tibiotalar
+  alignment deviation (axis vs dome-line perpendicular; 0° is neutral)
+  is reported alongside. Caller-supplied vendor charts.
+
 - **`SizeEntry { label, nominal }`** — one chart row: a manufacturer-specific
   size label and the measurement value it represents (mm).
 - **`SizeChart { family, entries }`** — an implant family, ascending by
@@ -174,6 +186,13 @@ fn main() {
 | `KneeLandmarks::tibial_slope_deg() -> f64` | Posterior tibial slope, clamped to `[0, 30]` |
 | `size_tka(&KneeLandmarks, &SizeChart, &SizeChart) -> Option<TkaSizing>` | Femoral (0.6·TEA + 0.4·AP) and tibial (plateau) sizing plus all measurements and alignment proxies |
 | `TkaSizing` | `femoral_size`, `tibial_size`, `tea_width_mm`, `ap_depth_mm`, `plateau_width_mm`, `femorotibial_angle_deg`, `tibial_slope_deg` |
+| `HipLandmarks` / `size_hip(&HipLandmarks, &SizeChart)` | Femoral-side landmarks; stem sizing from canal width → offset → leg-length proxy, resolved by precedence |
+| `ShoulderLandmarks` / `size_shoulder(&SizeChart, &ShoulderLandmarks) -> Option<ShoulderSizing>` | Humeral stem sizing from canal width → head offset → head height, plus neck–shaft angle and retroversion |
+| `AnkleLandmarks` / `size_ankle(&SizeChart, &SizeChart, &AnkleLandmarks) -> Option<AnkleSizing>` | Tibial (plafond width → depth) and talar (dome width) decisions plus the tibiotalar deviation |
+| `MeasurementInput { name, value_mm, precedence }` | One measurement feeding a multi-measurement decision; lower precedence wins disagreements |
+| `size_from_measurements(&SizeChart, &[MeasurementInput]) -> Option<MultiMeasurementDecision>` | Every measurement votes; disagreement resolves by lowest rank, equal ranks up-size |
+| `MultiMeasurementDecision` / `Resolution` / `MeasurementVote` | The resolved label, how disagreement was resolved, and every vote with out-of-chart flags |
+| `check_gap_balance(&ResectionPlan, tolerance_mm) -> GapReport` | Extension/flexion gaps from resection-vs-thickness arithmetic; overstuffed and imbalance flags |
 | `Vec3` from `tpt-med-geometry` | Landmark positions in patient space (mm) |
 
 ## Verification
@@ -201,6 +220,19 @@ fn main() {
   asserted finite and non-negative.
 - **Blend arithmetic** — the femoral measurement is asserted equal to
   `0.6·TEA + 0.4·AP` for a known landmark set, so the weighting cannot drift.
+- **Hip measurements** — canal width, offset and the leg-length proxy are
+  asserted exact on hand-placed landmarks; sizing resolves by precedence on
+  disagreement and is monotone in canal width.
+- **Shoulder measurements** — canal width, head offset and head height are
+  asserted exact; a neck axis built at 135° to the shaft reads exactly 135°,
+  and rotating its in-plane component 25° off the TEA reads exactly 25° of
+  retroversion without disturbing any other measurement; sizing resolves by
+  precedence and is monotone in canal width.
+- **Ankle measurements** — plafond width/depth and dome width are asserted
+  exact; an axis perpendicular to the dome reads 0° deviation and an axis
+  tilted 30° (constructed on a `sin 30° = 0.5` triangle) reads exactly 30°;
+  the tibial decision resolves width-vs-depth disagreement by precedence with
+  the out-of-chart vote recorded, and sizing is monotone in plafond width.
 
 ## Known Limitations
 
@@ -209,18 +241,22 @@ fn main() {
   part of the problem and is not implemented here.
 - **Charts are supplied by the caller**, and no vendor chart ships with this
   crate. The `family` field is an identifier, not a lookup into bundled data.
-- **Knee only.** Hip, shoulder and ankle sizing are not implemented; the
-  `KneeLandmarks` structure is knee-specific by design.
-- **Alignment proxies are not surgical targets.** `femorotibial_angle_deg` and
-  `tibial_slope_deg` are screening quantities for deformity assessment, not a
+- **Anatomy coverage is measurement-level.** Knee, hip, shoulder and ankle are
+  each landmark-set-specific by design; each sizes the components its
+  landmarks drive (the shoulder bundle sizes the *stem* — head/glenoid
+  selection has its own charts and is not modelled).
+- **Alignment proxies are not surgical targets.** `femorotibial_angle_deg`,
+  `tibial_slope_deg`, neck–shaft angle, retroversion and the tibiotalar
+  deviation are screening quantities for deformity assessment, not a
   mechanical-alignment target. The real constraint — that the reconstructed
   joint line and the flexion gap match — is not checked.
-- **No soft-tissue or ligament balance assessment**, and no check that the
-  selected size leaves acceptable gap balancing. Sizing is necessary for a
-  good plan and not sufficient.
-- **Single measurement per chart.** A real femoral decision considers TEA, AP
-  depth and posterior condylar offset jointly, and vendor instructions vary on
-  which takes precedence.
+- **Ligament balance is only the geometric half.** `check_gap_balance` runs
+  the resection-vs-thickness arithmetic; actual ligament tension and stability
+  need soft-tissue structures this crate does not model.
+- **Proxies are documented as proxies.** The femoral leg-length measurement
+  references a pelvis landmark; the head height references calcar and apex.
+  The crate's versions are the same *kind* of measurement from the landmarks
+  it actually has, and say so at the API surface.
 
 ## Related Crates
 
