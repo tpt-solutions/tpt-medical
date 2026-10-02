@@ -463,6 +463,147 @@ pub fn simulate_tapered_deployment(
     }
 }
 
+/// Outcome of a **coupled** deployment sweep: the stent and the vessel/
+/// flow side iterated to a fixed point instead of deploying against one
+/// prescribed vessel law.
+#[derive(Debug, Clone)]
+pub struct CoupledDeployment {
+    /// The deployment equilibria at the converged lumen profile.
+    pub deployment: TaperedDeployment,
+    /// The converged vessel lumen (mm) per ring group — the profile the
+    /// vessel/flow side settled on, and the profile `deployment` was
+    /// evaluated at.
+    pub vessel_lumen: Vec<f64>,
+    /// Coupling iterations taken (1 = the first sweep).
+    pub iterations: usize,
+    /// The largest per-group change in vessel lumen (mm) over the final
+    /// sweep.
+    pub residual: f64,
+    /// True when `residual <= tolerance_mm` within `max_iterations`.
+    pub converged: bool,
+}
+
+/// Level-2 radial equilibrium **coupled to a vessel/flow response** —
+/// the fixed-point loop that replaces a prescribed vessel law: each sweep
+/// (1) deploys the ring groups against the current lumen profile,
+/// (2) hands the whole [`TaperedDeployment`] (per-group equilibrium
+/// diameters *and* radial forces) to `vessel_response`, the caller's
+/// coupling callback, and (3) under-relaxes the lumen profile toward the
+/// vessel's equilibrium response until the profile stops moving.
+///
+/// The callback is where a flow solve plugs in: evaluate your flow
+/// solution (e.g. a `tpt-med-hemodynamics` run over the current stented
+/// lumen) together with the vessel's own compliance under the reported
+/// radial forces, and return the vessel's equilibrium lumen per group.
+/// This crate deliberately defines only the loop and the contract — the
+/// `devices` layer stays dependency-free of the fluid crates, so the
+/// flow solve runs inside the caller's closure and the coupling stays
+/// honest at the boundary rather than hidden behind a new cross-layer
+/// edge. A **rigid** vessel (response ignores its input) converges in
+/// one sweep and reproduces [`simulate_tapered_deployment`] exactly;
+/// the canonical compliant case — a wall whose equilibrium lumen is
+/// `D₀ + F/k_w` under the group's radial force `F` — has the closed-form
+/// fixed point `(D₀ + K·D_nom/k_w)/(1 + K/k_w)` per group, which the
+/// tests verify.
+///
+/// `relaxation` is the under-relaxation factor `ω ∈ (0, 1]`: 1 takes each
+/// full response (direct fixed-point, fine for stiff stents in soft
+/// vessels), smaller values damp two-way coupling that would otherwise
+/// oscillate. The converged fixed point is independent of `ω`; only the
+/// path is damped. Non-convergence is **reported, not hidden**:
+/// `converged = false` with the final residual.
+///
+/// # Errors
+///
+/// Returns `None` if `vessel_response` returns a lumen vector of the
+/// wrong length, or containing non-finite or non-positive values.
+/// Iteration-parameter validity (pairing of the group slices, `ω ∈
+/// (0, 1]`, positive tolerance, at least one iteration) is asserted, as
+/// with the rest of the crate's caller contracts.
+#[allow(clippy::too_many_arguments)]
+pub fn simulate_coupled_deployment<V>(
+    stent: &StentModel,
+    nitinol: &NitinolParams,
+    group_nominal: &[f64],
+    group_stiffness: &[f64],
+    initial_lumen: &[f64],
+    relaxation: f64,
+    tolerance_mm: f64,
+    max_iterations: usize,
+    mut vessel_response: V,
+) -> Option<CoupledDeployment>
+where
+    V: FnMut(&TaperedDeployment) -> Vec<f64>,
+{
+    assert_eq!(
+        group_nominal.len(),
+        group_stiffness.len(),
+        "group nominal-diameter and stiffness counts must pair"
+    );
+    assert_eq!(
+        group_nominal.len(),
+        initial_lumen.len(),
+        "group nominal-diameter and initial-lumen counts must pair"
+    );
+    assert!(
+        !group_nominal.is_empty(),
+        "at least one ring group is required"
+    );
+    assert!(
+        relaxation.is_finite() && relaxation > 0.0 && relaxation <= 1.0,
+        "relaxation must be in (0, 1], got {relaxation}"
+    );
+    assert!(
+        tolerance_mm.is_finite() && tolerance_mm > 0.0,
+        "tolerance must be positive and finite, got {tolerance_mm}"
+    );
+    assert!(max_iterations >= 1, "at least one iteration is required");
+    assert!(
+        initial_lumen.iter().all(|&l| l.is_finite() && l > 0.0),
+        "initial lumen must be positive and finite"
+    );
+
+    let mut lumen = initial_lumen.to_vec();
+    let mut deployment =
+        simulate_tapered_deployment(stent, nitinol, group_nominal, group_stiffness, &lumen);
+    let mut residual = f64::INFINITY;
+    for iteration in 1..=max_iterations {
+        let vessel = vessel_response(&deployment);
+        if vessel.len() != lumen.len() || vessel.iter().any(|&l| !l.is_finite() || l <= 0.0) {
+            return None;
+        }
+        let next: Vec<f64> = lumen
+            .iter()
+            .zip(&vessel)
+            .map(|(&l, &v)| l + relaxation * (v - l))
+            .collect();
+        residual = next
+            .iter()
+            .zip(&lumen)
+            .map(|(&n, &l)| (n - l).abs())
+            .fold(0.0f64, f64::max);
+        lumen = next;
+        deployment =
+            simulate_tapered_deployment(stent, nitinol, group_nominal, group_stiffness, &lumen);
+        if residual <= tolerance_mm {
+            return Some(CoupledDeployment {
+                deployment,
+                vessel_lumen: lumen,
+                iterations: iteration,
+                residual,
+                converged: true,
+            });
+        }
+    }
+    Some(CoupledDeployment {
+        deployment,
+        vessel_lumen: lumen,
+        iterations: max_iterations,
+        residual,
+        converged: false,
+    })
+}
+
 /// Screening strain-life law for superelastic Nitinol: the alternating
 /// strain amplitude the material tolerates **degrades logarithmically with
 /// cycle count** (the published Nitinol fatigue band drops roughly a factor
@@ -808,5 +949,224 @@ mod tests {
         // No cycles yet: infinite capacity.
         assert_eq!(law.amplitude_at(0.0), f64::INFINITY);
         assert!(law.survives(0.0, 0.05));
+    }
+
+    fn coupled_fixture() -> (StentModel, NitinolParams) {
+        let stent = StentModel {
+            expanded_diameter: 4.0,
+            crimped_diameter: 1.5,
+            n_crowns: 4,
+            crown_stiffness: 0.05,
+        };
+        (stent, NitinolParams::default())
+    }
+
+    #[test]
+    fn a_rigid_vessel_converges_in_one_sweep_to_the_prescribed_law() {
+        let (stent, nitinol) = coupled_fixture();
+        let initial = [3.0];
+        // A rigid vessel: the response ignores the deployment entirely.
+        let coupled = simulate_coupled_deployment(
+            &stent,
+            &nitinol,
+            &[4.0],
+            &[0.05],
+            &initial,
+            1.0,
+            1e-10,
+            25,
+            |_| vec![3.0],
+        )
+        .expect("valid response");
+        assert!(coupled.converged);
+        assert_eq!(coupled.iterations, 1);
+        assert!(coupled.residual <= 1e-10);
+        // Exactly the prescribed-law deployment at that lumen.
+        let prescribed = simulate_tapered_deployment(&stent, &nitinol, &[4.0], &[0.05], &initial);
+        assert_eq!(
+            coupled.deployment.groups[0].diameter,
+            prescribed.groups[0].diameter
+        );
+        assert_eq!(
+            coupled.deployment.groups[0].radial_force,
+            prescribed.groups[0].radial_force
+        );
+    }
+
+    #[test]
+    fn a_compliant_vessel_reaches_the_analytic_fixed_point() {
+        // Elastic wall: equilibrium lumen D0 + F/k_w under the group's
+        // radial force F. Closed-form fixed point per group:
+        // (D0 + (K/k_w)·D_nom) / (1 + K/k_w), K = n_crowns·k_crown = 0.2.
+        let (stent, nitinol) = coupled_fixture();
+        let k_over_kw = 4.0 * 0.05;
+        let d0 = 3.0;
+        let expected = (d0 + k_over_kw * 4.0) / (1.0 + k_over_kw);
+        let coupled = simulate_coupled_deployment(
+            &stent,
+            &nitinol,
+            &[4.0],
+            &[0.05],
+            &[d0],
+            1.0,
+            1e-12,
+            200,
+            |dep| vec![d0 + dep.groups[0].radial_force],
+        )
+        .expect("valid response");
+        assert!(coupled.converged);
+        assert!(
+            (coupled.vessel_lumen[0] - expected).abs() < 1e-9,
+            "lumen {} vs analytic {}",
+            coupled.vessel_lumen[0],
+            expected
+        );
+        // The deployment is consistent with the converged lumen.
+        let check =
+            simulate_tapered_deployment(&stent, &nitinol, &[4.0], &[0.05], &coupled.vessel_lumen);
+        assert_eq!(
+            coupled.deployment.groups[0].diameter,
+            check.groups[0].diameter
+        );
+        // The stent held the vessel open above its unloaded diameter.
+        assert!(coupled.vessel_lumen[0] > d0);
+
+        // Under-relaxation damps the path, not the fixed point.
+        let damped = simulate_coupled_deployment(
+            &stent,
+            &nitinol,
+            &[4.0],
+            &[0.05],
+            &[d0],
+            0.3,
+            1e-13,
+            2000,
+            |dep| vec![d0 + dep.groups[0].radial_force],
+        )
+        .expect("valid response");
+        assert!(damped.converged);
+        assert!(
+            (damped.vessel_lumen[0] - expected).abs() < 1e-9,
+            "relaxation must not move the fixed point: {} vs {}",
+            damped.vessel_lumen[0],
+            expected
+        );
+    }
+
+    #[test]
+    fn a_two_group_lesion_relieves_with_real_dogboning() {
+        let (stent, nitinol) = coupled_fixture();
+        let d0 = [3.5, 2.8];
+        let coupled = simulate_coupled_deployment(
+            &stent,
+            &nitinol,
+            &[4.0, 4.0],
+            &[0.05, 0.05],
+            &d0,
+            1.0,
+            1e-12,
+            200,
+            |dep| {
+                dep.groups
+                    .iter()
+                    .zip(d0)
+                    .map(|(g, d0j)| d0j + g.radial_force)
+                    .collect()
+            },
+        )
+        .expect("valid response");
+        assert!(coupled.converged);
+        let k_over_kw = 4.0 * 0.05;
+        for (j, &d0j) in d0.iter().enumerate() {
+            let expected = (d0j + k_over_kw * 4.0) / (1.0 + k_over_kw);
+            assert!(
+                (coupled.vessel_lumen[j] - expected).abs() < 1e-9,
+                "group {j}: {} vs {}",
+                coupled.vessel_lumen[j],
+                expected
+            );
+        }
+        // The stenosis was relieved: the mid group ended above its
+        // unloaded 2.8 mm.
+        assert!(coupled.vessel_lumen[1] > 2.8);
+        // And dogboning is real: the wider end group vs the mid group.
+        assert!(coupled.deployment.dogboning > 0.1);
+    }
+
+    #[test]
+    fn oscillating_coupling_is_reported_not_hidden() {
+        let (stent, nitinol) = coupled_fixture();
+        let mut flip = false;
+        let coupled = simulate_coupled_deployment(
+            &stent,
+            &nitinol,
+            &[4.0],
+            &[0.05],
+            &[3.0],
+            1.0,
+            1e-6,
+            7,
+            move |_| {
+                flip = !flip;
+                vec![if flip { 3.5 } else { 2.5 }]
+            },
+        )
+        .expect("valid response");
+        assert!(
+            !coupled.converged,
+            "an oscillating law must not claim convergence"
+        );
+        assert_eq!(coupled.iterations, 7);
+        assert!(coupled.residual > 1e-6, "residual {}", coupled.residual);
+    }
+
+    #[test]
+    fn a_floating_stent_carries_no_force_and_still_converges() {
+        let (stent, nitinol) = coupled_fixture();
+        let coupled = simulate_coupled_deployment(
+            &stent,
+            &nitinol,
+            &[4.0],
+            &[0.05],
+            &[3.0],
+            1.0,
+            1e-10,
+            25,
+            |_| vec![5.0], // vessel far above the free diameter
+        )
+        .expect("valid response");
+        assert!(coupled.converged);
+        assert_eq!(coupled.vessel_lumen[0], 5.0);
+        assert_eq!(coupled.deployment.groups[0].radial_force, 0.0);
+        assert_eq!(coupled.deployment.groups[0].diameter, 4.0);
+    }
+
+    #[test]
+    fn a_broken_vessel_response_is_rejected() {
+        let (stent, nitinol) = coupled_fixture();
+        let wrong_length = simulate_coupled_deployment(
+            &stent,
+            &nitinol,
+            &[4.0],
+            &[0.05],
+            &[3.0],
+            1.0,
+            1e-6,
+            5,
+            |_| vec![3.0, 3.0],
+        );
+        assert!(wrong_length.is_none());
+        let negative = simulate_coupled_deployment(
+            &stent,
+            &nitinol,
+            &[4.0],
+            &[0.05],
+            &[3.0],
+            1.0,
+            1e-6,
+            5,
+            |_| vec![-1.0],
+        );
+        assert!(negative.is_none());
     }
 }

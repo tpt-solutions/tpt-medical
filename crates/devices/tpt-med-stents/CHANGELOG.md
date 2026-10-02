@@ -12,6 +12,24 @@ changes for consumers of this crate.
 ## [Unreleased]
 
 ### Added
+- **`simulate_coupled_deployment` — the vessel/flow coupling loop**, the
+  prescription-free counterpart to the prescribed vessel law: each sweep
+  deploys the ring groups against the current lumen profile, hands the
+  whole `TaperedDeployment` (per-group equilibrium diameters *and* radial
+  forces) to a caller coupling callback — where a flow solve over the
+  current stented lumen plugs in — and under-relaxes the lumen profile
+  toward the vessel's equilibrium response until it stops moving. The
+  contract is deliberately a callback: the `devices` layer stays
+  dependency-free of the fluid crates, so the hemodynamics solve runs
+  inside the caller's closure and the coupling is honest at the boundary
+  instead of hidden behind a new cross-layer edge. Under-relaxation
+  damps the path, never the fixed point (asserted against the compliant
+  wall's closed-form equilibrium `(D0 + (K/k_w)·D_nom)/(1 + K/k_w)` per
+  group); a rigid vessel converges in one sweep and reproduces
+  `simulate_tapered_deployment` exactly; a two-group lesion with a
+  compliant wall relieves the stenosis and produces real dogboning;
+  non-convergence is reported (`converged = false`, final residual), and
+  a wrong-length or non-positive response is rejected.
 - Crate README naming the fidelity ladder from RFC 0004 — Level 1 ring model
   (shipped) → tapered ring groups → 3D superelastic FEM with frictional contact
   on `tpt-fem` — and stating that the default parameters are literature-typical
@@ -56,8 +74,10 @@ changes for consumers of this crate.
 ### Planned
 - **Level 3** — 3D superelastic FEM with frictional contact via
   `tpt-fem-hyperelastic` / `tpt-fem-contact`.
-- Direct coupling to a `tpt-med-hemodynamics` solution in the same solve,
-  rather than a prescribed vessel law.
+- A first-class `tpt-med-hemodynamics` adapter (the coupling contract and
+  fixed-point loop are shipped in `simulate_coupled_deployment`; the
+  adapter lands with a real workflow that wants the wire-up done once,
+  since the devices layer deliberately carries no fluid dependency).
 
 ### Notes
 - `simulate_deployment` takes the vessel pressure–diameter law as a caller

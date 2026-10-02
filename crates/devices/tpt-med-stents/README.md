@@ -71,6 +71,13 @@ vendor data**.
   resolves the stent into axial groups, each at its own equilibrium
   against a caller-supplied axial lumen profile, so a stiff mid-lesion
   gives `dogboning` a real value.
+- **Coupled deployment** — `simulate_coupled_deployment` iterates the
+  tapered deployment against a caller coupling callback (the vessel/flow
+  response to the current stented profile) to a fixed point, replacing a
+  prescribed vessel law. Under-relaxed; convergence measured on the lumen
+  profile and reported honestly (`converged`, `residual`, `iterations`);
+  the flow solve plugs in at the caller, keeping the devices layer free
+  of fluid dependencies.
 - **Strain-life screening** — `StrainLifeLaw::nitinol_screening()` degrades
   the tolerated alternating strain amplitude logarithmically with cycle
   count (0.4 % at 10⁷, factor-of-two per four decades) and answers
