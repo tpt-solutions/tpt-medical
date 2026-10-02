@@ -12,6 +12,28 @@ changes for consumers of this crate.
 ## [Unreleased]
 
 ### Added
+- **`MeshCut` — freeform (anatomically contoured) resections**, completing
+  the curved/freeform item: the cut surface is a caller-supplied closed
+  triangle mesh (the patient-matched contour no plane, wedge or cylinder
+  expresses), kept on the interior or the exterior with the same kerf,
+  `rfcs/0011` retention, measurement and audit conventions as the other
+  cuts, and a `PlanStep::Mesh`/`VirtualSurgery::mesh` path validated at
+  build time (`PlanError::InvalidMesh`). Side determination: unsigned
+  closest-triangle distance signed by +x ray parity — which is only
+  meaningful for a watertight, consistently wound surface, so
+  `MeshCut::validate` enforces closure (every undirected edge shared by
+  exactly two triangles), winding (each directed edge once — a flipped
+  triangle is caught before it can silently invert a region),
+  non-degeneracy and non-emptiness. Verified: a box contour keeps exactly
+  its interior voxels and, on a fine grid, reproduces the analytic box
+  volume and the kerf-shrunk volume exactly; exterior+retention conserves
+  the voxel count; an 80-face icosphere's voxelised interior matches the
+  mesh's own exact signed-tetrahedron volume within 5 % (the ideal
+  sphere's volume is deliberately *not* the reference — the polyhedron
+  sits apothem-deep below it); closest-point-on-triangle is hand-checked
+  in its vertex/edge/face regions; and the alignment limit (a mesh edge
+  threading voxel-centre rows) is documented and kept out of the test
+  geometry.
 - **`CylindricalCut` (+ `PlanStep::Cylinder`, `VirtualSurgery::cylinder`):
   the first curved resection surface.** The cylinder of `radius` about an
   axis (`axis_origin` + `axis_direction`) — the shape a reamer or burr
@@ -77,8 +99,8 @@ changes for consumers of this crate.
   grid-aligned and a sub-voxel translation, multi-cut totals).
 
 ### Planned
-- Freeform (anatomically contoured) resections — the cylindrical surface is
-  delivered; general implicit/spline-contoured surfaces remain.
+- Implicit/spline-contoured surfaces (expressible today by tessellating
+  into `MeshCut`; no native implicit cut).
 - Implant component placement with a bone–implant interface, and bone graft or
   defect reconstruction.
 - Soft-tissue structures, so a plan can be checked for collateral damage to

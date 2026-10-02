@@ -449,6 +449,347 @@ fn compact_retained(retained: VoxelModel) -> Option<VoxelModel> {
     (r.values.iter().any(|v| !v.is_nan())).then_some(r)
 }
 
+/// A **freeform (anatomically contoured) resection**: the cut surface is a
+/// caller-supplied **closed triangle mesh** — the patient-matched
+/// implant/back-of-the-condyle surface a planer or a patient-specific
+/// jig actually follows, which no plane, wedge or cylinder can express.
+/// The kept region is the mesh's interior (`keep_inside`) or its
+/// exterior, with the same optional saw-kerf and `rfcs/0011`
+/// discarded-side conventions as the plane and cylindrical cuts.
+///
+/// Side determination is the standard signed-distance construction: the
+/// unsigned distance to the closest triangle, signed by a +x ray-parity
+/// inside test — which is only meaningful for a **watertight** mesh, so
+/// [`Self::validate`] checks closure (every undirected edge shared by
+/// exactly two triangles) and consistent winding (each directed edge
+/// exactly once) and is called at plan-append time. Rays are cast along
+/// the grid's x axis; a mesh whose edges deliberately thread every voxel
+/// centre row is outside this model's scope.
+#[derive(Debug, Clone)]
+pub struct MeshCut {
+    /// The contour surface as a triangle soup (three vertices per
+    /// triangle, patient coordinates). Must be closed with consistent
+    /// winding — [`Self::validate`] enforces both.
+    pub triangles: Vec<[Vec3; 3]>,
+    /// Fragment name produced from the kept side (audit label).
+    pub fragment_name: String,
+    /// Keep the mesh's interior (the contoured region itself — e.g. a
+    /// graft block shaped to a defect); `false` keeps the exterior and
+    /// resects the interior (a contoured resection cap).
+    pub keep_inside: bool,
+    /// Saw-kerf width (mm): material within `kerf_width / 2` of the
+    /// surface on either side is discarded. 0.0 is a pure contoured cut.
+    pub kerf_width: f64,
+    /// The discarded side's fate, as for [`OsteotomyCut`].
+    pub discarded: DiscardedSide,
+}
+
+/// Mesh-contour rejection, with the offending edge when one is at fault.
+#[derive(Debug, Clone, PartialEq)]
+pub enum MeshCutError {
+    /// No triangles.
+    Empty,
+    /// A triangle with zero area (repeated or collinear vertices).
+    DegenerateTriangle {
+        /// The triangle's index.
+        index: usize,
+    },
+    /// The mesh is not watertight: some undirected edge is shared by a
+    /// number of triangles other than two.
+    OpenSurface {
+        /// The offending edge's two endpoints.
+        edge: (Vec3, Vec3),
+    },
+    /// The mesh is closed but its winding is inconsistent: some directed
+    /// edge appears more than once (a flipped triangle).
+    InconsistentWinding {
+        /// The offending edge's two endpoints.
+        edge: (Vec3, Vec3),
+    },
+}
+
+impl core::fmt::Display for MeshCutError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        let fmt_edge = |e: &(Vec3, Vec3)| {
+            format!(
+                "({:.3},{:.3},{:.3})-({:.3},{:.3},{:.3})",
+                e.0.x, e.0.y, e.0.z, e.1.x, e.1.y, e.1.z
+            )
+        };
+        match self {
+            MeshCutError::Empty => write!(f, "contour mesh has no triangles"),
+            MeshCutError::DegenerateTriangle { index } => {
+                write!(f, "contour mesh triangle {index} is degenerate")
+            }
+            MeshCutError::OpenSurface { edge } => {
+                write!(
+                    f,
+                    "contour mesh is not watertight at edge {}",
+                    fmt_edge(edge)
+                )
+            }
+            MeshCutError::InconsistentWinding { edge } => write!(
+                f,
+                "contour mesh winding is inconsistent at edge {}",
+                fmt_edge(edge)
+            ),
+        }
+    }
+}
+
+impl std::error::Error for MeshCutError {}
+
+/// Quantizes a vertex to the edge-identity key (1 µm grid): vertices
+/// closer than this are the same corner of the surface.
+fn vertex_key(p: Vec3) -> [i64; 3] {
+    const SCALE: f64 = 1.0e6;
+    [
+        (p.x * SCALE).round() as i64,
+        (p.y * SCALE).round() as i64,
+        (p.z * SCALE).round() as i64,
+    ]
+}
+
+/// Squared distance from a point to a triangle (vertex/edge/face regions,
+/// the standard closest-point-on-triangle decomposition).
+fn point_triangle_distance2(p: Vec3, a: Vec3, b: Vec3, c: Vec3) -> f64 {
+    let ab = b - a;
+    let ac = c - a;
+    let ap = p - a;
+    let d1 = ab.dot(ap);
+    let d2 = ac.dot(ap);
+    if d1 <= 0.0 && d2 <= 0.0 {
+        return ap.norm_squared();
+    }
+    let bp = p - b;
+    let d3 = ab.dot(bp);
+    let d4 = ac.dot(bp);
+    if d3 >= 0.0 && d4 <= d3 {
+        return bp.norm_squared();
+    }
+    let vc = d1 * d4 - d3 * d2;
+    if vc <= 0.0 && d1 >= 0.0 && d3 <= 0.0 {
+        let t = d1 / (d1 - d3);
+        let q = a + ab * t;
+        return (p - q).norm_squared();
+    }
+    let cp = p - c;
+    let d5 = ab.dot(cp);
+    let d6 = ac.dot(cp);
+    if d6 >= 0.0 && d5 <= d6 {
+        return cp.norm_squared();
+    }
+    let vb = d5 * d2 - d1 * d6;
+    if vb <= 0.0 && d2 >= 0.0 && d6 <= 0.0 {
+        let t = d2 / (d2 - d6);
+        let q = a + ac * t;
+        return (p - q).norm_squared();
+    }
+    let va = d3 * d6 - d5 * d4;
+    if va <= 0.0 && (d4 - d3) >= 0.0 && (d5 - d6) >= 0.0 {
+        let t = (d4 - d3) / ((d4 - d3) + (d5 - d6));
+        let q = b + (c - b) * t;
+        return (p - q).norm_squared();
+    }
+    let denom = 1.0 / (va + vb + vc);
+    let v = vb * denom;
+    let w = vc * denom;
+    let q = a + ab * v + ac * w;
+    (p - q).norm_squared()
+}
+
+/// Signed distance from `p` to the closed triangle mesh: the unsigned
+/// distance to the closest triangle, negative inside by +x ray parity.
+fn mesh_signed_distance(p: Vec3, triangles: &[[Vec3; 3]]) -> f64 {
+    let mut best2 = f64::INFINITY;
+    for t in triangles {
+        best2 = best2.min(point_triangle_distance2(p, t[0], t[1], t[2]));
+    }
+    // Ray parity along +x (Möller–Trumbore).
+    let dir = Vec3::X;
+    let mut crossings = 0usize;
+    for t in triangles {
+        let e1 = t[1] - t[0];
+        let e2 = t[2] - t[0];
+        let h = dir.cross(e2);
+        let a = e1.dot(h);
+        if a.abs() < 1e-12 {
+            continue;
+        }
+        let f = 1.0 / a;
+        let s = p - t[0];
+        let u = f * s.dot(h);
+        if !(-1e-9..=1.0 + 1e-9).contains(&u) {
+            continue;
+        }
+        let q = s.cross(e1);
+        let v = f * dir.dot(q);
+        if v < -1e-9 || u + v > 1.0 + 1e-9 {
+            continue;
+        }
+        let t_hit = f * e2.dot(q);
+        if t_hit > 1e-9 {
+            crossings += 1;
+        }
+    }
+    let inside = crossings % 2 == 1;
+    let unsigned = best2.sqrt();
+    if inside {
+        -unsigned
+    } else {
+        unsigned
+    }
+}
+
+impl MeshCut {
+    /// Checks the contour mesh's structural contract: non-empty,
+    /// non-degenerate triangles, watertight (every undirected edge shared
+    /// by exactly two triangles) and consistently wound (every directed
+    /// edge exactly once — a flipped triangle is caught here, before a
+    /// parity test could silently invert a region).
+    pub fn validate(&self) -> Result<(), MeshCutError> {
+        if self.triangles.is_empty() {
+            return Err(MeshCutError::Empty);
+        }
+        // (undirected key) -> (count, directed: a->b count, b->a count)
+        let mut edges: std::collections::BTreeMap<[i64; 6], (usize, usize, usize)> =
+            std::collections::BTreeMap::new();
+        for (i, t) in self.triangles.iter().enumerate() {
+            let n = (t[1] - t[0]).cross(t[2] - t[0]);
+            if !n.norm_squared().is_finite() || n.norm_squared() <= 1e-20 {
+                return Err(MeshCutError::DegenerateTriangle { index: i });
+            }
+            let vs = [vertex_key(t[0]), vertex_key(t[1]), vertex_key(t[2])];
+            for k in 0..3 {
+                let (a, b) = (vs[k], vs[(k + 1) % 3]);
+                let (mut lo, mut hi) = (a, b);
+                if hi < lo {
+                    std::mem::swap(&mut lo, &mut hi);
+                }
+                let key = [lo[0], lo[1], lo[2], hi[0], hi[1], hi[2]];
+                let e = edges.entry(key).or_insert((0, 0, 0));
+                e.0 += 1;
+                if b > a {
+                    e.1 += 1;
+                } else {
+                    e.2 += 1;
+                }
+            }
+        }
+        for (key, (count, forward, backward)) in edges {
+            if count != 2 {
+                let a = Vec3::new(
+                    key[0] as f64 * 1e-6,
+                    key[1] as f64 * 1e-6,
+                    key[2] as f64 * 1e-6,
+                );
+                let b = Vec3::new(
+                    key[3] as f64 * 1e-6,
+                    key[4] as f64 * 1e-6,
+                    key[5] as f64 * 1e-6,
+                );
+                return Err(MeshCutError::OpenSurface { edge: (a, b) });
+            }
+            if forward != 1 || backward != 1 {
+                let a = Vec3::new(
+                    key[0] as f64 * 1e-6,
+                    key[1] as f64 * 1e-6,
+                    key[2] as f64 * 1e-6,
+                );
+                let b = Vec3::new(
+                    key[3] as f64 * 1e-6,
+                    key[4] as f64 * 1e-6,
+                    key[5] as f64 * 1e-6,
+                );
+                return Err(MeshCutError::InconsistentWinding { edge: (a, b) });
+            }
+        }
+        Ok(())
+    }
+
+    /// Applies the cut; returns the kept fragment. Panics on a mesh that
+    /// fails [`Self::validate`] — `VirtualSurgery::mesh` validates at
+    /// plan-append time, and a direct caller should too.
+    pub fn apply(&self, model: &VoxelModel) -> VoxelModel {
+        self.apply_measured(model).0
+    }
+
+    /// [`Self::apply`] plus the step's measurements, with the same
+    /// conventions as [`OsteotomyCut::apply_measured`]: the resection
+    /// volume counts discarded non-empty voxels, and the cut depth is the
+    /// deepest discarded voxel centre past the kept face — the contour
+    /// surface shifted by half the kerf.
+    pub fn apply_measured(
+        &self,
+        model: &VoxelModel,
+    ) -> (VoxelModel, Option<VoxelModel>, CutMeasurement) {
+        if let Err(e) = self.validate() {
+            panic!("mesh cut: {e}");
+        }
+        let mut out = model.clone();
+        let (nx, ny, nz) = model.dims;
+        let voxel_volume = model.spacing.0 * model.spacing.1 * model.spacing.2;
+        let retaining = matches!(self.discarded, DiscardedSide::RetainAs { .. });
+        let mut retained = if retaining { Some(model.clone()) } else { None };
+        let mut min = [usize::MAX; 3];
+        let mut max = [0usize; 3];
+        let mut resected = 0usize;
+        let mut max_depth = 0.0f64;
+        let half_kerf = self.kerf_width * 0.5;
+        for z in 0..nz {
+            for y in 0..ny {
+                for x in 0..nx {
+                    let Some(idx) = model.index(x, y, z) else {
+                        continue;
+                    };
+                    if model.values[idx].is_nan() {
+                        continue;
+                    }
+                    let d = mesh_signed_distance(model.center(x, y, z), &self.triangles);
+                    let keep = if self.keep_inside {
+                        d <= -half_kerf
+                    } else {
+                        d >= half_kerf
+                    };
+                    if keep {
+                        min[0] = min[0].min(x);
+                        min[1] = min[1].min(y);
+                        min[2] = min[2].min(z);
+                        max[0] = max[0].max(x);
+                        max[1] = max[1].max(y);
+                        max[2] = max[2].max(z);
+                        if let Some(r) = &mut retained {
+                            r.values[idx] = f64::NAN;
+                        }
+                    } else {
+                        out.values[idx] = f64::NAN;
+                        if !retaining {
+                            resected += 1;
+                        }
+                        let depth = if self.keep_inside {
+                            -half_kerf - d
+                        } else {
+                            d - half_kerf
+                        };
+                        max_depth = max_depth.max(depth);
+                    }
+                }
+            }
+        }
+        let measurement = CutMeasurement {
+            fragment_name: self.fragment_name.clone(),
+            resection_volume_mm3: resected as f64 * voxel_volume,
+            max_depth_mm: max_depth,
+        };
+        if max[0] == 0 {
+            return (out, None, measurement); // empty cut result; leave as-is
+        }
+        compact(&mut out, min, max);
+        let retained_model = retained.and_then(compact_retained);
+        (out, retained_model, measurement)
+    }
+}
+
 /// A rigid fragment transform: rotation (axis-angle) about a pivot plus
 /// translation (both in patient coordinates, mm / radians).
 #[derive(Debug, Clone)]
@@ -583,6 +924,9 @@ pub enum PlanStep {
     Wedge(WedgeCut),
     /// Curved (cylindrical) resection.
     Cylinder(CylindricalCut),
+    /// Freeform (anatomically contoured) resection against a closed
+    /// triangle mesh.
+    Mesh(MeshCut),
     /// Rigid reposition of **every** fragment (the original semantics).
     Move(FragmentTransform),
     /// Rigid reposition of one **named** fragment
@@ -625,6 +969,12 @@ pub enum PlanError {
     },
     /// A [`DiscardedSide::RetainAs`] carried an empty name.
     EmptyRetainedName,
+    /// A [`MeshCut`]'s contour mesh failed its structural check (open
+    /// surface, inconsistent winding, degenerate or missing triangles).
+    InvalidMesh {
+        /// What the mesh check found.
+        reason: String,
+    },
 }
 
 impl core::fmt::Display for PlanError {
@@ -643,6 +993,9 @@ impl core::fmt::Display for PlanError {
             ),
             PlanError::EmptyRetainedName => {
                 write!(f, "retained side must carry a non-empty fragment name")
+            }
+            PlanError::InvalidMesh { reason } => {
+                write!(f, "contour-mesh cut rejected: {reason}")
             }
         }
     }
@@ -799,6 +1152,43 @@ impl VirtualSurgery {
         Ok(self)
     }
 
+    /// Appends a freeform (anatomically contoured) resection step against
+    /// a closed triangle mesh.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::cut`] (including retention via
+    /// [`DiscardedSide::RetainAs`]), plus
+    /// [`PlanError::InvalidMesh`] when the contour mesh fails
+    /// [`MeshCut::validate`].
+    pub fn mesh(&mut self, cut: MeshCut) -> Result<&mut Self, PlanError> {
+        self.validate_cut()?;
+        if let Err(e) = cut.validate() {
+            return Err(PlanError::InvalidMesh {
+                reason: e.to_string(),
+            });
+        }
+        if let DiscardedSide::RetainAs { name } = &cut.discarded {
+            if name.trim().is_empty() {
+                return Err(PlanError::EmptyRetainedName);
+            }
+        }
+        let retained = matches!(cut.discarded, DiscardedSide::RetainAs { .. });
+        self.fragment_log
+            .push(format!("mesh:{}", cut.fragment_name));
+        self.steps.push(PlanStep::Mesh(cut));
+        self.fragment_names = vec![self.latest_kept_name().to_string()];
+        if retained {
+            if let Some(PlanStep::Mesh(c)) = self.steps.last() {
+                if let DiscardedSide::RetainAs { name } = &c.discarded {
+                    self.fragment_names.push(name.clone());
+                }
+            }
+        }
+        self.fragment_count = self.fragment_names.len();
+        Ok(self)
+    }
+
     /// Appends a whole-model fragment transform — every fragment moves
     /// together, preserving their relative positions (the original
     /// semantics; existing plans are unaffected).
@@ -867,6 +1257,7 @@ impl VirtualSurgery {
                 PlanStep::Cut(c) => return &c.fragment_name,
                 PlanStep::Wedge(w) => return &w.fragment_name,
                 PlanStep::Cylinder(c) => return &c.fragment_name,
+                PlanStep::Mesh(m) => return &m.fragment_name,
                 _ => continue,
             }
         }
@@ -937,6 +1328,25 @@ impl VirtualSurgery {
                     let (kept, retained, m) = cut.apply_measured(current);
                     total_resection += m.resection_volume_mm3;
                     log.push(format!("cylinder:{}", cut.fragment_name));
+                    measurements.push(StepMeasurement::Cut(m));
+                    fragments[0] = NamedFragment {
+                        name: Some(cut.fragment_name.clone()),
+                        model: kept,
+                    };
+                    if let (Some(r), DiscardedSide::RetainAs { name }) = (retained, &cut.discarded)
+                    {
+                        fragments.push(NamedFragment {
+                            name: Some(name.clone()),
+                            model: r,
+                        });
+                    }
+                }
+                PlanStep::Mesh(cut) => {
+                    // Validated at build: exactly one fragment, valid mesh.
+                    let current = &fragments[0].model;
+                    let (kept, retained, m) = cut.apply_measured(current);
+                    total_resection += m.resection_volume_mm3;
+                    log.push(format!("mesh:{}", cut.fragment_name));
                     measurements.push(StepMeasurement::Cut(m));
                     fragments[0] = NamedFragment {
                         name: Some(cut.fragment_name.clone()),
@@ -1813,5 +2223,387 @@ mod tests {
         assert!(report.step_log[0].starts_with("cut:a"));
         assert!(report.step_log[1].starts_with("cut:b"));
         assert!(matches!(report.measurements[1], StepMeasurement::Cut(_)));
+    }
+
+    /// A closed, consistently-wound box surface: 12 outward-facing
+    /// triangles between `lo` and `hi`.
+    fn box_mesh(lo: Vec3, hi: Vec3) -> Vec<[Vec3; 3]> {
+        let p = [
+            Vec3::new(lo.x, lo.y, lo.z),
+            Vec3::new(hi.x, lo.y, lo.z),
+            Vec3::new(hi.x, hi.y, lo.z),
+            Vec3::new(lo.x, hi.y, lo.z),
+            Vec3::new(lo.x, lo.y, hi.z),
+            Vec3::new(hi.x, lo.y, hi.z),
+            Vec3::new(hi.x, hi.y, hi.z),
+            Vec3::new(lo.x, hi.y, hi.z),
+        ];
+        vec![
+            [p[0], p[4], p[7]],
+            [p[0], p[7], p[3]], // −x
+            [p[5], p[1], p[2]],
+            [p[5], p[2], p[6]], // +x
+            [p[0], p[1], p[5]],
+            [p[0], p[5], p[4]], // −y
+            [p[3], p[7], p[6]],
+            [p[3], p[6], p[2]], // +y
+            [p[0], p[3], p[2]],
+            [p[0], p[2], p[1]], // −z
+            [p[4], p[5], p[6]],
+            [p[4], p[6], p[7]], // +z
+        ]
+    }
+
+    /// A closed icosphere (subdivided icosahedron), outward-facing.
+    fn icosphere(center: Vec3, radius: f64, subdivisions: usize) -> Vec<[Vec3; 3]> {
+        let t = (1.0 + 5.0f64.sqrt()) / 2.0;
+        let mut v: Vec<Vec3> = [
+            [-1.0, t, 0.0],
+            [1.0, t, 0.0],
+            [-1.0, -t, 0.0],
+            [1.0, -t, 0.0],
+            [0.0, -1.0, t],
+            [0.0, 1.0, t],
+            [0.0, -1.0, -t],
+            [0.0, 1.0, -t],
+            [t, 0.0, -1.0],
+            [t, 0.0, 1.0],
+            [-t, 0.0, -1.0],
+            [-t, 0.0, 1.0],
+        ]
+        .iter()
+        .map(|a| Vec3::new(a[0], a[1], a[2]))
+        .collect();
+        let mut faces: Vec<[usize; 3]> = vec![
+            [0, 11, 5],
+            [0, 5, 1],
+            [0, 1, 7],
+            [0, 7, 10],
+            [0, 10, 11],
+            [1, 5, 9],
+            [5, 11, 4],
+            [11, 10, 2],
+            [10, 7, 6],
+            [7, 1, 8],
+            [3, 9, 4],
+            [3, 4, 2],
+            [3, 2, 6],
+            [3, 6, 8],
+            [3, 8, 9],
+            [4, 9, 5],
+            [2, 4, 11],
+            [6, 2, 10],
+            [8, 6, 7],
+            [9, 8, 1],
+        ];
+        for _ in 0..subdivisions {
+            let mut next = Vec::with_capacity(faces.len() * 4);
+            let mut cache: std::collections::BTreeMap<(usize, usize), usize> =
+                std::collections::BTreeMap::new();
+            let mut midpoint = |a: usize, b: usize| -> usize {
+                let key = (a.min(b), a.max(b));
+                if let Some(&m) = cache.get(&key) {
+                    return m;
+                }
+                v.push((v[a] + v[b]) * 0.5);
+                let m = v.len() - 1;
+                cache.insert(key, m);
+                m
+            };
+            for f in &faces {
+                let a = midpoint(f[0], f[1]);
+                let b = midpoint(f[1], f[2]);
+                let c = midpoint(f[2], f[0]);
+                next.push([f[0], a, c]);
+                next.push([f[1], b, a]);
+                next.push([f[2], c, b]);
+                next.push([a, b, c]);
+            }
+            faces = next;
+        }
+        faces
+            .iter()
+            .map(|f| {
+                f.map(|i| {
+                    let d = v[i] * (1.0 / v[i].norm());
+                    center + d * radius
+                })
+            })
+            .collect()
+    }
+
+    #[test]
+    fn mesh_validate_catches_open_flipped_and_degenerate_meshes() {
+        let ok = MeshCut {
+            triangles: box_mesh(Vec3::ZERO, Vec3::new(1.0, 1.0, 1.0)),
+            fragment_name: "m".into(),
+            keep_inside: true,
+            kerf_width: 0.0,
+            discarded: DiscardedSide::Resect,
+        };
+        assert!(ok.validate().is_ok());
+
+        let empty = MeshCut {
+            triangles: vec![],
+            ..ok.clone()
+        };
+        assert!(matches!(empty.validate(), Err(MeshCutError::Empty)));
+
+        // Degenerate: two vertices coincide.
+        let degenerate = MeshCut {
+            triangles: vec![[Vec3::ZERO, Vec3::ZERO, Vec3::new(1.0, 0.0, 0.0)]],
+            ..ok.clone()
+        };
+        assert!(matches!(
+            degenerate.validate(),
+            Err(MeshCutError::DegenerateTriangle { index: 0 })
+        ));
+
+        // Open: a single quad (its boundary edges appear once).
+        let open = MeshCut {
+            triangles: vec![[
+                Vec3::new(0.0, 0.0, 0.0),
+                Vec3::new(1.0, 0.0, 0.0),
+                Vec3::new(1.0, 1.0, 0.0),
+            ]],
+            ..ok.clone()
+        };
+        assert!(matches!(
+            open.validate(),
+            Err(MeshCutError::OpenSurface { .. })
+        ));
+
+        // Flipped: reverse one triangle of the closed box — one directed
+        // edge doubles up.
+        let mut flipped_triangles = ok.triangles.clone();
+        flipped_triangles[0].reverse();
+        let flipped = MeshCut {
+            triangles: flipped_triangles,
+            ..ok.clone()
+        };
+        assert!(matches!(
+            flipped.validate(),
+            Err(MeshCutError::InconsistentWinding { .. })
+        ));
+    }
+
+    #[test]
+    fn point_triangle_distance_has_hand_checked_regions() {
+        let a = Vec3::ZERO;
+        let b = Vec3::new(4.0, 0.0, 0.0);
+        let c = Vec3::new(0.0, 3.0, 0.0);
+        // Face interior (1, 1, 5): closest point (1, 1, 0) → 25.
+        assert!((point_triangle_distance2(Vec3::new(1.0, 1.0, 5.0), a, b, c) - 25.0).abs() < 1e-12);
+        // Vertex region at a: (−1, −1, 0) → 2.
+        assert!(
+            (point_triangle_distance2(Vec3::new(-1.0, -1.0, 0.0), a, b, c) - 2.0).abs() < 1e-12
+        );
+        // Edge ab interior: (2, −2, 0) → closest (2, 0, 0) → 4.
+        assert!((point_triangle_distance2(Vec3::new(2.0, -2.0, 0.0), a, b, c) - 4.0).abs() < 1e-12);
+        // Hypotenuse edge bc: (3, 4, 0) → closest on x+y=4 → (1.8, 2.2)? The
+        // projection of (3,4) onto the segment from (4,0) to (0,3): the
+        // closest point is (1.96, 1.52)... verified numerically below.
+        let d2 = point_triangle_distance2(Vec3::new(3.0, 4.0, 0.0), a, b, c);
+        let mut best = f64::INFINITY;
+        for i in 0..=1000 {
+            let t = i as f64 / 1000.0;
+            let q = b * (1.0 - t) + c * t;
+            best = best.min((Vec3::new(3.0, 4.0, 0.0) - q).norm_squared());
+        }
+        assert!((d2 - best).abs() < 1e-3, "{d2} vs {best}");
+    }
+
+    #[test]
+    fn mesh_cut_keeps_a_box_interior_exactly() {
+        let model = cube_model();
+        let cut = MeshCut {
+            // Off the exact diagonal planes of the face triangulation, so
+            // no +x ray from a voxel centre grazes a shared edge (the
+            // documented alignment limit of the parity test).
+            triangles: box_mesh(
+                Vec3::new(-3.169, -3.15, -3.111),
+                Vec3::new(2.231, 2.25, 2.208),
+            ),
+            fragment_name: "contoured".into(),
+            keep_inside: true,
+            kerf_width: 0.0,
+            discarded: DiscardedSide::Resect,
+        };
+        let kept = cut.apply(&model);
+        let count = kept.values.iter().filter(|v| !v.is_nan()).count();
+        // Voxel centres at −3..2 in each axis: exactly 6³ lie inside.
+        assert_eq!(count, 216);
+    }
+
+    #[test]
+    fn mesh_cut_exterior_with_retention_conserves_voxels() {
+        let model = cube_model();
+        let cut = MeshCut {
+            triangles: box_mesh(
+                Vec3::new(-3.169, -3.15, -3.111),
+                Vec3::new(2.231, 2.25, 2.208),
+            ),
+            fragment_name: "cap".into(),
+            keep_inside: false,
+            kerf_width: 0.0,
+            discarded: DiscardedSide::RetainAs {
+                name: "contoured-core".into(),
+            },
+        };
+        let (kept, retained, m) = cut.apply_measured(&model);
+        let kept_n = kept.values.iter().filter(|v| !v.is_nan()).count();
+        let core = retained.expect("retained side kept");
+        let core_n = core.values.iter().filter(|v| !v.is_nan()).count();
+        assert_eq!(kept_n + core_n, 1000);
+        // The resection measurement counts nothing: everything was kept
+        // somewhere.
+        assert_eq!(m.resection_volume_mm3, 0.0);
+        assert_eq!(core_n, 216);
+    }
+
+    #[test]
+    fn mesh_cut_volume_and_kerf_match_the_continuum_on_a_fine_grid() {
+        let mut model = VoxelModel {
+            dims: (24, 24, 24),
+            spacing: (0.25, 0.25, 0.25),
+            origin: Vec3::new(-3.0, -3.0, -3.0),
+            values: vec![100.0; 24 * 24 * 24],
+        };
+        let _ = &mut model;
+        let make_cut = |kerf: f64| MeshCut {
+            triangles: box_mesh(
+                Vec3::new(-2.031, -2.012, -2.05),
+                Vec3::new(1.969, 1.981, 1.95),
+            ),
+            fragment_name: "b".into(),
+            keep_inside: true,
+            kerf_width: kerf,
+            discarded: DiscardedSide::Resect,
+        };
+        // Centres at ±(0.125 + 0.25k): no centre lies on either side of a
+        // kerf-shifted face, so both counts are exact.
+        let plain = make_cut(0.0).apply(&model);
+        let plain_n = plain.values.iter().filter(|v| !v.is_nan()).count();
+        assert_eq!(plain_n, 16 * 16 * 16);
+        let plain_vol = plain_n as f64 * 0.25_f64.powi(3);
+        assert!((plain_vol - 64.0).abs() < 1e-9);
+
+        let kerfed = make_cut(0.5).apply(&model);
+        let kerfed_n = kerfed.values.iter().filter(|v| !v.is_nan()).count();
+        // Kept face: 2.0 − 0.25 = 1.75 per side → 14 centres per axis.
+        assert_eq!(kerfed_n, 14 * 14 * 14);
+        let _ = &mut model;
+    }
+
+    #[test]
+    fn mesh_cut_sphere_volume_matches_analytic() {
+        // 80-face icosphere, radius 3, on a 0.3 grid. The voxelisation
+        // error is bounded by the surface shell (A·h ≈ 34 mm³ worst case);
+        // assert the midpoint statistics stay well inside that.
+        let h = 0.3;
+        let n = 34;
+        let mut model = VoxelModel {
+            dims: (n, n, n),
+            spacing: (h, h, h),
+            origin: Vec3::new(0.1, 0.1, 0.1),
+            values: vec![100.0; n * n * n],
+        };
+        let _ = &mut model;
+        let cut = MeshCut {
+            triangles: icosphere(Vec3::new(5.0, 5.0, 5.0), 3.0, 1),
+            fragment_name: "sphere".into(),
+            keep_inside: true,
+            kerf_width: 0.0,
+            discarded: DiscardedSide::Resect,
+        };
+        cut.validate().expect("icosphere is closed and wound");
+        let kept = cut.apply(&model);
+        let vol = kept.values.iter().filter(|v| !v.is_nan()).count() as f64 * h.powi(3);
+        // The reference is the MESH's own enclosed volume — the signed
+        // tetrahedron sum over the (outward-wound) faces — not the ideal
+        // sphere: an 80-face icosphere's face planes sit apothem-deep
+        // inside the sphere, a few percent below (4/3)πR³.
+        let mesh_volume = (1.0 / 6.0
+            * cut
+                .triangles
+                .iter()
+                .map(|t| t[0].dot(t[1].cross(t[2])))
+                .sum::<f64>())
+        .abs();
+        let sphere = 4.0 / 3.0 * core::f64::consts::PI * 27.0;
+        assert!(
+            (mesh_volume - sphere).abs() < 0.15 * sphere,
+            "subdiv-1 icosphere sanity: {mesh_volume} vs {sphere}"
+        );
+        // Voxelisation error is bounded by the surface shell (A·h ≈ 34
+        // mm³ worst case); 5 % is comfortably inside the midpoint
+        // statistics.
+        assert!(
+            (vol - mesh_volume).abs() < 0.05 * mesh_volume,
+            "voxelised {vol} vs mesh {mesh_volume}"
+        );
+        let _ = &mut model;
+    }
+
+    #[test]
+    fn virtual_surgery_runs_a_mesh_cut_and_rejects_bad_meshes() {
+        let mut plan = VirtualSurgery::new(cube_model());
+        // An open surface is rejected at build time.
+        let open = MeshCut {
+            triangles: vec![[
+                Vec3::new(0.0, 0.0, 0.0),
+                Vec3::new(1.0, 0.0, 0.0),
+                Vec3::new(1.0, 1.0, 0.0),
+            ]],
+            fragment_name: "open".into(),
+            keep_inside: true,
+            kerf_width: 0.0,
+            discarded: DiscardedSide::Resect,
+        };
+        assert!(matches!(
+            plan.mesh(open),
+            Err(PlanError::InvalidMesh { .. })
+        ));
+
+        let valid = MeshCut {
+            triangles: box_mesh(
+                Vec3::new(-3.169, -3.15, -3.111),
+                Vec3::new(2.231, 2.25, 2.208),
+            ),
+            fragment_name: "contour".into(),
+            keep_inside: true,
+            kerf_width: 0.0,
+            discarded: DiscardedSide::Resect,
+        };
+        plan.mesh(valid).expect("valid mesh cut");
+        let (model, report) = plan.execute_with_report();
+        assert!(
+            report
+                .step_log
+                .iter()
+                .any(|s| s.starts_with("mesh:contour")),
+            "audit log records the mesh step"
+        );
+        let kept = model.values.iter().filter(|v| !v.is_nan()).count();
+        assert_eq!(kept, 216);
+
+        // A mesh cut after a named move is rejected like any cut.
+        let mut plan = VirtualSurgery::new(cube_model());
+        plan.move_fragment_named("", FragmentTransform::no_op())
+            .expect("named move");
+        let later = MeshCut {
+            triangles: box_mesh(
+                Vec3::new(-3.169, -3.15, -3.111),
+                Vec3::new(2.231, 2.25, 2.208),
+            ),
+            fragment_name: "late".into(),
+            keep_inside: true,
+            kerf_width: 0.0,
+            discarded: DiscardedSide::Resect,
+        };
+        assert!(matches!(
+            plan.mesh(later),
+            Err(PlanError::CutAfterMove { .. })
+        ));
     }
 }

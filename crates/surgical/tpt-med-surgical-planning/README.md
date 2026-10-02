@@ -70,6 +70,17 @@ voxel grid.
   kerf, retention (`DiscardedSide::RetainAs`), measurement and audit
   conventions as the plane cut.
 
+- **Freeform (anatomically contoured) resections** — `MeshCut` resects
+  against a caller-supplied **closed triangle mesh**: the patient-matched
+  contoured surface no plane, wedge or cylinder can express. Side
+  determination is the unsigned closest-triangle distance signed by a
+  +x ray-parity inside test, so `validate()` (called at plan-append
+  time) enforces the mesh contract the parity test needs: watertight
+  (every undirected edge shared by exactly two triangles) and
+  consistently wound (each directed edge once — a flipped triangle is
+  caught before it could silently invert a region). Same kerf,
+  retention, measurement and audit conventions as the other cuts.
+
 - **Per-fragment addressing** — a cut with
   `DiscardedSide::RetainAs { name }` keeps *both* sides as named
   fragments, and `move_fragment_named` repositions one of them
@@ -158,12 +169,14 @@ fn main() {
 | `WedgeCut { plane_a, plane_b, fragment_name, kerf_width }` | Two-plane closed wedge: removes exactly the intersection |
 | `CylindricalCut { axis_origin, axis_direction, radius, fragment_name, keep_inside, kerf_width, discarded }` | Curved resection on a cylinder: core (`keep_inside`) or annulus, with kerf and retention |
 | `CylindricalCut::radial_distance(Vec3) -> f64` | Perpendicular distance from the cylinder's axis (mm) |
+| `MeshCut { triangles, fragment_name, keep_inside, kerf_width, discarded }` | Freeform resection against a closed triangle mesh: interior (`keep_inside`) or exterior, with kerf and retention |
+| `MeshCut::validate() -> Result<(), MeshCutError>` | Watertightness, winding, degeneracy and emptiness checks — enforced at plan-append time |
 | `FragmentTransform { rotation_axis, rotation_angle, pivot, translation }` | Rigid only: rotation about `pivot`, then translation |
 | `FragmentTransform::apply_to_point(Vec3) -> Vec3` | Transform a point |
 | `FragmentTransform::apply_to_model(&VoxelModel) -> VoxelModel` | Transform a whole model |
-| `PlanStep` | `Cut(OsteotomyCut)`, `Wedge(WedgeCut)`, `Cylinder(CylindricalCut)`, `Move(FragmentTransform)`, or `MoveNamed { fragment, transform }` |
+| `PlanStep` | `Cut(OsteotomyCut)`, `Wedge(WedgeCut)`, `Cylinder(CylindricalCut)`, `Mesh(MeshCut)`, `Move(FragmentTransform)`, or `MoveNamed { fragment, transform }` |
 | `VirtualSurgery::new(base)` | Start a plan on the pre-operative model |
-| `VirtualSurgery::cut(..)`, `::wedge(..)`, `::cylinder(..)`, `::move_fragment(..)`, `::move_fragment_named(..)` | Append steps in plan order (builder style, returns `&mut Self`; cut-shaped steps validated at build time) |
+| `VirtualSurgery::cut(..)`, `::wedge(..)`, `::cylinder(..)`, `::mesh(..)`, `::move_fragment(..)`, `::move_fragment_named(..)` | Append steps in plan order (builder style, returns `&mut Self`; cut-shaped steps validated at build time) |
 | `VirtualSurgery::execute() -> (VoxelModel, Vec<String>)` | Operated model plus the audit log in execution order |
 | `VirtualSurgery::base_model() -> &VoxelModel` | Pre-operative model, for side-by-side views |
 | `VirtualSurgery::fragments() -> BTreeMap<usize, String>` | Recorded fragment labels, ordered and deduplicated |
@@ -191,12 +204,28 @@ fn main() {
 - **Idempotence** — `execute` called twice on the same plan returns identical
   models, since the plan must not consume its own steps.
 - **Base model immutability** — `base_model()` is unchanged after `execute`.
+- **Mesh cuts** — the face sum's conventions are pinned by a hand-computed
+  two-voxel reference; a box contour keeps exactly the 216 interior voxels
+  of a known fixture, and on a fine grid the kept volume equals the
+  analytic box volume exactly (no centre falls in a boundary band) and the
+  kerf-shifted volume equals the shrunken box exactly; the exterior cut
+  with `RetainAs` conserves the voxel count; an 80-face icosphere's
+  voxelised interior matches the mesh's own exact signed-tetrahedron
+  volume within 5 % (the honest reference — the ideal sphere's volume is
+  larger than the polyhedron's); `validate()` catches open surfaces,
+  flipped winding, degenerate triangles and empty meshes, and the plan
+  rejects an invalid mesh at build time; and the closest-point-on-triangle
+  routine is checked by hand in its vertex, edge and face regions.
 
 ## Known Limitations
 
-- **Plane and cylindrical resections only.** Kerf width, two-plane wedges and
-  the cylindrical surface are in; freeform (anatomically contoured, implicit
-  or spline-defined) resections are not.
+- **Mesh cuts need a watertight mesh.** The parity side test is only as
+  good as the surface: `validate()` enforces closure and winding, and
+  meshes whose edges deliberately thread the voxel-centre rows (rays
+  grazing shared edges) sit outside the model's accuracy — offset such
+  geometry off the grid's rational alignments. Implicit/spline-contoured
+  surfaces are expressible by tessellating into `MeshCut`; there is no
+  native implicit-surface cut.
 - **Rigid fragments only.** No implant component placement with a bone-implant
   interface, no bone graft, no defect reconstruction.
 - **Measurements are voxel-quantised.** Resection volume counts discarded
