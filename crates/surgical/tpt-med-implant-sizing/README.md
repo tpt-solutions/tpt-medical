@@ -60,6 +60,12 @@ throws away the information the surgeon uses to decide whether to upsize.
   alignment deviation (axis vs dome-line perpendicular; 0° is neutral)
   is reported alongside. Caller-supplied vendor charts.
 
+- **Stability moment balance** — `StabilityScreen`: the tension balance
+  converted into a varus/valgus moment statement — per-ligament moment
+  arms (point-line distance from the joint centre to the line of
+  action) and the net moment `Σ ±arm·tension`, medial-positive. Still
+  out of scope by design: the joint's opening *response* to a prescribed
+  stress (kinematics the crate does not model).
 - **Ligament balance proper** — `LigamentModel` + `assess_ligament_balance`:
   each collateral as a 1-D spring with a slack range (origin, insertion,
   slack length, stiffness, side); the screen reports the anatomical vs
@@ -204,6 +210,7 @@ fn main() {
 | `check_gap_balance(&ResectionPlan, tolerance_mm) -> GapReport` | Extension/flexion gaps from resection-vs-thickness arithmetic; overstuffed and imbalance flags |
 | `LigamentModel { origin, insertion, slack_length_mm, stiffness_n_per_mm, side }` | One collateral as a spring with a slack range |
 | `assess_ligament_balance(&[(LigamentModel, Vec3, Vec3)], tolerance_n)` | Ligament-balance screen: per-collateral tension plus mediolateral imbalance |
+| `StabilityScreen::{moment_arm_mm, net_moment_nmm, assess}` | The stability moment balance: arms from the lines of action, net varus/valgus moment |
 | `Vec3` from `tpt-med-geometry` | Landmark positions in patient space (mm) |
 
 ## Verification
@@ -249,6 +256,11 @@ fn main() {
   the mediolateral imbalance is the signed side-sum difference; and the
   documented trap — an over-released collateral balancing numerically while
   slack — is asserted so the per-ligament `is_taut` flag cannot rot.
+- **Stability moment balance** — the arm is the exact point-line distance
+  (on-line centre reads 0, a 5 mm offset reads 5, and a slanted
+  ligament's line of action measures past the segment); a symmetric
+  taut pair cancels to zero net moment while a taut-medial/slack-lateral
+  pair reads exactly arm × tension; empty input is rejected.
 
 ## Known Limitations
 

@@ -12,6 +12,20 @@ changes for consumers of this crate.
 ## [Unreleased]
 
 ### Added
+- **`StabilityScreen` — the stability moment balance.** Converts the
+  tension screen into a varus/valgus moment statement: each collateral's
+  moment arm (the perpendicular distance from the joint centre to its
+  line of action through the planned attachments) and the net moment
+  `Σ ±arm·tension`, medial-positive by side pairing. Equal tensions
+  with unequal arms no longer hide behind the force balance, and a
+  well-armed pair carrying an asymmetric load is visible. The joint's
+  opening *response* to a prescribed stress stays out — that needs
+  articulating kinematics; this screen reports whether the plan's
+  configuration leaves a net moment. Verified: the arm is the exact
+  point-line distance (on-line 0, 5 mm offset 5, slanted ligament
+  measured past the segment per the line-of-action convention), a
+  symmetric taut pair cancels exactly, a taut/slack pair reads exactly
+  arm × tension, and empty input is rejected.
 - **Ligament balance proper: `LigamentModel` + `assess_ligament_balance`**
   — the soft-tissue half the gap-balance check deliberately left out.
   Each collateral is a 1-D spring with a slack range (origin, insertion,
@@ -104,8 +118,10 @@ changes for consumers of this crate.
 ### Planned
 - Automatic landmark detection from a CT, which is the hard part of the
   problem and is not attempted here.
-- Stability assessment beyond static tension (varus/valgus stress
-  response, pivot shift) — needs kinematics this crate does not model.
+- Stability *response* (the joint's opening under a prescribed varus/valgus
+  stress) — needs the articulating kinematics this crate does not model;
+  the moment balance of the plan's configuration is delivered
+  (`StabilityScreen`).
 
 ### Notes
 - **Ties round up.** At exactly `t = 0.5` between two sizes the larger size is

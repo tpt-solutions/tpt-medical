@@ -997,6 +997,98 @@ pub fn assess_ligament_balance(
     })
 }
 
+/// The **stability screen**: the tension balance of
+/// [`assess_ligament_balance`] converted into a varus/valgus moment
+/// statement. Each collateral pulls along its own line of action, so a
+/// tension imbalance only *stabilises* the joint if the lines' moment
+/// arms about the joint centre make it — two collaterals with equal
+/// tension but unequal arms leave a net moment, and a well-armed pair
+/// can carry an asymmetric load. The screen reports each ligament's
+/// moment arm (the perpendicular distance from the joint centre to the
+/// ligament's line of action) and the net moment
+/// `Σ (medial arm × medial tension − lateral arm × lateral tension)` at
+/// the plan's attachment positions.
+///
+/// Still deliberately out of scope: the *response* to a prescribed
+/// stress — the kinematics of how the joint opens under a moment, which
+/// needs the articulating surfaces this crate does not model. This screen
+/// says whether the *plan's* ligament configuration leaves a net moment;
+/// it does not simulate the opening that would result.
+pub struct StabilityScreen;
+
+impl StabilityScreen {
+    /// A collateral's moment arm (mm): the perpendicular distance from
+    /// `joint_center` to the ligament's line of action through its
+    /// planned attachments.
+    pub fn moment_arm_mm(
+        ligament: &LigamentModel,
+        joint_center: Vec3,
+        planned_origin: Vec3,
+        planned_insertion: Vec3,
+    ) -> f64 {
+        let axis = (planned_insertion - planned_origin)
+            * (1.0 / ligament.planned_length(planned_origin, planned_insertion));
+        let w = joint_center - planned_origin;
+        (w.cross(axis)).norm()
+    }
+
+    /// The net varus/valgus moment (N·mm) at the plan's attachment
+    /// positions: positive when the medial side's moment contribution
+    /// (its arm times its planned tension) dominates — the convention is
+    /// documented as a magnitude with sign by side pairing, since the
+    /// clinical varus/valgus sign depends on the joint's left/right
+    /// orientation. Arms and tensions both come from the plan geometry.
+    pub fn net_moment_nmm(
+        ligaments: &[(LigamentModel, Vec3, Vec3)],
+        joint_center: Vec3,
+    ) -> Option<f64> {
+        if ligaments.is_empty() {
+            return None;
+        }
+        let mut moment = 0.0f64;
+        for (lig, origin, insertion) in ligaments {
+            let arm = Self::moment_arm_mm(lig, joint_center, *origin, *insertion);
+            let tension = lig.tension(lig.planned_length(*origin, *insertion));
+            let signed = match lig.side {
+                CollateralSide::Medial => arm * tension,
+                CollateralSide::Lateral => -(arm * tension),
+            };
+            moment += signed;
+        }
+        Some(moment)
+    }
+
+    /// Full screen: per-ligament arms and the net moment.
+    pub fn assess(
+        ligaments: &[(LigamentModel, Vec3, Vec3)],
+        joint_center: Vec3,
+    ) -> Option<StabilityReport> {
+        if ligaments.is_empty() {
+            return None;
+        }
+        let mut arms = Vec::with_capacity(ligaments.len());
+        for (lig, origin, insertion) in ligaments {
+            arms.push(Self::moment_arm_mm(lig, joint_center, *origin, *insertion));
+        }
+        let net = Self::net_moment_nmm(ligaments, joint_center)?;
+        Some(StabilityReport {
+            moment_arms_mm: arms,
+            net_moment_nmm: net,
+        })
+    }
+}
+
+/// The stability screen's report: per-ligament moment arms (input order)
+/// and the net varus/valgus moment (N·mm, medial-positive by side
+/// pairing).
+#[derive(Debug, Clone)]
+pub struct StabilityReport {
+    /// Moment arm (mm) per ligament, input order.
+    pub moment_arms_mm: Vec<f64>,
+    /// Net moment (N·mm): `Σ ±arm·tension`, medial-positive.
+    pub net_moment_nmm: f64,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1772,5 +1864,107 @@ mod tests {
     fn empty_input_is_rejected() {
         assert!(assess_ligament_balance(&[], 1.0).is_none());
         assert!(assess_ligament_balance(&[], -1.0).is_none());
+    }
+
+    #[test]
+    fn moment_arm_is_the_point_line_distance() {
+        let lig = collateral(CollateralSide::Medial, 40.0, 25.0);
+        // Ligament line: the z-axis through (0, 0). A joint centre 5 mm
+        // off-axis has arm exactly 5; one ON the line has arm 0.
+        assert!(
+            (StabilityScreen::moment_arm_mm(
+                &lig,
+                Vec3::new(5.0, 0.0, 0.0),
+                lig.origin,
+                lig.insertion
+            ) - 5.0)
+                .abs()
+                < 1e-12
+        );
+        assert!(
+            (StabilityScreen::moment_arm_mm(
+                &lig,
+                Vec3::new(0.0, 0.0, -20.0),
+                lig.origin,
+                lig.insertion
+            ))
+            .abs()
+                < 1e-12
+        );
+        // A slanted ligament: the arm is the point-line distance to the
+        // line of action. Line direction (0, 3, −4)/5 through the origin
+        // has constant x = 0, so a centre at (6, 0, 0) sits exactly 6 mm
+        // off the line — past the insertion's projection, which is fine:
+        // the arm follows the line of action, not the segment.
+        let slant = LigamentModel {
+            origin: Vec3::new(0.0, 0.0, 0.0),
+            insertion: Vec3::new(0.0, 30.0, -40.0),
+            ..lig
+        };
+        let arm = StabilityScreen::moment_arm_mm(
+            &slant,
+            Vec3::new(6.0, 0.0, 0.0),
+            slant.origin,
+            slant.insertion,
+        );
+        assert!((arm - 6.0).abs() < 1e-12, "{arm}");
+    }
+
+    #[test]
+    fn net_moment_sums_signed_arm_tension_products() {
+        // Symmetric collaterals 5 mm either side of the joint centre,
+        // both taut at equal tension: the moments cancel exactly.
+        let medial = LigamentModel {
+            origin: Vec3::new(0.0, 5.0, 0.0),
+            insertion: Vec3::new(0.0, 5.0, -40.0),
+            slack_length_mm: 40.0,
+            stiffness_n_per_mm: 25.0,
+            side: CollateralSide::Medial,
+        };
+        let lateral = LigamentModel {
+            origin: Vec3::new(0.0, -5.0, 0.0),
+            insertion: Vec3::new(0.0, -5.0, -40.0),
+            slack_length_mm: 40.0,
+            stiffness_n_per_mm: 25.0,
+            side: CollateralSide::Lateral,
+        };
+        let center = Vec3::new(0.0, 0.0, -20.0);
+        let balanced = &[
+            (medial.clone(), medial.origin, medial.insertion),
+            (lateral.clone(), lateral.origin, lateral.insertion),
+        ];
+        let report = StabilityScreen::assess(balanced, center).expect("non-empty");
+        assert!(
+            report
+                .moment_arms_mm
+                .iter()
+                .all(|a| (a - 5.0).abs() < 1e-12),
+            "arms {:?}",
+            report.moment_arms_mm
+        );
+        assert!(report.net_moment_nmm.abs() < 1e-12);
+
+        // A taut medial against a slack lateral: the net moment is the
+        // medial contribution alone (1 mm elongation → 25 N × 5 mm).
+        let stretched = Vec3::new(0.0, 5.0, -41.0);
+        let report = StabilityScreen::assess(
+            &[
+                (medial.clone(), medial.origin, stretched),
+                (lateral.clone(), lateral.origin, lateral.insertion),
+            ],
+            center,
+        )
+        .expect("non-empty");
+        assert!(
+            (report.net_moment_nmm - 125.0).abs() < 1e-9,
+            "{}",
+            report.net_moment_nmm
+        );
+    }
+
+    #[test]
+    fn stability_screen_rejects_empty_input() {
+        assert!(StabilityScreen::assess(&[], Vec3::ZERO).is_none());
+        assert!(StabilityScreen::net_moment_nmm(&[], Vec3::ZERO).is_none());
     }
 }
