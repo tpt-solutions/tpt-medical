@@ -12,6 +12,19 @@ changes for consumers of this crate.
 ## [Unreleased]
 
 ### Added
+- **Ligament balance proper: `LigamentModel` + `assess_ligament_balance`**
+  — the soft-tissue half the gap-balance check deliberately left out.
+  Each collateral is a 1-D spring with a slack range (origin, insertion,
+  slack length, stiffness, mediolateral side); the screen pairs every
+  ligament with the planned positions of its two attachments (what
+  resection depths, component thicknesses and fragment moves do to them)
+  and reports anatomical vs planned length, elongation, spring tension,
+  per-ligament tautness, and the mediolateral imbalance against a
+  tolerance. The documented trap is asserted: an over-released side
+  balances numerically while slack, so `is_balanced` must be read
+  together with the `is_taut` flags. Verified: exact zero through slack
+  and exact linearity beyond, exact planned-length geometry on moved
+  attachments, side-sum imbalance arithmetic, and the over-release trap.
 - **Shoulder stem sizing: `ShoulderLandmarks` + `size_shoulder`** — the
   humeral landmarks (head centre, anatomical neck, isthmus edges, canal
   entry, elbow epicondyles) and the measurements they define: endosteal
@@ -91,9 +104,8 @@ changes for consumers of this crate.
 ### Planned
 - Automatic landmark detection from a CT, which is the hard part of the
   problem and is not attempted here.
-- Ligament balance assessment proper (tension, stability): the gap-balance
-  check above is the geometric half. Sizing is necessary for a good plan and
-  not sufficient.
+- Stability assessment beyond static tension (varus/valgus stress
+  response, pivot shift) — needs kinematics this crate does not model.
 
 ### Notes
 - **Ties round up.** At exactly `t = 0.5` between two sizes the larger size is

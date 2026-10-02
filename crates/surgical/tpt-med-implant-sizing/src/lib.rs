@@ -858,6 +858,145 @@ pub fn size_ankle(
     })
 }
 
+/// Which side of the joint a collateral ligament spans — the axis of the
+/// mediolateral imbalance the balance screen reports.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CollateralSide {
+    /// Medial (tibial) collateral.
+    Medial,
+    /// Lateral (fibular) collateral.
+    Lateral,
+}
+
+/// One collateral ligament as a **1-D spring with a slack range** — the
+/// minimal soft-tissue structure the gap-balance check alone was missing:
+/// origin and insertion (patient space, mm), the length below which the
+/// fibre bundle is slack, and the stiffness beyond it. The tension law is
+/// deliberately the screening piecewise-linear one — zero below
+/// `slack_length_mm`, `stiffness_n_per_mm` times elongation above — not a
+/// viscoelastic or fibre-bundle model.
+#[derive(Debug, Clone)]
+pub struct LigamentModel {
+    /// Attachment on the proximal bone (femoral origin), patient space.
+    pub origin: Vec3,
+    /// Attachment on the distal bone (tibial insertion), patient space.
+    pub insertion: Vec3,
+    /// Unloaded (anatomical) length (mm): with no resection or component
+    /// placement the ligament sits at this length — by definition the
+    /// pre-operative state.
+    pub slack_length_mm: f64,
+    /// Stiffness beyond slack (N/mm).
+    pub stiffness_n_per_mm: f64,
+    /// Which side of the joint this collateral spans.
+    pub side: CollateralSide,
+}
+
+impl LigamentModel {
+    /// The anatomical (attachment-to-attachment) length (mm).
+    pub fn anatomical_length(&self) -> f64 {
+        (self.insertion - self.origin).norm()
+    }
+
+    /// The ligament's length (mm) when the plan has moved the attachments
+    /// — a resection lowers the distal bone, a component thickens the
+    /// joint line, a fragment move relocates an attachment. Pass the
+    /// planned positions of both attachments; the unplanned call is
+    /// [`Self::anatomical_length`].
+    pub fn planned_length(&self, origin: Vec3, insertion: Vec3) -> f64 {
+        (insertion - origin).norm()
+    }
+
+    /// Tension (N) at `length_mm`: zero while slack, linear beyond.
+    pub fn tension(&self, length_mm: f64) -> f64 {
+        let elongation = length_mm - self.slack_length_mm;
+        if elongation <= 0.0 {
+            0.0
+        } else {
+            self.stiffness_n_per_mm * elongation
+        }
+    }
+
+    /// True when the ligament carries tension at `length_mm`.
+    pub fn is_taut(&self, length_mm: f64) -> bool {
+        length_mm > self.slack_length_mm
+    }
+}
+
+/// The balance verdict for one collateral: anatomical vs planned length,
+/// the elongation, the tension, and whether it is taut at all.
+#[derive(Debug, Clone)]
+pub struct LigamentTension {
+    /// Anatomical length (mm).
+    pub anatomical_length_mm: f64,
+    /// Planned length (mm).
+    pub planned_length_mm: f64,
+    /// `planned − anatomical` (mm): positive lengthens (and tensions) the
+    /// collateral, negative slackens it.
+    pub elongation_mm: f64,
+    /// Tension (N) at the planned length.
+    pub tension_n: f64,
+    /// True when the planned length exceeds slack.
+    pub is_taut: bool,
+}
+
+/// The whole-joint ligament balance: every collateral's verdict plus the
+/// **mediolateral imbalance** — `|Σ medial tensions − Σ lateral
+/// tensions|`, the net unbalanced force a surgeon levels with releases or
+/// insert thickness.
+#[derive(Debug, Clone)]
+pub struct LigamentBalanceReport {
+    /// Per-ligament verdicts, in input order.
+    pub ligaments: Vec<LigamentTension>,
+    /// `|Σ medial − Σ lateral|` tensions (N).
+    pub mediolateral_imbalance_n: f64,
+    /// True when the imbalance is within `tolerance_n`. A slack collateral
+    /// carries no tension, so an over-released side balances numerically
+    /// while leaving the joint loose — pair this with the per-ligament
+    /// `is_taut` flags rather than reading the flag alone.
+    pub is_balanced: bool,
+}
+
+/// The ligament-balance assessment proper — the soft-tissue half the
+/// geometric [`check_gap_balance`] deliberately left out. Each entry pairs
+/// a [`LigamentModel`] with the **planned positions of its two
+/// attachments** (what the resection depths, component thicknesses and
+/// fragment moves of the plan do to them); the screen reports the length
+/// change, the spring tension, and the mediolateral imbalance against
+/// `tolerance_n`.
+pub fn assess_ligament_balance(
+    ligaments: &[(LigamentModel, Vec3, Vec3)],
+    tolerance_n: f64,
+) -> Option<LigamentBalanceReport> {
+    if ligaments.is_empty() || !tolerance_n.is_finite() || tolerance_n < 0.0 {
+        return None;
+    }
+    let mut verdicts = Vec::with_capacity(ligaments.len());
+    let mut medial = 0.0f64;
+    let mut lateral = 0.0f64;
+    for (lig, origin, insertion) in ligaments {
+        let planned = lig.planned_length(*origin, *insertion);
+        let anatomical = lig.anatomical_length();
+        let tension = lig.tension(planned);
+        verdicts.push(LigamentTension {
+            anatomical_length_mm: anatomical,
+            planned_length_mm: planned,
+            elongation_mm: planned - anatomical,
+            tension_n: tension,
+            is_taut: lig.is_taut(planned),
+        });
+        match lig.side {
+            CollateralSide::Medial => medial += tension,
+            CollateralSide::Lateral => lateral += tension,
+        }
+    }
+    let imbalance = (medial - lateral).abs();
+    Some(LigamentBalanceReport {
+        ligaments: verdicts,
+        mediolateral_imbalance_n: imbalance,
+        is_balanced: imbalance <= tolerance_n,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1508,5 +1647,130 @@ mod tests {
             assert!(label >= previous, "width {width}: {label} after {previous}");
             previous = label;
         }
+    }
+
+    fn collateral(side: CollateralSide, slack: f64, stiffness: f64) -> LigamentModel {
+        LigamentModel {
+            origin: Vec3::new(0.0, 0.0, 0.0),
+            insertion: Vec3::new(0.0, 0.0, -40.0),
+            slack_length_mm: slack,
+            stiffness_n_per_mm: stiffness,
+            side,
+        }
+    }
+
+    #[test]
+    fn ligament_tension_is_zero_below_slack_and_linear_above() {
+        let lig = collateral(CollateralSide::Medial, 40.0, 25.0);
+        assert!((lig.anatomical_length() - 40.0).abs() < 1e-12);
+        // Slack range: no tension however unloaded.
+        assert_eq!(lig.tension(40.0), 0.0);
+        assert_eq!(lig.tension(35.0), 0.0);
+        assert!(!lig.is_taut(40.0));
+        // Linear beyond: 2 mm of elongation under 25 N/mm → 50 N.
+        assert!((lig.tension(42.0) - 50.0).abs() < 1e-12);
+        assert!(lig.is_taut(42.0));
+    }
+
+    #[test]
+    fn planned_length_follows_moved_attachments() {
+        let lig = collateral(CollateralSide::Lateral, 40.0, 25.0);
+        // Lowering the tibial side by the resection + component offset
+        // (4 mm distal along −z) lengthens the collateral to 44.
+        assert!((lig.planned_length(lig.origin, Vec3::new(0.0, 0.0, -44.0)) - 44.0).abs() < 1e-12);
+        // A distalized origin shortens it instead.
+        assert!((lig.planned_length(Vec3::new(0.0, 0.0, 2.0), lig.insertion) - 42.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn mediolateral_imbalance_sums_both_sides() {
+        let medial = collateral(CollateralSide::Medial, 40.0, 25.0);
+        let lateral = collateral(CollateralSide::Lateral, 40.0, 25.0);
+        // A tight medial side (4 mm lengthening → 100 N) against a
+        // relaxed lateral (1 mm → 25 N): imbalance 75 N.
+        let report = assess_ligament_balance(
+            &[
+                (medial.clone(), medial.origin, Vec3::new(0.0, 0.0, -44.0)),
+                (lateral.clone(), lateral.origin, Vec3::new(0.0, 0.0, -41.0)),
+            ],
+            20.0,
+        )
+        .expect("non-empty");
+        assert!((report.ligaments[0].tension_n - 100.0).abs() < 1e-12);
+        assert!((report.ligaments[1].tension_n - 25.0).abs() < 1e-12);
+        assert!((report.mediolateral_imbalance_n - 75.0).abs() < 1e-12);
+        assert!(!report.is_balanced);
+        // Within a looser tolerance it balances numerically — and the
+        // per-ligament flags still show both sides taut.
+        let loose = assess_ligament_balance(
+            &[
+                (
+                    collateral(CollateralSide::Medial, 40.0, 25.0),
+                    Vec3::ZERO,
+                    Vec3::new(0.0, 0.0, -44.0),
+                ),
+                (
+                    collateral(CollateralSide::Lateral, 40.0, 25.0),
+                    Vec3::ZERO,
+                    Vec3::new(0.0, 0.0, -41.0),
+                ),
+            ],
+            80.0,
+        )
+        .expect("non-empty");
+        assert!(loose.is_balanced);
+        assert!(loose.ligaments.iter().all(|l| l.is_taut));
+    }
+
+    #[test]
+    fn an_over_released_side_balances_numerically_but_reads_slack() {
+        // Over-release the lateral collateral past its slack range: it
+        // carries no tension, so the imbalance vanishes — the trap the
+        // docs warn about, asserted here.
+        let report = assess_ligament_balance(
+            &[
+                (
+                    collateral(CollateralSide::Medial, 40.0, 25.0),
+                    Vec3::ZERO,
+                    Vec3::new(0.0, 0.0, -41.0),
+                ),
+                (
+                    collateral(CollateralSide::Lateral, 40.0, 25.0),
+                    Vec3::ZERO,
+                    Vec3::new(0.0, 0.0, -35.0),
+                ),
+            ],
+            5.0,
+        )
+        .expect("non-empty");
+        assert!((report.mediolateral_imbalance_n - 25.0).abs() < 1e-12);
+        assert!(!report.is_balanced);
+        let released = assess_ligament_balance(
+            &[
+                (
+                    collateral(CollateralSide::Medial, 40.0, 25.0),
+                    Vec3::ZERO,
+                    Vec3::new(0.0, 0.0, -41.0),
+                ),
+                (
+                    collateral(CollateralSide::Lateral, 40.0, 25.0),
+                    Vec3::ZERO,
+                    Vec3::new(0.0, 0.0, -30.0),
+                ),
+            ],
+            5.0,
+        )
+        .expect("non-empty");
+        assert_eq!(released.ligaments[1].tension_n, 0.0);
+        assert!(
+            !released.ligaments[1].is_taut,
+            "over-released collateral is slack"
+        );
+    }
+
+    #[test]
+    fn empty_input_is_rejected() {
+        assert!(assess_ligament_balance(&[], 1.0).is_none());
+        assert!(assess_ligament_balance(&[], -1.0).is_none());
     }
 }

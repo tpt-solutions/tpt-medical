@@ -60,6 +60,15 @@ throws away the information the surgeon uses to decide whether to upsize.
   alignment deviation (axis vs dome-line perpendicular; 0° is neutral)
   is reported alongside. Caller-supplied vendor charts.
 
+- **Ligament balance proper** — `LigamentModel` + `assess_ligament_balance`:
+  each collateral as a 1-D spring with a slack range (origin, insertion,
+  slack length, stiffness, side); the screen reports the anatomical vs
+  planned attachment length, elongation, tension, and the mediolateral
+  imbalance — the soft-tissue half that `check_gap_balance`'s resection
+  arithmetic deliberately left out. Pair the `is_balanced` flag with the
+  per-ligament `is_taut` flags: an over-released side balances
+  numerically while leaving the joint loose.
+
 - **`SizeEntry { label, nominal }`** — one chart row: a manufacturer-specific
   size label and the measurement value it represents (mm).
 - **`SizeChart { family, entries }`** — an implant family, ascending by
@@ -193,6 +202,8 @@ fn main() {
 | `size_from_measurements(&SizeChart, &[MeasurementInput]) -> Option<MultiMeasurementDecision>` | Every measurement votes; disagreement resolves by lowest rank, equal ranks up-size |
 | `MultiMeasurementDecision` / `Resolution` / `MeasurementVote` | The resolved label, how disagreement was resolved, and every vote with out-of-chart flags |
 | `check_gap_balance(&ResectionPlan, tolerance_mm) -> GapReport` | Extension/flexion gaps from resection-vs-thickness arithmetic; overstuffed and imbalance flags |
+| `LigamentModel { origin, insertion, slack_length_mm, stiffness_n_per_mm, side }` | One collateral as a spring with a slack range |
+| `assess_ligament_balance(&[(LigamentModel, Vec3, Vec3)], tolerance_n)` | Ligament-balance screen: per-collateral tension plus mediolateral imbalance |
 | `Vec3` from `tpt-med-geometry` | Landmark positions in patient space (mm) |
 
 ## Verification
@@ -233,6 +244,11 @@ fn main() {
   tilted 30° (constructed on a `sin 30° = 0.5` triangle) reads exactly 30°;
   the tibial decision resolves width-vs-depth disagreement by precedence with
   the out-of-chart vote recorded, and sizing is monotone in plafond width.
+- **Ligament balance** — tension is exactly zero through the slack range and
+  exactly linear beyond; planned length tracks moved attachments exactly;
+  the mediolateral imbalance is the signed side-sum difference; and the
+  documented trap — an over-released collateral balancing numerically while
+  slack — is asserted so the per-ligament `is_taut` flag cannot rot.
 
 ## Known Limitations
 
@@ -256,7 +272,10 @@ fn main() {
 - **Proxies are documented as proxies.** The femoral leg-length measurement
   references a pelvis landmark; the head height references calcar and apex.
   The crate's versions are the same *kind* of measurement from the landmarks
-  it actually has, and say so at the API surface.
+  they actually have, and say so at the API surface.
+- **Ligaments are screening springs.** Piecewise-linear slack-taut tension,
+  no viscoelasticity, no fibre bundles, no attachment compliance: enough for
+  balance screening, not for ligament-tension measurement devices.
 
 ## Related Crates
 
