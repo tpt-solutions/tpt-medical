@@ -12,6 +12,26 @@ changes for consumers of this crate.
 ## [Unreleased]
 
 ### Added
+- **`MembraneWall` / `step_coupled` / `MembraneWallState` (`fsi`) — wall
+  compliance, the reduced fluid–structure coupling.** The vessel wall is
+  an axisymmetric membrane: each axial section's radius relaxes
+  first-order toward the pressure-set equilibrium
+  `r_eq = r₀(1 + C·(p − p_ext))` (caller-cited fractional compliance and
+  relaxation time), and the domain mask is rebuilt from the radii every
+  step — the fluid feels the wall move, the wall feels the fluid's
+  pressure. Section transmural pressure is read from the accumulated
+  projection potential in the exact inverse of the Windkessel anchor's
+  write convention (`p[MPa] = ΔΠ·ρ/1e6`), gauge-relative to the outlet
+  layer, so only pressure differences drive the wall. Scope stated at
+  the API: a fixed grid with a moving stair-stepped mask (no ALE, no
+  immersed boundary), newly-wetted cells start at rest, and the
+  relaxation time should keep per-step wall motion well inside a cell.
+  Verified: a zero-compliance wall reproduces the fixed-domain run
+  **bit for bit** (flow fields, pressure potential and mask identical);
+  a compliant wall settles onto the pressure-set equilibrium radius
+  — re-derived independently from the final flow state — section by
+  section; the mask tracks the radii exactly; and the wall parameters
+  are validated.
 - `step_coupled(&mut CoupledWindkessel)`: **coupling to
   `tpt-med-cardiovascular` for a driven outlet boundary** — the
   projection's Dirichlet anchor is set to the boundary model's current
@@ -83,11 +103,12 @@ changes for consumers of this crate.
   insulated) so 1-D analytic tests are expressible on a 3-D box.
 
 ### Planned
-- Wall compliance, enabling a coupled fluid–structure boundary.
-- (Conjugate heat transfer is delivered — see `conjugate_step` in Added
-  above. Wall compliance and local wall refinement remain.)
 - Optional local wall refinement, so peak WSS at a geometric corner stops
-  being resolution dependent.
+  being resolution dependent. (Wall compliance is delivered — the reduced
+  membrane coupling in `fsi`; a full FSI/ALE solve remains the substrate
+  upgrade path.)
+
+
 - Multigrid pressure solve (a level beyond the new CG option) if CG's
   √-condition-number scaling is ever insufficient on production grids.
 

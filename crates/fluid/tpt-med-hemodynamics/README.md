@@ -71,6 +71,14 @@ browser, in seconds, without a licence.
   exposes the centreline profile for direct comparison with theory.
 - `PLASMA` constant (0.0012 Pa·s) for reference.
 
+- **Compliant membrane wall (FSI, reduced)** — `fsi::MembraneWall` +
+  `step_coupled`: the vessel wall as an axisymmetric membrane whose
+  per-section radius relaxes toward the pressure-set equilibrium while
+  the flow domain's mask is rebuilt each step — the fluid and the wall
+  coupled in one march. Gauge-relative transmural pressure read in the
+  inverse of the Windkessel anchor's units; a zero-compliance wall is a
+  bit-for-bit no-op. Fixed grid, moving mask — full ALE/immersed-boundary
+  FSI is the substrate upgrade path.
 - **Windkessel-driven outlet** — `step_coupled` imposes a
   `tpt-med-cardiovascular` `CoupledWindkessel`'s pressure as the outlet
   reference each step and feeds it the measured outlet flow: a driven,
