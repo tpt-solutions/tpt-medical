@@ -12,6 +12,31 @@ what changes for consumers of this crate.
 ## [Unreleased]
 
 ### Added
+- **`LeadFieldProjection` — the Stage 2 first slice: the pseudo-ECG
+  lead-field projection** (unbounded-bath reduction). The Geselowitz
+  source integral `V_e = −(σ_i/σ_e)(V_m,peak/4π)·∫_H ∇u_m·∇(1/r) dV`
+  (Geselowitz 1967; the standard pseudo-ECG form) evaluated face-wise
+  over adjacent solid voxel pairs — the finite-volume form, whose jump
+  weights carry each polarization front's exact mass and which is exact
+  for anisotropic spacing. Deliberately **no bath faces**: adding a
+  fictitious `u = 0` jump at the tissue boundary would double-count the
+  surface term that `−∫∇u·∇K = −∮u∂K/∂n` says the interior faces already
+  carry — and that identity is the physics the tests pin: a **closed**
+  polarization front (compact in every direction) integrates to ~zero,
+  while the same front **open** at the tissue boundary carries the
+  classical solid-angle signal with a dipolar 1/R² far field. The open
+  uniform front converges, under refinement, to the solid-angle integral
+  of the grid's cross-section — checked against an independent
+  brute-force quadrature, no closed-form shortcut. Electrodes within one
+  spacing of a solid voxel are rejected (the kernel is singular there)
+  rather than silently softened; `transmembrane_amplitude_mv` and
+  `conductivity_ratio` are caller-supplied and enter strictly linearly
+  (timing and morphology are independent of them). An end-to-end test
+  marches a real Stage 1 wavefront (`MonodomainTissue`) and projects it
+  at two electrodes. Scope recorded at the API surface: unbounded bath
+  only — torso geometry, conductivity heterogeneity and electrode
+  transfer impedances stay with a follow-up RFC, exactly as RFC 0005's
+  Stage 2 section scoped.
 - `FiberConductivity` + `MonodomainTissue::set_anisotropy`: **anisotropic
   (fiber-direction) conductivity** — the acceptance point for an external
   fiber-field source (atlas or DTI derivation, which the crate still does
@@ -26,8 +51,10 @@ what changes for consumers of this crate.
   from dev-dependency to dependency (`Vec3` is now production API).
 
 ### Planned
-- Stage 2 (ECG/EGM forward problem via pseudo-bidomain lead-field
-  projection) and Stage 3 (ablation screening), both kept at roadmap depth
+- Stage 2's torso-model remainder (torso geometry, conductivity
+  heterogeneity, electrode transfer impedances — a follow-up RFC per the
+  RFC's own staging) and Stage 3 (ablation screening), kept at roadmap
+  depth
   in `rfcs/0005-cardiac-electrophysiology.md` pending Stage 1 usage and,
   for Stage 3, clinical-data validation.
 - Promotion path to `tpt-science`'s electrophysiology crate for ionic-model

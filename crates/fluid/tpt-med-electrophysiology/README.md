@@ -2,8 +2,9 @@
 
 Monodomain cardiac electrophysiology on voxel geometry: Mitchell-Schaeffer
 ionic kinetics, explicit RK2 reaction-diffusion on a `tpt-med-meshing`
-segmentation mask, and an S1-S2 single-cell restitution protocol. Zero
-external crates.
+segmentation mask, an S1-S2 single-cell restitution protocol, and the
+Stage 2 pseudo-ECG lead-field projection (unbounded-bath first slice).
+Zero external crates beyond the meshing input.
 
 [![Crates.io](https://img.shields.io/badge/crates.io-tpt--med--electrophysiology-orange)](https://crates.io/crates/tpt-med-electrophysiology)
 [![Docs.rs](https://img.shields.io/badge/docs.rs-tpt--med--electrophysiology-blue)](https://docs.rs/tpt-med-electrophysiology)
@@ -11,8 +12,8 @@ external crates.
 | | |
 |---|---|
 | **Layer** | `fluid` (grouped with the cardiac domain, alongside `tpt-med-cardiovascular`) |
-| **Status** | Alpha, `0.1.0` — Stage 1 only |
-| **Scope** | RFC 0005 Stage 1 — monodomain on voxel geometry |
+| **Status** | Alpha, `0.1.0` — Stage 1; Stage 2's lead-field slice |
+| **Scope** | RFC 0005 Stage 1 — monodomain on voxel geometry; Stage 2 first slice — unbounded-bath lead-field projection |
 | **License** | MIT OR Apache-2.0 |
 | **MSRV** | 1.84 |
 | **Dependencies** | [`tpt-med-meshing`](../../imaging/tpt-med-meshing) |
@@ -58,6 +59,14 @@ an already-shipped crate's version history.
 - **`activation_map()`** — first `V >= v_gate` crossing time per voxel, the
   output a Stage 2 lead-field projection or a Stage 3 lesion-line evaluation
   would consume.
+- **Pseudo-ECG lead-field projection** (`LeadFieldProjection`, Stage 2
+  first slice) — the Geselowitz/pseudo-bidomain source integral
+  `V_e = −(σ_i/σ_e)(V_m,peak/4π)·∫∇u_m·∇(1/r)dV` evaluated face-wise over
+  the tissue, so any caller-placed electrode (body-surface point or
+  epicardial electrogram site) sees the morphology and timing of a Stage 1
+  field. Face-based (finite-volume) discretization: a closed polarization
+  front cancels, an open front carries the classical solid-angle signal.
+  Unbounded bath only — no torso heterogeneity (see Explicit Non-Features).
 - **`S1S2Protocol`** — a single-cell (0D, no diffusion) S1-S2 restitution
   protocol: `s1_beats` paced stimuli at `s1_cycle_length_ms`, then one test
   stimulus per `s2_coupling_intervals_ms` entry, each measured independently
@@ -76,10 +85,12 @@ an already-shipped crate's version history.
   direction. Needs a fiber-field source (an atlas or DTI derivation) this
   crate has no source for — see Known Limitations and the RFC's Unresolved
   Questions.
-- **No ECG/EGM forward problem (Stage 2) and no ablation screening
-  (Stage 3).** Both are named, staged, and deliberately kept at roadmap
-  depth in the RFC pending Stage 1 shipping and, for Stage 3, clinical-data
-  validation this project does not have.
+- **The Stage 2 slice is the unbounded-bath source integral only** — no
+  torso geometry, no conductivity heterogeneity, no electrode transfer
+  impedances: the pieces a quantitative 12-lead comparison would need,
+  which the RFC deliberately leaves to a follow-up. **Ablation screening
+  (Stage 3)** remains fully open, gated on clinical-data validation this
+  project does not have.
 - **No operator splitting.** Reaction and diffusion are integrated together
   by one unsplit RK2 step. Mitchell-Schaeffer's kinetics are mild enough for
   this at screening fidelity; a stiffer future ionic model might need
@@ -178,6 +189,9 @@ fn main() -> Result<(), tpt_med_electrophysiology::EpError> {
 | `MonodomainTissue::step(dt)` | One explicit RK2 step; errs over the stability bound |
 | `MonodomainTissue::activation_map()` | First `V >= v_gate` crossing time per voxel |
 | `S1S2Protocol::run(&params)` | `(diastolic_interval, apd)` pairs from the S1-S2 protocol |
+| `LeadFieldProjection::from_mask(&mask)` | The projection geometry over a segmentation mask |
+| `LeadFieldProjection::potential_at(electrode, v, amp_mv, sigma_ratio)` | Pseudo-ECG potential (mV) at one electrode for a Stage 1 field |
+| `LeadFieldProjection::potentials_at(electrodes, v, amp_mv, sigma_ratio)` | A whole lead set for one field snapshot |
 | `EpError` | `EmptyMask`, `NonFiniteParameter`, `UnstableTimeStep`, `InvalidDiffusivity`, `RestitutionFailed` |
 | `Result<T>` | Crate result alias |
 
@@ -207,10 +221,20 @@ fn main() -> Result<(), tpt_med_electrophysiology::EpError> {
   checked by `scripts/diff-golden.sh`. It is a code-verification fixture
   (self-consistent numerical reproduction, no external reference exists),
   not a validation against patient or ex-vivo data.
+- **Lead-field projection** (Stage 2 slice): the face sum matches a
+  hand-computed two-voxel reference to 1e-12 (pins indexing, signs and the
+  face convention); a closed polarization front cancels while the same
+  front opened at the tissue boundary carries signal with the dipolar 1/R²
+  far field (the integration-by-parts identity the reduction lives on); an
+  open uniform front converges to the solid-angle integral of its
+  cross-section against an independent brute-force quadrature under
+  refinement; scales enter strictly linearly; electrodes at or inside the
+  tissue are rejected (the kernel is singular there); and an end-to-end
+  test marches a real Stage 1 wavefront and projects it at two electrodes.
 - **Not verified**: grid-convergence of tissue-level conduction velocity
   (named in the RFC as a Richardson-extrapolation check, not yet reduced to
   a checked-in number), anisotropic conduction (not modelled), and
-  everything Stage 2/3 would need.
+  everything a torso-model Stage 2 or Stage 3 would need.
 
 ## Known Limitations
 
@@ -223,6 +247,11 @@ fn main() -> Result<(), tpt_med_electrophysiology::EpError> {
   call it again on a step where a pulse should still be active silently
   ends the pulse early, rather than erroring — there is no way to detect
   "the caller meant to keep stimulating" from inside the tissue.
+- **The lead field is an unbounded-bath reduction.** Signal amplitude
+  scales with the caller-supplied `σ_i/σ_e` ratio and `V_m` amplitude —
+  neither is calibrated here — and torso heterogeneity is absent, so
+  absolute mV levels are screening quantities only. Electrodes must sit
+  outside the tissue (rejected within one voxel spacing).
 - **No visualisation or activation-map export helpers.** `activation_map()`
   returns a flat `Vec<Option<f64>>`; turning that into an image or a WebGL
   overlay (the Stage 3 product vision) is out of scope here.

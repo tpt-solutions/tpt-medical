@@ -35,6 +35,14 @@ pub enum EpError {
     /// usually a cycle length shorter than the model's own refractory
     /// period, or a stimulus too weak to reach `v_gate`).
     RestitutionFailed(String),
+    /// A [`crate::leadfield::LeadFieldProjection`] input was invalid: a
+    /// potential field of the wrong length, a non-finite scale, or an
+    /// electrode at or inside the tissue, where the unbounded-medium
+    /// kernel this projection uses is singular.
+    InvalidLeadField {
+        /// What was wrong.
+        reason: String,
+    },
 }
 
 impl core::fmt::Display for EpError {
@@ -56,6 +64,9 @@ impl core::fmt::Display for EpError {
                 write!(f, "fiber conductivity field rejected: {reason}")
             }
             EpError::RestitutionFailed(why) => write!(f, "S1-S2 restitution protocol: {why}"),
+            EpError::InvalidLeadField { reason } => {
+                write!(f, "lead-field projection rejected: {reason}")
+            }
         }
     }
 }

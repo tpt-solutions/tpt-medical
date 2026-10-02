@@ -49,11 +49,13 @@
 
 pub mod error;
 pub mod kinetics;
+pub mod leadfield;
 pub mod restitution;
 pub mod tissue;
 
 pub use error::EpError;
 pub use kinetics::MitchellSchaefferParams;
+pub use leadfield::LeadFieldProjection;
 pub use restitution::S1S2Protocol;
 pub use tissue::MonodomainTissue;
 

@@ -1,6 +1,9 @@
 # RFC 0005: Cardiac Electrophysiology
 
-- **Status:** Accepted
+- **Status:** Accepted — Stage 1 implemented (2026-09-27); Stage 2's
+  unbounded-bath lead-field slice implemented (2026-10-03, see the Stage 2
+  section's status note); the torso-model remainder and Stage 3 stay at
+  roadmap depth
 - **Started:** 2026-09-20
 - **Crates:** `tpt-med-cardiovascular` (0D today), new `tpt-med-electrophysiology`
   (Stage 1)
@@ -197,6 +200,21 @@ intervals as quantitative metrics). Kept at roadmap depth: the lead-field
 formulation, torso-conductivity assumptions, and electrode-placement
 convention are real design decisions this revision does not make. A
 follow-up RFC picks this up once Stage 1 has shipped and been exercised.
+
+  **First slice implemented (2026-10-03, maintainer direction): the
+  unbounded-bath source integral** — `LeadFieldProjection` in
+  `tpt-med-electrophysiology` evaluates the Geselowitz/pseudo-bidomain
+  integral face-wise over the tissue with no torso model. The closure
+  question this section flagged as a real design decision is settled for
+  this slice by the integration-by-parts identity: no bath faces (a
+  fictitious `u = 0` jump at the tissue boundary double-counts the surface
+  term the interior faces already carry), and the tests pin the identity's
+  observable consequences — closed fronts cancel, boundary-open fronts
+  carry the solid-angle signal with a dipolar far field, and an open
+  uniform front converges to an independent solid-angle quadrature. What
+  remains at roadmap depth is exactly the torso half: geometry,
+  conductivity heterogeneity, and electrode transfer impedances, which a
+  quantitative 12-lead comparison needs and a follow-up RFC must own.
 
 ### Stage 3 — ablation screening workflow
 
