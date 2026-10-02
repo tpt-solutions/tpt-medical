@@ -90,6 +90,13 @@ voxel grid.
   a contour mesh are filled, never resecting. Both are cut-sequenced and
   mesh-validated at build time. No fixation mechanics — placement and
   interface bookkeeping, not a stem-strength model.
+- **Structures at risk** — `SoftTissueStructure` capsules (a neurovascular
+  bundle, a ligament) registered on the plan and screened against every
+  cut surface at execution: each (structure, cut) pair gets a clearance
+  (signed distance to the removed region minus the envelope, sampled
+  along the capsule at ≤ half-radius stride) and a breach flag. Capsule
+  stand-ins, not deformable tissue — the question answered is whether
+  the cut field comes within the structure's envelope.
 - **Per-fragment addressing** — a cut with
   `DiscardedSide::RetainAs { name }` keeps *both* sides as named
   fragments, and `move_fragment_named` repositions one of them
@@ -183,6 +190,9 @@ fn main() {
 | `ImplantPlacement { triangles, fragment_name, marker_value }` | Component placement: bone replaced, marker voxels written, interface area measured |
 | `GraftReconstruction { triangles, fragment_name, value }` | Defect reconstruction: empty voxels filled, interface area measured |
 | `StepMeasurement` | `Cut`, `Implant`, `Graft`, or `Move` measurements, index-aligned with the audit log |
+| `SoftTissueStructure { name, start, end, radius_mm }` | A capsule stand-in for a structure at risk |
+| `StructureRisk { structure, cut, clearance_mm, breached }` | One watched structure's clearance against one cut |
+| `VirtualSurgery::watch_structures(..)` | Register structures; verdicts land in `SurgeryReport::structures_at_risk` |
 | `FragmentTransform { rotation_axis, rotation_angle, pivot, translation }` | Rigid only: rotation about `pivot`, then translation |
 | `FragmentTransform::apply_to_point(Vec3) -> Vec3` | Transform a point |
 | `FragmentTransform::apply_to_model(&VoxelModel) -> VoxelModel` | Transform a whole model |
@@ -234,6 +244,13 @@ fn main() {
   then grafted with the same surface restores the model's voxel count
   exactly; grafting touches no bone voxels; and both steps reject invalid
   meshes and respect the cut sequencing rules.
+- **Structures-at-risk screening** — a plane cut crossing a capsule
+  breaches with the exact end-sample depth; a parallel capsule clears by
+  exactly distance minus radius (planes are closed form along the whole
+  segment); a cylinder's radial margin reads exactly; a kept-region
+  nerve whose *envelope* pokes through a contour surface breaches while
+  the same nerve clears the cylinder it lives inside — two cuts, two
+  verdicts, one structure; and no structures means no entries.
 
 ## Known Limitations
 

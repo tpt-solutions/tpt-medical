@@ -1127,6 +1127,46 @@ pub struct SurgeryReport {
     pub measurements: Vec<StepMeasurement>,
     /// Summed resection volume over all cut steps (mm³).
     pub total_resection_volume_mm3: f64,
+    /// Structures-at-risk screening: one entry per watched structure
+    /// × per cut step, in (structure, step) order. Empty when no
+    /// structures were registered (see
+    /// [`VirtualSurgery::watch_structures`]).
+    pub structures_at_risk: Vec<StructureRisk>,
+}
+
+/// A **soft-tissue structure at risk**: a capsule (a segment with a
+/// radius) standing in for a neurovascular bundle, ligament or tendon,
+/// registered on the plan and screened against every cut surface. The
+/// capsule is a screening stand-in, not deformable soft tissue — the
+/// question answered is *does the plan's cut field come within the
+/// structure's envelope*, not how the tissue moves.
+#[derive(Debug, Clone)]
+pub struct SoftTissueStructure {
+    /// Audit label (e.g. `"common-peroneal-nerve"`).
+    pub name: String,
+    /// Capsule segment start (patient space).
+    pub start: Vec3,
+    /// Capsule segment end (patient space).
+    pub end: Vec3,
+    /// Capsule radius (mm) — the structure's envelope.
+    pub radius_mm: f64,
+}
+
+/// One watched structure's clearance against one cut: the smallest
+/// signed distance from the capsule envelope to the cut's removed
+/// region, negative when the envelope is breached.
+#[derive(Debug, Clone)]
+pub struct StructureRisk {
+    /// The structure's audit label.
+    pub structure: String,
+    /// The cut step's audit label.
+    pub cut: String,
+    /// Clearance (mm): min over capsule samples of (signed distance to
+    /// the removed region) − envelope radius. ≤ 0 means the cut
+    /// intersects the structure's envelope.
+    pub clearance_mm: f64,
+    /// True when the cut breaches the envelope.
+    pub breached: bool,
 }
 
 /// A named, independently addressable piece of the operated model
@@ -1154,6 +1194,8 @@ pub struct VirtualSurgery {
     fragment_count: usize,
     /// The last named-moved fragment, if any.
     last_named_move: Option<String>,
+    /// Soft-tissue structures watched for collateral damage.
+    watched: Vec<SoftTissueStructure>,
 }
 
 impl VirtualSurgery {
@@ -1166,7 +1208,19 @@ impl VirtualSurgery {
             fragment_names: vec![String::new()],
             fragment_count: 1,
             last_named_move: None,
+            watched: Vec::new(),
         }
+    }
+
+    /// Registers soft-tissue structures (capsule stand-ins) to screen
+    /// against every cut surface at execution time; the verdicts land in
+    /// [`SurgeryReport::structures_at_risk`].
+    pub fn watch_structures(
+        &mut self,
+        structures: impl IntoIterator<Item = SoftTissueStructure>,
+    ) -> &mut Self {
+        self.watched.extend(structures);
+        self
     }
 
     /// Appends an osteotomy step.
@@ -1675,12 +1729,14 @@ impl VirtualSurgery {
             }
         }
         let model = compose_fragments(&fragments, &self.base);
+        let structures_at_risk = self.screen_structures(&self.steps, &self.watched);
         (
             model,
             SurgeryReport {
                 step_log: log,
                 measurements,
                 total_resection_volume_mm3: total_resection,
+                structures_at_risk,
             },
         )
     }
@@ -1688,6 +1744,119 @@ impl VirtualSurgery {
     /// The pre-operative base model (for side-by-side planning views).
     pub fn base_model(&self) -> &VoxelModel {
         &self.base
+    }
+
+    /// Screens the watched structures against every cut surface in the
+    /// plan. The signed distance to a cut's removed region is closed
+    /// form for planes, wedges and cylinders; mesh cuts sample the
+    /// structure segment at a stride of at most half the capsule radius
+    /// (documented sampling error, no closed-form point-mesh distance
+    /// along a segment).
+    fn screen_structures(
+        &self,
+        steps: &[PlanStep],
+        structures: &[SoftTissueStructure],
+    ) -> Vec<StructureRisk> {
+        // Collect (label, removed-region signed distance) per cut step.
+        let mut cuts: Vec<(String, Box<dyn Fn(Vec3) -> f64>)> = Vec::new();
+        for step in steps {
+            match step {
+                PlanStep::Cut(c) => {
+                    let plane = c.plane;
+                    let keep_positive = c.keep_positive;
+                    let half = c.kerf_width * 0.5;
+                    cuts.push((
+                        format!("cut:{}", c.fragment_name),
+                        Box::new(move |p: Vec3| {
+                            let d = plane.signed_distance(p);
+                            if keep_positive {
+                                d + half
+                            } else {
+                                -d + half
+                            }
+                        }),
+                    ));
+                }
+                PlanStep::Wedge(w) => {
+                    let (a, b) = (w.plane_a, w.plane_b);
+                    let half = w.kerf_width * 0.5;
+                    cuts.push((
+                        format!("wedge:{}", w.fragment_name),
+                        Box::new(move |p: Vec3| {
+                            (a.signed_distance(p) + half).max(b.signed_distance(p) + half)
+                        }),
+                    ));
+                }
+                PlanStep::Cylinder(c) => {
+                    let axis_origin = c.axis_origin;
+                    let dir = c.axis_direction.normalize();
+                    let radius = c.radius;
+                    let half = c.kerf_width * 0.5;
+                    let keep_inside = c.keep_inside;
+                    cuts.push((
+                        format!("cylinder:{}", c.fragment_name),
+                        Box::new(move |p: Vec3| {
+                            let w = p - axis_origin;
+                            let along = w.dot(dir);
+                            let radial = (w - dir * along).norm();
+                            if keep_inside {
+                                // Removed region: outside the wall.
+                                (radius + half) - radial
+                            } else {
+                                // Removed region: the core.
+                                radial - (radius - half)
+                            }
+                        }),
+                    ));
+                }
+                PlanStep::Mesh(c) => {
+                    let triangles = c.triangles.clone();
+                    let half = c.kerf_width * 0.5;
+                    let keep_inside = c.keep_inside;
+                    cuts.push((
+                        format!("mesh:{}", c.fragment_name),
+                        Box::new(move |p: Vec3| {
+                            let d = mesh_signed_distance(p, &triangles);
+                            if keep_inside {
+                                // Removed: the exterior beyond the kerf
+                                // face (d > −half).
+                                -(d + half)
+                            } else {
+                                // Removed: the interior inside the kerf
+                                // face (d < +half).
+                                d - half
+                            }
+                        }),
+                    ));
+                }
+                _ => continue,
+            }
+        }
+        let mut risks = Vec::new();
+        for structure in structures {
+            // Sample the capsule axis at a stride of at most half the
+            // envelope radius (bounds the sampling error of the mesh
+            // path; the closed-form paths are exact at every sample).
+            let len = (structure.end - structure.start).norm();
+            let stride = (structure.radius_mm.max(0.5)) * 0.5;
+            let samples = (1usize + (len / stride).ceil() as usize).max(2);
+            for (label, sdf) in &cuts {
+                let mut min_signed = f64::INFINITY;
+                for s in 0..samples {
+                    let t = s as f64 / (samples - 1) as f64;
+                    let p = structure.start * (1.0 - t) + structure.end * t;
+                    min_signed = min_signed.min(sdf(p));
+                }
+                let clearance = min_signed - structure.radius_mm;
+                risks.push(StructureRisk {
+                    structure: structure.name.clone(),
+                    cut: label.clone(),
+                    clearance_mm: clearance,
+                    breached: clearance <= 0.0,
+                });
+            }
+        }
+        risks
     }
 
     /// Fragment labels recorded so far, deduplicated and ordered.
@@ -2978,5 +3147,151 @@ mod tests {
         // Each of the 8 cavity voxels faces bone on its 3 outward sides.
         assert!((m.interface_area_mm2 - 24.0).abs() < 1e-9);
         assert!(report.step_log[1].starts_with("graft:ibg"));
+    }
+
+    fn structure(name: &str, start: Vec3, end: Vec3, radius: f64) -> SoftTissueStructure {
+        SoftTissueStructure {
+            name: name.into(),
+            start,
+            end,
+            radius_mm: radius,
+        }
+    }
+
+    #[test]
+    fn plane_cut_screen_breaches_and_clears_exactly() {
+        // A plane at z = 0 keeping the positive side. A nerve crossing
+        // the plane is breached; one parallel at a known distance is
+        // cleared by exactly that distance minus the envelope radius
+        // (the plane path is closed form along the whole segment, so no
+        // sampling slop).
+        let mut plan = VirtualSurgery::new(cube_model());
+        plan.cut(OsteotomyCut {
+            plane: Plane::from_point_normal(Vec3::ZERO, Vec3::Z).expect("plane"),
+            fragment_name: "distal".into(),
+            keep_positive: true,
+            kerf_width: 0.0,
+            discarded: DiscardedSide::Resect,
+        })
+        .expect("cut");
+        plan.watch_structures([
+            structure(
+                "crossing",
+                Vec3::new(0.0, 0.0, -2.0),
+                Vec3::new(0.0, 0.0, 2.0),
+                0.5,
+            ),
+            structure(
+                "parallel",
+                Vec3::new(2.0, 0.0, 1.0),
+                Vec3::new(2.0, 0.0, 3.0),
+                0.5,
+            ),
+        ]);
+        let (_, report) = plan.execute_with_report();
+        assert_eq!(report.structures_at_risk.len(), 2);
+        let crossing = &report.structures_at_risk[0];
+        assert_eq!(crossing.structure, "crossing");
+        assert!(crossing.breached, "a crossing structure must breach");
+        // The segment's far end sits 2 mm inside the removed side; the
+        // minimum over samples is exactly at the end: clearance =
+        // −(2 + 0.5).
+        assert!(
+            (crossing.clearance_mm + 2.5).abs() < 1e-9,
+            "{}",
+            crossing.clearance_mm
+        );
+        let parallel = &report.structures_at_risk[1];
+        assert!(!parallel.breached);
+        // Both endpoints on the kept side, the nearer 1 mm from the
+        // plane: clearance = 1 − 0.5.
+        assert!(
+            (parallel.clearance_mm - 0.5).abs() < 1e-9,
+            "{}",
+            parallel.clearance_mm
+        );
+    }
+
+    #[test]
+    fn mesh_and_cylinder_cuts_screen_their_removed_regions() {
+        // A box-contoured resection (interior removed) with a nerve
+        // through the middle: breached. A cylinder cut keeping its core
+        // with a nerve outside the wall: cleared by the radial margin.
+        let mut plan = VirtualSurgery::new(cube_model());
+        plan.mesh(MeshCut {
+            triangles: box_mesh(Vec3::new(-0.6, -0.7, -0.55), Vec3::new(1.4, 1.3, 1.45)),
+            fragment_name: "contour".into(),
+            keep_inside: true,
+            kerf_width: 0.0,
+            discarded: DiscardedSide::Resect,
+        })
+        .expect("mesh cut");
+        plan.cylinder(CylindricalCut {
+            axis_origin: Vec3::new(0.0, 0.0, 0.0),
+            axis_direction: Vec3::Z,
+            radius: 2.0,
+            fragment_name: "core".into(),
+            keep_inside: true,
+            kerf_width: 0.0,
+            discarded: DiscardedSide::Resect,
+        })
+        .expect("cylinder cut");
+        plan.watch_structures([
+            structure(
+                "in-box",
+                Vec3::new(0.0, 0.0, -0.4),
+                Vec3::new(1.0, 0.5, 1.2),
+                0.3,
+            ),
+            structure(
+                "in-core",
+                Vec3::new(1.2, 0.0, -1.0),
+                Vec3::new(1.2, 0.0, 1.0),
+                0.5,
+            ),
+        ]);
+        let (_, report) = plan.execute_with_report();
+        // (structure, cut) order: in-box×mesh, in-box×cylinder,
+        // in-core×mesh, in-core×cylinder.
+        assert_eq!(report.structures_at_risk.len(), 4);
+        let in_box_mesh = &report.structures_at_risk[0];
+        assert!(in_box_mesh.breached);
+        assert!(in_box_mesh.cut.starts_with("mesh:"));
+        // The nerve is inside the KEPT contour, but its envelope
+        // (0.3 mm) pokes through the nearest face (the shallowest
+        // sample sits 0.15 mm inside): clearance = 0.15 − 0.3.
+        assert!(
+            (in_box_mesh.clearance_mm + 0.15).abs() < 0.05,
+            "{}",
+            in_box_mesh.clearance_mm
+        );
+        // The in-core nerve sits inside the kept cylinder core (radial
+        // 1.2 < 2.0): the cylinder screen clears it by the radial
+        // margin minus the envelope (closed form along the segment).
+        let in_core_cyl = &report.structures_at_risk[3];
+        assert!(in_core_cyl.cut.starts_with("cylinder:"));
+        assert!(!in_core_cyl.breached);
+        assert!((in_core_cyl.clearance_mm - 0.3).abs() < 1e-9);
+        // The same nerve crosses the mesh cut's removed exterior (the
+        // box only spans z ∈ (−0.55, 1.45)), so the mesh screen
+        // breaches it — two cuts, two verdicts, one structure.
+        let in_core_mesh = &report.structures_at_risk[2];
+        assert!(in_core_mesh.cut.starts_with("mesh:"));
+        assert!(in_core_mesh.breached);
+    }
+
+    #[test]
+    fn no_structures_means_no_screen_entries() {
+        let mut plan = VirtualSurgery::new(cube_model());
+        plan.cut(OsteotomyCut {
+            plane: Plane::from_point_normal(Vec3::ZERO, Vec3::Z).expect("plane"),
+            fragment_name: "distal".into(),
+            keep_positive: true,
+            kerf_width: 0.0,
+            discarded: DiscardedSide::Resect,
+        })
+        .expect("cut");
+        let (_, report) = plan.execute_with_report();
+        assert!(report.structures_at_risk.is_empty());
     }
 }

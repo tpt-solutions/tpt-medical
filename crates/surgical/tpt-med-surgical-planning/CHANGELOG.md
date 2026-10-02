@@ -12,6 +12,23 @@ changes for consumers of this crate.
 ## [Unreleased]
 
 ### Added
+- **`SoftTissueStructure` / `StructureRisk` — structures-at-risk
+  screening**, the first soft-tissue capability: capsules (a segment
+  with an envelope radius) registered via `VirtualSurgery::watch_structures`
+  and screened at execution against every cut surface in the plan —
+  plane, wedge, cylinder and mesh alike — with a per-(structure, cut)
+  clearance (signed distance to the removed region minus the envelope;
+  negative = breached) in `SurgeryReport::structures_at_risk`. The
+  removed-region SDFs are closed form for planes/wedges/cylinders and
+  sampled at ≤ half-radius stride for meshes (documented error bound);
+  the mesh closure's kerf convention was written so the removed side's
+  sign is negative exactly where the apply path resects. Capsule
+  stand-ins, not deformable tissue. Verified: a crossing capsule
+  breaches at the exact end-sample depth, a parallel one clears by
+  exactly distance-minus-radius, a cylinder's radial margin is exact,
+  an envelope poking through a kept contour breaches while the same
+  structure clears the cylinder it lives inside, and unregistered
+  structures produce no entries.
 - **`ImplantPlacement` / `GraftReconstruction` — implant component
   placement and bone graft / defect reconstruction.** A closed contour
   mesh defines the component or graft (pose baked into the vertices);
@@ -121,6 +138,8 @@ changes for consumers of this crate.
 - Independently addressable implant fragments (implants currently live in
   the operated fragment's grid under a marker value, with the pose baked
   into the contour vertices).
+- Deformable soft tissue: the structures-at-risk screen is capsule
+  stand-ins against the cut field, not tissue that moves.
 - Soft-tissue structures, so a plan can be checked for collateral damage to
   ligaments, capsules and neurovascular bundles.
 
