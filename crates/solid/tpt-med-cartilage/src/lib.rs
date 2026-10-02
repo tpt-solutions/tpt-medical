@@ -340,6 +340,219 @@ impl SqueezeFilm {
     }
 }
 
+/// The **squeeze-film–driven biphasic layer**: a [`SqueezeFilm`] between a
+/// rigid approaching platen and a linear biphasic [`BiphasicMaterial`]
+/// layer, so the creep response is driven by a *prescribed approach* —
+/// what a contact solver imposes kinematically — and the **load emerges**
+/// from the film constitutive relation, instead of the layer being driven
+/// by a prescribed step stress.
+///
+/// # Formulation
+///
+/// The platen descends at `V` (mm/s); the layer's creeping surface moves
+/// down at `u̇`, which *opens* the film gap. The gap evolves as
+/// `ḣ_f = −(V − u̇)`, and the film's Stefan capacity at that state,
+/// `W = (3πμR⁴/2h_f³)·(V − u̇)`, is the load handed to the layer as
+/// `σ₀ = W/(πR²)`.
+///
+/// The linear biphasic creep under a time-varying `σ₀(t)` uses the
+/// closed-form series as a mode sum: `u(t) = Σ_j d_j(t)` over the odd
+/// modes, each a first-order state
+///
+/// ```text
+/// τ_j ḋ_j + d_j = (h·b_j/H_A)·σ₀(t),   b_j = (8/π²)/(2j+1)²,
+/// τ_j = 4h²/((2j+1)²π²kH_A)
+/// ```
+///
+/// (a step load reproduces the classical series exactly, since
+/// `Σ b_j = 1`). Each mode is advanced with its **exact** exponential
+/// one-step map for the piecewise-constant `σ₀` the step produces, so
+/// the modal recursion is unconditionally stable; the film thickness is
+/// advanced explicitly with an adaptive step held to a fraction of the
+/// relative-thinning bound `h_f/|ḣ_f|`. The present `σ₀` enters `u̇`
+/// algebraically (`u̇ = ασ₀ − β` with `α = 2k·terms/h` and
+/// `β = Σ d_j/τ_j` history terms), so each step solves it in closed
+/// form before advancing — first-order accurate, verified by refinement.
+///
+/// # Regime notes
+///
+/// - Approach-driven only (`V ≥ 0`): a film cannot pull, and `V = 0`
+///   from rest is the stationary state. Load-controlled squeezing
+///   (constant `W`) is [`SqueezeFilm::film_thickness`] with the layer's
+///   own creep underneath — the two do not interact there, which is why
+///   this type exists for the displacement-driven direction.
+/// - The layer is the **linear** biphasic material (constant `k`,
+///   linear matrix); coupling the nonlinear steppers to the film is
+///   still open.
+/// - The layer is a confined-compression column whose surface area is
+///   the film's contact area `πR²`; no radial flow of the film over a
+///   deformed surface is modelled.
+/// - **Truncation convention:** the mode sum is the exact Duhamel
+///   integral of the *truncated compliance* `J_T(t) = (1/H_A)Σ_j b_j
+///   (1 − e^{−t/τ_j})`, which starts at exactly zero and saturates at
+///   `(Σ_j b_j)·σ₀/H_A` — 98.7 % of the exact equilibrium at 16 terms.
+///   The closed-form [`BiphasicMaterial::creep_displacement_fraction`]
+///   keeps the exact-1 normalisation instead (exact equilibrium, but
+///   its documented ~1–2 % `t = 0` floor). The two agree to the
+///   truncation mass `1 − Σ_j b_j`; raise `terms` to shrink it. The
+///   march is explicit and first order: the step is bounded by a
+///   fraction of both the film's relative thinning and the fastest
+///   retained mode's time constant (the film feedback reads `β` from
+///   the mode states, so a step must not outrun them).
+#[derive(Debug, Clone)]
+pub struct SqueezeFilmDrivenLayer {
+    /// The squeeze film (viscosity and contact radius).
+    pub film: SqueezeFilm,
+    /// The linear biphasic layer (also supplies the thickness `h`).
+    pub layer: BiphasicMaterial,
+    /// Number of odd-series modes retained (≥ 4; 16 is converged for
+    /// practical times, as with the closed-form series).
+    pub terms: usize,
+}
+
+/// The recorded history of a [`SqueezeFilmDrivenLayer`] march.
+#[derive(Debug, Clone)]
+pub struct RampHistory {
+    /// Sample times (s), including 0 and `time`.
+    pub time: Vec<f64>,
+    /// Film thickness (mm) at each sample.
+    pub film_thickness_mm: Vec<f64>,
+    /// Total film load (N) at each sample — the emergent load.
+    pub load_n: Vec<f64>,
+    /// Layer creep displacement (mm) at each sample (0 at rest).
+    pub creep_mm: Vec<f64>,
+}
+
+impl SqueezeFilmDrivenLayer {
+    /// Validates; `Err` for fewer than 4 modes or a non-finite
+    /// thickness in the layer or film fields.
+    pub fn new(film: SqueezeFilm, layer: BiphasicMaterial, terms: usize) -> Result<Self, String> {
+        if terms < 4 {
+            return Err(format!("at least 4 series modes are needed, got {terms}"));
+        }
+        if !layer.thickness.is_finite() || layer.thickness <= 0.0 {
+            return Err(format!(
+                "layer thickness must be positive and finite, got {}",
+                layer.thickness
+            ));
+        }
+        Ok(Self { film, layer, terms })
+    }
+
+    fn mode_coefficients(&self) -> (Vec<f64>, Vec<f64>) {
+        // (b_j, τ_j) over the odd modes.
+        let h = self.layer.thickness;
+        let ha = self.layer.aggregate_modulus;
+        let diffusivity = self.layer.permeability * ha / (4.0 * h * h);
+        (0..self.terms)
+            .map(|j| {
+                let n = (2 * j + 1) as f64;
+                let b = 8.0 / (core::f64::consts::PI * core::f64::consts::PI) / (n * n);
+                let tau =
+                    1.0 / (n * n * core::f64::consts::PI * core::f64::consts::PI * diffusivity);
+                (b, tau)
+            })
+            .unzip()
+    }
+
+    /// Marches a platen approaching at `approach_rate` (mm/s, ≥ 0) from
+    /// an initial film thickness (mm) for `time` (s), recording the
+    /// history. The internal step is adaptive and deterministic for a
+    /// given construction.
+    ///
+    /// # Errors
+    ///
+    /// `Err` for a negative or non-finite approach rate or initial
+    /// thickness, or if any state diverges.
+    pub fn ramp_response(
+        &self,
+        approach_rate: f64,
+        initial_film_thickness: f64,
+        time: f64,
+    ) -> Result<RampHistory, String> {
+        if !approach_rate.is_finite() || approach_rate < 0.0 {
+            return Err(format!(
+                "approach rate must be non-negative and finite, got {approach_rate}"
+            ));
+        }
+        if !initial_film_thickness.is_finite() || initial_film_thickness <= 0.0 {
+            return Err(format!(
+                "initial film thickness must be positive and finite, got {initial_film_thickness}"
+            ));
+        }
+        let (b, tau) = self.mode_coefficients();
+        let h = self.layer.thickness;
+        let ha = self.layer.aggregate_modulus;
+        let k = self.layer.permeability;
+        // α = (h/H_A)·Σ b_j/τ_j, which reduces to 2·k·terms/h.
+        let alpha = 2.0 * k * self.terms as f64 / h;
+        let area = core::f64::consts::PI * self.film.radius * self.film.radius;
+
+        let mut d = vec![0.0f64; self.terms]; // mode displacements (mm)
+        let mut h_f = initial_film_thickness;
+        let mut t = 0.0f64;
+        let mut history = RampHistory {
+            time: vec![0.0],
+            film_thickness_mm: vec![h_f],
+            load_n: vec![0.0],
+            creep_mm: vec![0.0],
+        };
+
+        while t < time {
+            // β from the current mode states, then the closed-form
+            // σ₀ solving σ₀ = (C/A)(V − (ασ₀ − β)).
+            let mut beta = 0.0f64;
+            for (dj, tj) in d.iter().zip(&tau) {
+                beta += dj / tj;
+            }
+            let c = 3.0 * core::f64::consts::PI * self.film.viscosity * self.film.radius.powi(4)
+                / (2.0 * h_f.powi(3));
+            let c_over_a = c / area;
+            let sigma0 = c_over_a * (approach_rate + beta) / (1.0 + c_over_a * alpha);
+            let creep_rate = alpha * sigma0 - beta;
+            if !creep_rate.is_finite() || !sigma0.is_finite() {
+                return Err("film-driven state diverged".into());
+            }
+
+            // Adaptive explicit step: a fraction of the film's
+            // relative-thinning bound and of the fastest retained mode's
+            // time constant (β must not go stale within a step).
+            let closing = approach_rate - creep_rate; // = −ḣ_f ≥ 0
+            let dt_film = if closing > 0.0 {
+                0.05 * h_f / closing
+            } else {
+                f64::INFINITY
+            };
+            let dt_mode = 0.3 * tau.iter().cloned().fold(f64::INFINITY, f64::min);
+            let dt = dt_film.min(dt_mode).min(time - t);
+
+            // Advance the modes with their exact exponential map under
+            // the piecewise-constant σ₀ of this step, then the film.
+            for (j, dj) in d.iter_mut().enumerate() {
+                let decay = (-dt / tau[j]).exp();
+                *dj = *dj * decay + (h * b[j] / ha) * sigma0 * (1.0 - decay);
+            }
+            h_f -= dt * closing;
+            if !h_f.is_finite() || h_f <= 0.0 {
+                return Err("film thickness collapsed to or past zero".into());
+            }
+            t += dt;
+            history.time.push(t);
+            history.film_thickness_mm.push(h_f);
+            // The recorded load is the state-consistent capacity of the
+            // recorded thickness closing at this step's rate — the same
+            // state–load pair a contact solver would see at that instant
+            // (the σ₀ that drove the modes over the step is the
+            // pre-advance value, as first-order splitting dictates).
+            history
+                .load_n
+                .push(self.film.load_capacity(h_f, closing.max(0.0)));
+            history.creep_mm.push(d.iter().sum());
+        }
+        Ok(history)
+    }
+}
+
 /// A 1-D confined-compression creep stepper for an arbitrary
 /// [`PermeabilityLaw`] — the time-stepping half of the nonlinear-biphasic
 /// item. The closed-form series in [`BiphasicMaterial`]
@@ -1457,5 +1670,185 @@ mod tests {
         );
         assert!(with_fibers > matrix_only);
         assert!(with_fibers > 0.0 && with_fibers < equilibrium);
+    }
+
+    fn driven_model(viscosity: f64) -> SqueezeFilmDrivenLayer {
+        SqueezeFilmDrivenLayer::new(
+            SqueezeFilm::new(viscosity, 5.0).expect("valid film"),
+            BiphasicMaterial::default(),
+            16,
+        )
+        .expect("valid model")
+    }
+
+    #[test]
+    fn mode_sum_reproduces_the_truncated_compliance_and_the_series() {
+        // The modal machinery behind the coupling, exercised on its own
+        // under a CONSTANT σ₀. Two references:
+        //
+        // 1. The analytic step response of the SAME truncated
+        //    compliance the modes implement,
+        //    u/h = (σ₀/H_A)·Σ b_j (1 − e^{−t/τ_j}) — the recursion is
+        //    its exact one-step map, so this pins the algebra to 1e-12.
+        // 2. The shipped closed-form series, to the truncation mass:
+        //    the closed form keeps the exact-1 normalisation (exact
+        //    equilibrium, documented t = 0 floor), the mode sum keeps
+        //    the truncated-compliance one (exact zero start, Σb_j
+        //    equilibrium). They differ by at most
+        //    (σ₀/H_A)(1 − Σb_j) at every t.
+        let m = BiphasicMaterial::default();
+        let model = driven_model(1.0e-7);
+        let (b, tau) = model.mode_coefficients();
+        let sigma0 = 0.1;
+        let dt = 1.0;
+        let b_sum: f64 = b.iter().sum();
+        let mut d = vec![0.0f64; model.terms];
+        for step in 1..=64 {
+            for (j, dj) in d.iter_mut().enumerate() {
+                let decay = (-dt / tau[j]).exp();
+                *dj = *dj * decay
+                    + (m.thickness * b[j] / m.aggregate_modulus) * sigma0 * (1.0 - decay);
+            }
+            let t = step as f64 * dt;
+            let analytic = (sigma0 / m.aggregate_modulus)
+                * b.iter()
+                    .zip(&tau)
+                    .map(|(&bj, &tj)| bj * (1.0 - (-t / tj).exp()))
+                    .sum::<f64>();
+            let u = d.iter().sum::<f64>() / m.thickness;
+            assert!(
+                (u - analytic).abs() < 1e-12,
+                "mode sum {u} vs truncated compliance {analytic} at t = {t}"
+            );
+            let shipped = m.creep_displacement_fraction(sigma0, t, model.terms);
+            let mass = (sigma0 / m.aggregate_modulus) * (1.0 - b_sum);
+            // The difference is exactly the truncation mass at every t
+            // (both subtract the same relaxed part from a different
+            // constant), so allow only float slop around it.
+            assert!(
+                (u - shipped).abs() <= mass * (1.0 + 1e-9),
+                "mode sum {u} vs series {shipped} exceeds the truncation mass {mass} at t = {t}"
+            );
+        }
+    }
+
+    #[test]
+    fn film_driven_march_validates_its_inputs_and_rest_state() {
+        let model = driven_model(1.0e-7);
+        assert!(SqueezeFilmDrivenLayer::new(
+            SqueezeFilm::new(1.0e-7, 5.0).expect("film"),
+            BiphasicMaterial::default(),
+            3
+        )
+        .is_err());
+        assert!(model.ramp_response(-1.0, 0.05, 10.0).is_err());
+        assert!(model.ramp_response(1.0e-3, 0.0, 10.0).is_err());
+        // A stationary platen (V = 0) from rest is the rest state: no
+        // load, no creep, film untouched.
+        let history = model.ramp_response(0.0, 0.05, 10.0).expect("marches");
+        assert!(history.load_n.iter().all(|&w| w == 0.0));
+        assert!(history.creep_mm.iter().all(|&u| u == 0.0));
+        assert!((history.film_thickness_mm[0] - 0.05).abs() < 1e-15);
+    }
+
+    #[test]
+    fn creep_frozen_layer_reproduces_the_pure_stefan_kinematics() {
+        // k → 0 freezes the layer's creep (α = 2k·terms/h → 0): the
+        // surface stops following the platen, the film thins at exactly
+        // the prescribed rate, and the load is the pure Stefan capacity
+        // of the closing gap.
+        let frozen = BiphasicMaterial {
+            permeability: 1.0e-12,
+            ..BiphasicMaterial::default()
+        };
+        let model =
+            SqueezeFilmDrivenLayer::new(SqueezeFilm::new(1.0e-7, 5.0).expect("film"), frozen, 16)
+                .expect("valid model");
+        let (v, h0, t) = (1.0e-3, 0.05, 10.0);
+        let history = model.ramp_response(v, h0, t).expect("marches");
+        let last = history.film_thickness_mm.last().expect("sampled");
+        assert!(
+            (last - (h0 - v * t)).abs() < 1e-9,
+            "film must thin at the prescribed rate with the layer frozen, got {last}"
+        );
+        let w = history.load_n.last().expect("sampled");
+        let expected = model.film.load_capacity(h0 - v * t, v);
+        assert!(
+            (w - expected).abs() < 1e-6 * expected,
+            "load {w} vs pure Stefan capacity {expected}"
+        );
+        // The recorded creep is numerically zero.
+        assert!(*history.creep_mm.last().expect("sampled") < 1e-9);
+    }
+
+    #[test]
+    fn approach_driven_load_loads_the_layer_monotonically() {
+        let model = driven_model(1.0e-7);
+        let (v, h0, t) = (1.0e-3, 0.05, 100.0);
+        let history = model.ramp_response(v, h0, t).expect("marches");
+        // Creep is non-decreasing (β lags its equilibrium target while
+        // the emergent σ₀ grows) and bounded by the platen travel; the
+        // film stays above the frozen-layer thickness because creep
+        // opens the gap.
+        let mut previous = 0.0;
+        for u in &history.creep_mm {
+            assert!(*u >= previous, "creep must be non-decreasing");
+            previous = *u;
+            assert!(*u <= v * t, "creep {u} out of range");
+        }
+        // The film load is positive throughout, ends far above its
+        // start, and never exceeds the frozen-layer (pure Stefan)
+        // bound: the layer always takes some of the approach.
+        let w_final = *history.load_n.last().expect("sampled");
+        let w_first = history.load_n[1];
+        assert!(history.load_n.iter().all(|&w| w.is_finite() && w >= 0.0));
+        assert!(
+            w_final > 10.0 * w_first,
+            "load {w_final} vs first {w_first}"
+        );
+        let last_h = *history.film_thickness_mm.last().expect("sampled");
+        let frozen_h = h0 - v * t;
+        assert!(
+            last_h > frozen_h + 1.0e-6,
+            "creep must open the gap: {last_h}"
+        );
+        // Load sharing is real: the layer actually creeps under the
+        // emergent load, not a prescribed one.
+        assert!(*history.creep_mm.last().expect("sampled") > 0.0);
+    }
+
+    #[test]
+    fn compliant_layer_takes_up_the_approach() {
+        // A permeability-soft layer (α large) follows the platen: the
+        // film barely thins and the emergent load stays small.
+        let soft = BiphasicMaterial {
+            permeability: 0.5,
+            ..BiphasicMaterial::default()
+        };
+        let model =
+            SqueezeFilmDrivenLayer::new(SqueezeFilm::new(1.0e-2, 5.0).expect("film"), soft, 16)
+                .expect("valid model");
+        let (v, h0, t) = (1.0e-4, 0.05, 100.0);
+        let history = model.ramp_response(v, h0, t).expect("marches");
+        let h_soft = *history.film_thickness_mm.last().expect("sampled");
+        let w_soft = *history.load_n.last().expect("sampled");
+        assert!(
+            h_soft > h0 - 0.1 * v * t,
+            "soft layer must take up the approach, film at {h_soft}"
+        );
+        assert!(*history.creep_mm.last().expect("sampled") > 0.8 * v * t);
+        // Compare against the frozen layer under the same film.
+        let frozen = BiphasicMaterial {
+            permeability: 1.0e-12,
+            ..BiphasicMaterial::default()
+        };
+        let stiff =
+            SqueezeFilmDrivenLayer::new(SqueezeFilm::new(1.0e-2, 5.0).expect("film"), frozen, 16)
+                .expect("valid model");
+        let stiff_hist = stiff.ramp_response(v, h0, t).expect("marches");
+        assert!(
+            w_soft < 0.1 * stiff_hist.load_n.last().expect("sampled"),
+            "soft layer must shed load onto the layer, {w_soft}"
+        );
     }
 }

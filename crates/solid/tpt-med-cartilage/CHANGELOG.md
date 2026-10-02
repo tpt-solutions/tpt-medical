@@ -12,6 +12,30 @@ changes for consumers of this crate.
 ## [Unreleased]
 
 ### Added
+- **`SqueezeFilmDrivenLayer` — the squeeze film coupled into the
+  biphasic creep path**, completing the lubrication/repulsion item's
+  remaining piece: the layer is now driven by a *prescribed approach*
+  (what a contact solver imposes kinematically) with the load
+  **emerging** from the film's Stefan capacity, instead of a prescribed
+  step stress. The platen descends at `V`; the layer's creeping surface
+  opens the gap (`ḣ_f = −(V − u̇)`); the film capacity at that state
+  becomes the layer's `σ₀ = W/(πR²)`. The linear biphasic response
+  under the emergent load history is a per-mode exact exponential
+  recursion (`u = Σ d_j`, `τ_j ḋ_j + d_j ∝ σ₀(t)`) solved with the
+  film in a first-order explicit march whose step is bounded by the
+  film's relative thinning and the fastest retained mode. Verified:
+  the mode recursion reproduces its truncated-compliance step response
+  to 1e-12 and the shipped closed-form series to the truncation mass
+  (a documented convention difference — exact zero start vs exact
+  equilibrium); a creep-frozen layer (`k → 0`) reproduces the pure
+  Stefan kinematics `h = h₀ − Vt` and capacity exactly; a
+  permeability-soft layer follows the platen (creep ≥ 0.8·V·t) and
+  sheds the load (≥ 10× lower film load than the frozen layer); the
+  emergent-load march stays positive, creep-monotone and gap-opening;
+  a stationary platen from rest stays at rest. Regime notes ship with
+  the type: approach-driven only, linear layer only (nonlinear
+  steppers are not film-coupled), no radial film flow over the
+  deformed surface.
 - **`NonlinearConfinedStepper` — the nonlinear solid matrix**, completing
   the crate's roadmap. The drained effective stress `σ_eff(e)` is a
   caller-supplied increasing function of the apparent compressive strain
@@ -117,8 +141,9 @@ changes for consumers of this crate.
 ### Planned
 - (None: linear and nonlinear confined compression with constant or
   strain-dependent permeability, unconfined limits, shear,
-  squeeze-film lubrication, and the fibre-reinforced solid matrix are
-  all delivered. Further needs arrive through issues.)
+  squeeze-film lubrication including the film-driven biphasic
+  coupling, and the fibre-reinforced solid matrix are all delivered.
+  Further needs arrive through issues.)
 
 ### Notes
 - The **term count** is a runtime parameter, not a hard-coded truncation. The

@@ -72,6 +72,14 @@ than a finite-element code.
   the fibres are exactly silent pointwise — engagement is on the tension
   side and in the unconfined/shear states this crate does not solve.
 
+- **Squeeze-film–driven creep** — `SqueezeFilmDrivenLayer`: the film and
+  the biphasic layer coupled, driven by a *prescribed approach* (what a
+  contact solver imposes) with the load emerging from Stefan capacity
+  instead of a prescribed step stress. Per-mode exact exponential
+  recursion under the emergent load history; adaptive explicit march.
+  Anchors: a creep-frozen layer reproduces the pure Stefan kinematics
+  exactly; a compliant layer follows the platen and sheds load.
+
 ## Conventions
 
 - Aggregate modulus `H_A` in **MPa**; permeability `k` in **mm⁴/(N·s)**;
@@ -136,6 +144,8 @@ fn main() {
 | `FiberFamily { axis_projection, modulus, stiffening }` | One tension-only collagen family; `axis_projection` = `cos²θ` to the load axis; caller-cited law coefficients |
 | `FiberFamily::fibre_stretch(e)` / `stress(e)` | Confined-state stretch `sqrt(1 − proj·(2e − e²))` and the tension-gated exponential stress (negative = tensile) |
 | `FiberReinforcedSolid { matrix, fibers }` | Ground-matrix drained law composed with the fibre families — the increasing `σ_eff(e)` closure the nonlinear stepper takes |
+| `SqueezeFilmDrivenLayer { film, layer, terms }` | Film + biphasic layer coupled; prescribed approach in, emergent load out |
+| `SqueezeFilmDrivenLayer::ramp_response(v, h0, t) -> RampHistory` | History of film thickness, film load and layer creep under a platen ramp |
 
 ## Verification
 
@@ -156,6 +166,19 @@ The series solution has analytic limits, and all of them are asserted:
   monotonically toward the analytic limit, so the truncation is always a
   conservative choice.
 
+Newer machinery, same discipline:
+
+- *Fibres* — exact stretch map at both boundary projections, silent
+  gate through compression, hand-checked law value, composition
+  equality bit-for-bit in compression, equilibrium identical with and
+  without fibres (transient drift bounded sub-percent, documented).
+- *Film-driven layer* — the mode recursion reproduces its own
+  truncated-compliance step response to 1e-12 and the shipped series
+  to the truncation mass; a creep-frozen layer reproduces the pure
+  Stefan kinematics and capacity exactly; a compliant layer follows
+  the platen (creep ≥ 0.8·V·t) and sheds the load; a stationary platen
+  from rest stays at rest.
+
 ## Known Limitations
 
 - The **closed-form series** are the constant-`k`, linear-matrix problem.
@@ -166,9 +189,12 @@ The series solution has analytic limits, and all of them are asserted:
   **transient** (Bessel-series coefficients in paywalled cited literature)
   and any unconfined/shear *time history* are not implemented — the
   unconfined bookends and the fluid-free shear closed form are.
-- `SqueezeFilm` is the constitutive lubrication term; coupling it into the
-  biphasic creep path (a contact-solver-driven biphasic interface) remains
-  open.
+- **The coupled layer is linear-biphasic + Stefan only**: no nonlinear
+  matrix/permeability in the film-coupled march, no radial film flow
+  over the deformed surface, and the modal series truncates (the mode
+  sum saturates at `(Σb_j)·σ₀/H_A` — 98.7 % of equilibrium at 16 terms;
+  see `SqueezeFilmDrivenLayer`'s regime notes for the convention
+  difference against the closed-form series).
 - **Fibrous-cartilage fibres are tension-only and exactly silent under
   confined compression** — engagement needs tension or the lateral
   expansion/shear states this crate does not solve transiently. The
