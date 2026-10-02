@@ -12,6 +12,23 @@ changes for consumers of this crate.
 ## [Unreleased]
 
 ### Added
+- **`ImplantPlacement` / `GraftReconstruction` — implant component
+  placement and bone graft / defect reconstruction.** A closed contour
+  mesh defines the component or graft (pose baked into the vertices);
+  placement turns every voxel inside the mesh into the component (marker
+  value, replaced bone counted as resection) and grafting fills every
+  *empty* voxel inside the mesh (a graft fills a defect, never resects).
+  Both report the **bone–implant/graft interface area** — shared faces
+  with surviving bone, counted from a finished occupancy mask so the
+  number cannot depend on scan order — and both are cut-sequenced
+  ([`PlanError::CutAfterMove`]/`ModelAlreadySplit`) and mesh-validated at
+  build time. No fixation mechanics: placement and interface
+  bookkeeping, with stem/cement stress left to `tpt-med-orthopedics`.
+  Verified: exact 8 mm³ resection/occupation and 24 mm² interface for an
+  embedded 2×2×2 component; a contoured cavity cut-then-grafted with the
+  same surface restores the model's voxel count exactly; bone voxels are
+  never grafted; invalid meshes and cut-after-move sequencing are
+  rejected at build time.
 - **`MeshCut` — freeform (anatomically contoured) resections**, completing
   the curved/freeform item: the cut surface is a caller-supplied closed
   triangle mesh (the patient-matched contour no plane, wedge or cylinder
@@ -101,8 +118,9 @@ changes for consumers of this crate.
 ### Planned
 - Implicit/spline-contoured surfaces (expressible today by tessellating
   into `MeshCut`; no native implicit cut).
-- Implant component placement with a bone–implant interface, and bone graft or
-  defect reconstruction.
+- Independently addressable implant fragments (implants currently live in
+  the operated fragment's grid under a marker value, with the pose baked
+  into the contour vertices).
 - Soft-tissue structures, so a plan can be checked for collateral damage to
   ligaments, capsules and neurovascular bundles.
 

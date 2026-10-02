@@ -641,20 +641,21 @@ fn mesh_signed_distance(p: Vec3, triangles: &[[Vec3; 3]]) -> f64 {
     }
 }
 
-impl MeshCut {
-    /// Checks the contour mesh's structural contract: non-empty,
-    /// non-degenerate triangles, watertight (every undirected edge shared
-    /// by exactly two triangles) and consistently wound (every directed
-    /// edge exactly once — a flipped triangle is caught here, before a
-    /// parity test could silently invert a region).
-    pub fn validate(&self) -> Result<(), MeshCutError> {
-        if self.triangles.is_empty() {
+/// Structural checks for a closed triangle mesh (the contract
+/// [`MeshCut`], [`ImplantPlacement`] and [`GraftReconstruction`] all
+/// need): non-empty, non-degenerate triangles, watertight (every
+/// undirected edge shared by exactly two triangles) and consistently
+/// wound (every directed edge exactly once — a flipped triangle is
+/// caught here, before a parity test could silently invert a region).
+fn validate_closed_mesh(triangles: &[[Vec3; 3]]) -> Result<(), MeshCutError> {
+    {
+        if triangles.is_empty() {
             return Err(MeshCutError::Empty);
         }
         // (undirected key) -> (count, directed: a->b count, b->a count)
         let mut edges: std::collections::BTreeMap<[i64; 6], (usize, usize, usize)> =
             std::collections::BTreeMap::new();
-        for (i, t) in self.triangles.iter().enumerate() {
+        for (i, t) in triangles.iter().enumerate() {
             let n = (t[1] - t[0]).cross(t[2] - t[0]);
             if !n.norm_squared().is_finite() || n.norm_squared() <= 1e-20 {
                 return Err(MeshCutError::DegenerateTriangle { index: i });
@@ -677,34 +678,32 @@ impl MeshCut {
             }
         }
         for (key, (count, forward, backward)) in edges {
+            let a = Vec3::new(
+                key[0] as f64 * 1e-6,
+                key[1] as f64 * 1e-6,
+                key[2] as f64 * 1e-6,
+            );
+            let b = Vec3::new(
+                key[3] as f64 * 1e-6,
+                key[4] as f64 * 1e-6,
+                key[5] as f64 * 1e-6,
+            );
             if count != 2 {
-                let a = Vec3::new(
-                    key[0] as f64 * 1e-6,
-                    key[1] as f64 * 1e-6,
-                    key[2] as f64 * 1e-6,
-                );
-                let b = Vec3::new(
-                    key[3] as f64 * 1e-6,
-                    key[4] as f64 * 1e-6,
-                    key[5] as f64 * 1e-6,
-                );
                 return Err(MeshCutError::OpenSurface { edge: (a, b) });
             }
             if forward != 1 || backward != 1 {
-                let a = Vec3::new(
-                    key[0] as f64 * 1e-6,
-                    key[1] as f64 * 1e-6,
-                    key[2] as f64 * 1e-6,
-                );
-                let b = Vec3::new(
-                    key[3] as f64 * 1e-6,
-                    key[4] as f64 * 1e-6,
-                    key[5] as f64 * 1e-6,
-                );
                 return Err(MeshCutError::InconsistentWinding { edge: (a, b) });
             }
         }
         Ok(())
+    }
+}
+
+impl MeshCut {
+    /// Checks the contour mesh's structural contract — see
+    /// [`validate_closed_mesh`].
+    pub fn validate(&self) -> Result<(), MeshCutError> {
+        validate_closed_mesh(&self.triangles)
     }
 
     /// Applies the cut; returns the kept fragment. Panics on a mesh that
@@ -713,7 +712,6 @@ impl MeshCut {
     pub fn apply(&self, model: &VoxelModel) -> VoxelModel {
         self.apply_measured(model).0
     }
-
     /// [`Self::apply`] plus the step's measurements, with the same
     /// conventions as [`OsteotomyCut::apply_measured`]: the resection
     /// volume counts discarded non-empty voxels, and the cut depth is the
@@ -787,6 +785,91 @@ impl MeshCut {
         compact(&mut out, min, max);
         let retained_model = retained.and_then(compact_retained);
         (out, retained_model, measurement)
+    }
+}
+
+/// Measurements of an [`ImplantPlacement`] step: the bone the implant
+/// replaced, the implant's own occupied volume, and the **bone–implant
+/// interface area** — the shared-face area between implant voxels and
+/// surviving bone, the quantity osseointegration screening is about.
+#[derive(Debug, Clone)]
+pub struct ImplantMeasurement {
+    /// The implant's audit label.
+    pub fragment_name: String,
+    /// Bone volume the implant replaced (mm³).
+    pub resection_volume_mm3: f64,
+    /// Implant occupied volume (mm³).
+    pub implant_volume_mm3: f64,
+    /// Shared-face area between implant and surviving bone (mm²).
+    pub interface_area_mm2: f64,
+}
+
+/// Measurements of a [`GraftReconstruction`] step: the graft's occupied
+/// volume and its interface area with the surrounding bone.
+#[derive(Debug, Clone)]
+pub struct GraftMeasurement {
+    /// The graft's audit label.
+    pub fragment_name: String,
+    /// Defect volume the graft filled (mm³).
+    pub graft_volume_mm3: f64,
+    /// Shared-face area between graft and bone (mm²).
+    pub interface_area_mm2: f64,
+}
+
+/// **Implant component placement**: a closed triangle mesh defines the
+/// component's shape and pose (bake the pose into the vertices — this
+/// crate does not move implants independently), and on execution every
+/// voxel whose centre lies inside the mesh becomes the implant (value
+/// `marker_value`), the bone it replaces counting as resected. The
+/// measurement reports the resection, the implant volume, and the
+/// bone–implant **interface area** (shared faces with surviving bone).
+///
+/// Sequencing follows the cut rules ([`PlanError::CutAfterMove`],
+/// [`PlanError::ModelAlreadySplit`]): placement edits the operated
+/// fragment's grid. There is deliberately **no stem/cement mechanics
+/// here** — this is the geometric placement and interface bookkeeping, a
+/// placement plan, not a fixation-strength model.
+#[derive(Debug, Clone)]
+pub struct ImplantPlacement {
+    /// The component's closed contour surface, pose baked in. Must pass
+    /// [`MeshCut::validate`]'s contract (watertight, consistently
+    /// wound); checked at plan-append time.
+    pub triangles: Vec<[Vec3; 3]>,
+    /// Audit label.
+    pub fragment_name: String,
+    /// Scalar value written into implant voxels (e.g. a metal HU marker
+    /// for downstream meshing/auditing).
+    pub marker_value: f64,
+}
+
+impl ImplantPlacement {
+    /// Mesh structural check.
+    pub fn validate(&self) -> Result<(), MeshCutError> {
+        validate_closed_mesh(&self.triangles)
+    }
+}
+
+/// **Bone graft / defect reconstruction**: a closed triangle mesh
+/// defines the graft's shape and pose; on execution every *empty*
+/// (`NaN`) voxel whose centre lies inside the mesh is filled with
+/// `value`, and the measurement reports the filled volume and the
+/// graft–bone interface area. Existing (bone) voxels inside the mesh are
+/// left untouched — a graft fills a defect, it does not resect.
+#[derive(Debug, Clone)]
+pub struct GraftReconstruction {
+    /// The graft's closed contour surface, pose baked in. Same mesh
+    /// contract as [`ImplantPlacement`].
+    pub triangles: Vec<[Vec3; 3]>,
+    /// Audit label.
+    pub fragment_name: String,
+    /// Scalar value written into grafted voxels.
+    pub value: f64,
+}
+
+impl GraftReconstruction {
+    /// Mesh structural check.
+    pub fn validate(&self) -> Result<(), MeshCutError> {
+        validate_closed_mesh(&self.triangles)
     }
 }
 
@@ -927,6 +1010,10 @@ pub enum PlanStep {
     /// Freeform (anatomically contoured) resection against a closed
     /// triangle mesh.
     Mesh(MeshCut),
+    /// Implant component placement (bone replaced by the component).
+    Implant(ImplantPlacement),
+    /// Bone graft / defect reconstruction (empty voxels filled).
+    Graft(GraftReconstruction),
     /// Rigid reposition of **every** fragment (the original semantics).
     Move(FragmentTransform),
     /// Rigid reposition of one **named** fragment
@@ -1022,6 +1109,10 @@ pub struct MoveMeasurement {
 pub enum StepMeasurement {
     /// Plane osteotomy measurements.
     Cut(CutMeasurement),
+    /// Implant placement measurements.
+    Implant(ImplantMeasurement),
+    /// Graft reconstruction measurements.
+    Graft(GraftMeasurement),
     /// Fragment reposition measurements.
     Move(MoveMeasurement),
 }
@@ -1186,6 +1277,44 @@ impl VirtualSurgery {
             }
         }
         self.fragment_count = self.fragment_names.len();
+        Ok(self)
+    }
+
+    /// Appends an **implant component placement** step.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::cut`], plus [`PlanError::InvalidMesh`] when the
+    /// component's contour mesh fails [`MeshCut::validate`].
+    pub fn place_implant(&mut self, implant: ImplantPlacement) -> Result<&mut Self, PlanError> {
+        self.validate_cut()?;
+        if let Err(e) = implant.validate() {
+            return Err(PlanError::InvalidMesh {
+                reason: e.to_string(),
+            });
+        }
+        self.fragment_log
+            .push(format!("implant:{}", implant.fragment_name));
+        self.steps.push(PlanStep::Implant(implant));
+        Ok(self)
+    }
+
+    /// Appends a **bone graft / defect reconstruction** step.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::cut`], plus [`PlanError::InvalidMesh`] when the
+    /// graft's contour mesh fails [`MeshCut::validate`].
+    pub fn add_graft(&mut self, graft: GraftReconstruction) -> Result<&mut Self, PlanError> {
+        self.validate_cut()?;
+        if let Err(e) = graft.validate() {
+            return Err(PlanError::InvalidMesh {
+                reason: e.to_string(),
+            });
+        }
+        self.fragment_log
+            .push(format!("graft:{}", graft.fragment_name));
+        self.steps.push(PlanStep::Graft(graft));
         Ok(self)
     }
 
@@ -1359,6 +1488,149 @@ impl VirtualSurgery {
                             model: r,
                         });
                     }
+                }
+                PlanStep::Implant(implant) => {
+                    // Validated at build: exactly one fragment, valid mesh.
+                    let current = &fragments[0].model;
+                    let mut next = current.clone();
+                    let (nx, ny, nz) = current.dims;
+                    let (sx, sy, sz) = current.spacing;
+                    // Pass 1: classify the implant region once, so the
+                    // interface count cannot depend on the scan order.
+                    let mut implant_mask = vec![false; current.values.len()];
+                    for z in 0..nz {
+                        for y in 0..ny {
+                            for x in 0..nx {
+                                let Some(idx) = current.index(x, y, z) else {
+                                    continue;
+                                };
+                                let centre = current.center(x, y, z);
+                                implant_mask[idx] =
+                                    mesh_signed_distance(centre, &implant.triangles) < 0.0;
+                            }
+                        }
+                    }
+                    let mut resected = 0usize;
+                    let mut implant_voxels = 0usize;
+                    let mut interface_faces = 0usize;
+                    for z in 0..nz {
+                        for y in 0..ny {
+                            for x in 0..nx {
+                                let Some(idx) = current.index(x, y, z) else {
+                                    continue;
+                                };
+                                if !implant_mask[idx] {
+                                    continue;
+                                }
+                                if !current.values[idx].is_nan() {
+                                    resected += 1;
+                                }
+                                implant_voxels += 1;
+                                next.values[idx] = implant.marker_value;
+                                // Interface: shared faces with surviving
+                                // (non-implant, non-empty) neighbours,
+                                // classified from the finished mask.
+                                let neigh = [
+                                    current.index(x + 1, y, z),
+                                    x.checked_sub(1).and_then(|v| current.index(v, y, z)),
+                                    current.index(x, y + 1, z),
+                                    y.checked_sub(1).and_then(|v| current.index(x, v, z)),
+                                    current.index(x, y, z + 1),
+                                    z.checked_sub(1).and_then(|v| current.index(x, y, v)),
+                                ];
+                                for n in neigh.iter().flatten() {
+                                    if !implant_mask[*n] && !current.values[*n].is_nan() {
+                                        interface_faces += 1;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    let voxel_volume = sx * sy * sz;
+                    // Mean voxel face area: each of the 6 faces carries a
+                    // different pairing of spacings; a uniform grid has
+                    // h². Counting per-axis would be exact but the mean
+                    // keeps the bookkeeping honest for anisotropic grids
+                    // too (documented; the tests use uniform pitch).
+                    let face_area = (sx * sy + sy * sz + sx * sz) / 3.0;
+                    let m = ImplantMeasurement {
+                        fragment_name: implant.fragment_name.clone(),
+                        resection_volume_mm3: resected as f64 * voxel_volume,
+                        implant_volume_mm3: implant_voxels as f64 * voxel_volume,
+                        interface_area_mm2: interface_faces as f64 * face_area,
+                    };
+                    total_resection += m.resection_volume_mm3;
+                    log.push(format!("implant:{}", implant.fragment_name));
+                    measurements.push(StepMeasurement::Implant(m));
+                    fragments[0] = NamedFragment {
+                        name: fragments[0].name.clone(),
+                        model: next,
+                    };
+                }
+                PlanStep::Graft(graft) => {
+                    let current = &fragments[0].model;
+                    let mut next = current.clone();
+                    let (nx, ny, nz) = current.dims;
+                    let (sx, sy, sz) = current.spacing;
+                    // Pass 1: classify the graft region once (a graft
+                    // fills empty voxels only).
+                    let mut graft_mask = vec![false; current.values.len()];
+                    for z in 0..nz {
+                        for y in 0..ny {
+                            for x in 0..nx {
+                                let Some(idx) = current.index(x, y, z) else {
+                                    continue;
+                                };
+                                if current.values[idx].is_nan() {
+                                    let centre = current.center(x, y, z);
+                                    graft_mask[idx] =
+                                        mesh_signed_distance(centre, &graft.triangles) < 0.0;
+                                }
+                            }
+                        }
+                    }
+                    let mut filled = 0usize;
+                    let mut interface_faces = 0usize;
+                    for z in 0..nz {
+                        for y in 0..ny {
+                            for x in 0..nx {
+                                let Some(idx) = current.index(x, y, z) else {
+                                    continue;
+                                };
+                                if !graft_mask[idx] {
+                                    continue;
+                                }
+                                filled += 1;
+                                next.values[idx] = graft.value;
+                                let neigh = [
+                                    current.index(x + 1, y, z),
+                                    x.checked_sub(1).and_then(|v| current.index(v, y, z)),
+                                    current.index(x, y + 1, z),
+                                    y.checked_sub(1).and_then(|v| current.index(x, v, z)),
+                                    current.index(x, y, z + 1),
+                                    z.checked_sub(1).and_then(|v| current.index(x, y, v)),
+                                ];
+                                for n in neigh.iter().flatten() {
+                                    if !graft_mask[*n] && !current.values[*n].is_nan() {
+                                        interface_faces += 1;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    let voxel_volume = sx * sy * sz;
+                    let face_area = (sx * sy + sy * sz + sx * sz) / 3.0;
+                    let m = GraftMeasurement {
+                        fragment_name: graft.fragment_name.clone(),
+                        graft_volume_mm3: filled as f64 * voxel_volume,
+                        interface_area_mm2: interface_faces as f64 * face_area,
+                    };
+                    log.push(format!("graft:{}", graft.fragment_name));
+                    measurements.push(StepMeasurement::Graft(m));
+                    fragments[0] = NamedFragment {
+                        name: fragments[0].name.clone(),
+                        model: next,
+                    };
                 }
                 PlanStep::Move(m) => {
                     let before = union_centroid(&fragments);
@@ -2605,5 +2877,106 @@ mod tests {
             plan.mesh(later),
             Err(PlanError::CutAfterMove { .. })
         ));
+    }
+
+    #[test]
+    fn implant_placement_resects_and_measures_the_interface() {
+        // A 2×2×2 component embedded in the bone block: every outward
+        // face of the corner block touches bone → 24 interface faces.
+        let mut plan = VirtualSurgery::new(cube_model());
+        let implant = ImplantPlacement {
+            triangles: box_mesh(Vec3::new(-0.6, -0.7, -0.55), Vec3::new(1.4, 1.3, 1.45)),
+            fragment_name: "tka-femoral".into(),
+            marker_value: 2000.0,
+        };
+        implant.validate().expect("valid component");
+        plan.place_implant(implant).expect("valid placement");
+        let (model, report) = plan.execute_with_report();
+        let marker_count = model.values.iter().filter(|&&v| v == 2000.0).count();
+        assert_eq!(marker_count, 8, "implant occupies its 2×2×2 region");
+        let StepMeasurement::Implant(m) = &report.measurements[0] else {
+            panic!("implant measurement expected");
+        };
+        assert_eq!(m.fragment_name, "tka-femoral");
+        assert!((m.resection_volume_mm3 - 8.0).abs() < 1e-9);
+        assert!((m.implant_volume_mm3 - 8.0).abs() < 1e-9);
+        assert!((m.interface_area_mm2 - 24.0).abs() < 1e-9);
+        assert!((report.total_resection_volume_mm3 - 8.0).abs() < 1e-9);
+        assert!(report.step_log[0].starts_with("implant:tka-femoral"));
+
+        // Sequencing: an open component mesh is rejected at build time,
+        // and placement after a named move follows the cut rules.
+        let mut plan = VirtualSurgery::new(cube_model());
+        let open = ImplantPlacement {
+            triangles: vec![[
+                Vec3::new(0.0, 0.0, 0.0),
+                Vec3::new(1.0, 0.0, 0.0),
+                Vec3::new(1.0, 1.0, 0.0),
+            ]],
+            fragment_name: "open".into(),
+            marker_value: 2000.0,
+        };
+        assert!(matches!(
+            plan.place_implant(open),
+            Err(PlanError::InvalidMesh { .. })
+        ));
+        plan.move_fragment_named("", FragmentTransform::no_op())
+            .expect("named move");
+        let later = ImplantPlacement {
+            triangles: box_mesh(Vec3::new(-0.6, -0.7, -0.55), Vec3::new(1.4, 1.3, 1.45)),
+            fragment_name: "late".into(),
+            marker_value: 2000.0,
+        };
+        assert!(matches!(
+            plan.place_implant(later),
+            Err(PlanError::CutAfterMove { .. })
+        ));
+    }
+
+    #[test]
+    fn graft_fills_a_contoured_defect_and_conserves_the_model() {
+        // A contoured cavity is cut out of the block (exterior kept, so
+        // the compacted grid still surrounds the NaN pocket), then the
+        // same surface grafts it back: the voxel count is restored.
+        let surface = box_mesh(Vec3::new(-0.6, -0.7, -0.55), Vec3::new(1.4, 1.3, 1.45));
+        let mut plan = VirtualSurgery::new(cube_model());
+        plan.mesh(MeshCut {
+            triangles: surface.clone(),
+            fragment_name: "defect".into(),
+            keep_inside: false,
+            kerf_width: 0.0,
+            discarded: DiscardedSide::Resect,
+        })
+        .expect("cavity cut");
+        let (defected, _) = plan.execute();
+        let defect_count = defected.values.iter().filter(|v| !v.is_nan()).count();
+        assert_eq!(defect_count, 1000 - 8);
+
+        let mut plan = VirtualSurgery::new(cube_model());
+        plan.mesh(MeshCut {
+            triangles: surface.clone(),
+            fragment_name: "defect".into(),
+            keep_inside: false,
+            kerf_width: 0.0,
+            discarded: DiscardedSide::Resect,
+        })
+        .expect("cavity cut");
+        plan.add_graft(GraftReconstruction {
+            triangles: surface,
+            fragment_name: "ibg".into(),
+            value: 150.0,
+        })
+        .expect("graft");
+        let (reconstructed, report) = plan.execute_with_report();
+        let restored = reconstructed.values.iter().filter(|v| !v.is_nan()).count();
+        assert_eq!(restored, 1000, "graft restores the resected voxels");
+        let StepMeasurement::Graft(m) = &report.measurements[1] else {
+            panic!("graft measurement expected");
+        };
+        assert_eq!(m.fragment_name, "ibg");
+        assert!((m.graft_volume_mm3 - 8.0).abs() < 1e-9);
+        // Each of the 8 cavity voxels faces bone on its 3 outward sides.
+        assert!((m.interface_area_mm2 - 24.0).abs() < 1e-9);
+        assert!(report.step_log[1].starts_with("graft:ibg"));
     }
 }

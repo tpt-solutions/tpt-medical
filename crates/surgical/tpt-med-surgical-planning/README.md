@@ -81,6 +81,15 @@ voxel grid.
   caught before it could silently invert a region). Same kerf,
   retention, measurement and audit conventions as the other cuts.
 
+- **Implant placement and bone graft** — `ImplantPlacement` seats a
+  component (a closed contour mesh, pose baked in) into the bone: the
+  replaced bone counts as resected, the component voxels carry a
+  caller-supplied marker value, and the measurement reports the
+  **bone–implant interface area** (shared faces with surviving bone).
+  `GraftReconstruction` fills a defect the other way: empty voxels inside
+  a contour mesh are filled, never resecting. Both are cut-sequenced and
+  mesh-validated at build time. No fixation mechanics — placement and
+  interface bookkeeping, not a stem-strength model.
 - **Per-fragment addressing** — a cut with
   `DiscardedSide::RetainAs { name }` keeps *both* sides as named
   fragments, and `move_fragment_named` repositions one of them
@@ -171,12 +180,15 @@ fn main() {
 | `CylindricalCut::radial_distance(Vec3) -> f64` | Perpendicular distance from the cylinder's axis (mm) |
 | `MeshCut { triangles, fragment_name, keep_inside, kerf_width, discarded }` | Freeform resection against a closed triangle mesh: interior (`keep_inside`) or exterior, with kerf and retention |
 | `MeshCut::validate() -> Result<(), MeshCutError>` | Watertightness, winding, degeneracy and emptiness checks — enforced at plan-append time |
+| `ImplantPlacement { triangles, fragment_name, marker_value }` | Component placement: bone replaced, marker voxels written, interface area measured |
+| `GraftReconstruction { triangles, fragment_name, value }` | Defect reconstruction: empty voxels filled, interface area measured |
+| `StepMeasurement` | `Cut`, `Implant`, `Graft`, or `Move` measurements, index-aligned with the audit log |
 | `FragmentTransform { rotation_axis, rotation_angle, pivot, translation }` | Rigid only: rotation about `pivot`, then translation |
 | `FragmentTransform::apply_to_point(Vec3) -> Vec3` | Transform a point |
 | `FragmentTransform::apply_to_model(&VoxelModel) -> VoxelModel` | Transform a whole model |
 | `PlanStep` | `Cut(OsteotomyCut)`, `Wedge(WedgeCut)`, `Cylinder(CylindricalCut)`, `Mesh(MeshCut)`, `Move(FragmentTransform)`, or `MoveNamed { fragment, transform }` |
 | `VirtualSurgery::new(base)` | Start a plan on the pre-operative model |
-| `VirtualSurgery::cut(..)`, `::wedge(..)`, `::cylinder(..)`, `::mesh(..)`, `::move_fragment(..)`, `::move_fragment_named(..)` | Append steps in plan order (builder style, returns `&mut Self`; cut-shaped steps validated at build time) |
+| `VirtualSurgery::cut(..)`, `::wedge(..)`, `::cylinder(..)`, `::mesh(..)`, `::place_implant(..)`, `::add_graft(..)`, `::move_fragment(..)`, `::move_fragment_named(..)` | Append steps in plan order (builder style, returns `&mut Self`; cut-shaped steps validated at build time) |
 | `VirtualSurgery::execute() -> (VoxelModel, Vec<String>)` | Operated model plus the audit log in execution order |
 | `VirtualSurgery::base_model() -> &VoxelModel` | Pre-operative model, for side-by-side views |
 | `VirtualSurgery::fragments() -> BTreeMap<usize, String>` | Recorded fragment labels, ordered and deduplicated |
@@ -216,6 +228,12 @@ fn main() {
   flipped winding, degenerate triangles and empty meshes, and the plan
   rejects an invalid mesh at build time; and the closest-point-on-triangle
   routine is checked by hand in its vertex, edge and face regions.
+- **Implant and graft steps** — a 2×2×2 component embedded in a known
+  block resects exactly 8 mm³, occupies 8 mm³, and reports exactly 24 mm²
+  of interface (each voxel's three outward faces); a contoured cavity cut
+  then grafted with the same surface restores the model's voxel count
+  exactly; grafting touches no bone voxels; and both steps reject invalid
+  meshes and respect the cut sequencing rules.
 
 ## Known Limitations
 
@@ -226,8 +244,10 @@ fn main() {
   geometry off the grid's rational alignments. Implicit/spline-contoured
   surfaces are expressible by tessellating into `MeshCut`; there is no
   native implicit-surface cut.
-- **Rigid fragments only.** No implant component placement with a bone-implant
-  interface, no bone graft, no defect reconstruction.
+- **No fixation mechanics.** Implant placement is geometric (occupied
+  voxels, marker value, interface area) — stem/cement stress, osseointegration
+  and micromotion live in `tpt-med-orthopedics` and `tpt-med-wear`. Implants
+  do not move independently: bake the pose into the contour vertices.
 - **Measurements are voxel-quantised.** Resection volume counts discarded
   voxels (zero-valued tissue included — only NaN is empty), and the
   alignment error is measured between the prescribed transform and the
