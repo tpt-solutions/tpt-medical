@@ -71,6 +71,11 @@ browser, in seconds, without a licence.
   exposes the centreline profile for direct comparison with theory.
 - `PLASMA` constant (0.0012 Pa·s) for reference.
 
+- **Peak-WSS resolution study** — `wss_resolution_study`: the same case
+  at multiple resolutions, per-level peak WSS, a Richardson
+  extrapolation claimed only when the trend is well-behaved, and the
+  measured coarse-to-fine spread as the uncertainty otherwise. A
+  peak-WSS claim carries its resolution study with it.
 - **Compliant membrane wall (FSI, reduced)** — `fsi::MembraneWall` +
   `step_coupled`: the vessel wall as an axisymmetric membrane whose
   per-section radius relaxes toward the pressure-set equilibrium while

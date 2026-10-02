@@ -30,7 +30,10 @@ pub use domain::FluidDomain;
 pub use fsi::{initial_state, step_coupled, CoupledWallStep, MembraneWall, MembraneWallState};
 pub use heat::{bulk, conjugate_step, stable_time_step, step, ScalarWall};
 pub use solver::{HemodynamicsSolver, PressureSolver, SolverConfig, SteadyStats};
-pub use wss::{extract_wss, OsiAccumulator, WssField};
+pub use wss::{
+    extract_wss, wss_resolution_study, OsiAccumulator, WssField, WssResolutionLevel,
+    WssResolutionStudy,
+};
 
 #[cfg(test)]
 mod tests;

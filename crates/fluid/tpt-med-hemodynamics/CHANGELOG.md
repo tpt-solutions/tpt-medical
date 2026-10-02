@@ -12,6 +12,23 @@ changes for consumers of this crate.
 ## [Unreleased]
 
 ### Added
+- **`wss_resolution_study` — peak-WSS resolution-dependence, quantified.**
+  The honest counterpart to local wall refinement: the same
+  physically-similar case runs at each of the caller's resolutions (a
+  `build` closure maps a cell count to the domain), each marched to
+  steady state, and the peak-WSS trend is reported with a Richardson
+  extrapolation — **claimed only when the three finest differences are
+  well-behaved** (monotone, consistent sign). On a stair-stepped wall the
+  quantisation noise frequently breaks that, and the study then refuses
+  to extrapolate (amplifying noise by 1/(r−1) is worse than none),
+  reporting the finest value with the measured coarse-to-fine spread as
+  the resolution uncertainty instead. The study's own arithmetic is
+  exact-tested (a hand-built second-order series extrapolates to its
+  4/3 limit), and the tube fixture asserts the measured reality: levels
+  that genuinely differ, an extrapolation inside the trend, and a finite
+  uncertainty figure. The refinement item itself stays open — this
+  quantifies the resolution dependence; eliminating it needs the adaptive
+  grid.
 - **`MembraneWall` / `step_coupled` / `MembraneWallState` (`fsi`) — wall
   compliance, the reduced fluid–structure coupling.** The vessel wall is
   an axisymmetric membrane: each axial section's radius relaxes
