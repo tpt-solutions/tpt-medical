@@ -631,6 +631,206 @@ impl NonlinearConfinedStepper {
     }
 }
 
+/// One collagen-fibre family of a fibrocartilage solid matrix (meniscus,
+/// TMJ disc, annulus fibrosus): fibres at a fixed angle to the loading
+/// axis that **carry tension only** — compression buckles them, so a
+/// slack fibre contributes nothing.
+///
+/// The fibre is characterised by its axis projection `a·ê_load` squared
+/// (`cos²θ` for a family at angle `θ` to the loading axis; 1 = axial, 0
+/// = transverse) and a caller-cited tension law with two coefficients:
+/// `modulus` — the small-strain fibre tangent modulus (MPa) — and
+/// `stiffening` — the exponential stiffening rate that collagen's
+/// uncrimping produces. The stress law is
+///
+/// ```text
+/// σ_f(λ_f) = −(modulus/stiffening)·(exp(stiffening·(λ_f − 1)) − 1), λ_f > 1
+/// σ_f      = 0,                                                      λ_f ≤ 1
+/// ```
+///
+/// (the leading minus is the crate's stress sign convention: positive is
+/// compressive, so a fibre pulling in tension contributes **negative**
+/// stress). The magnitude is continuous at `λ_f = 1` with slope
+/// `modulus` there, monotonically stiffening beyond. As everywhere in this workspace, the mechanism
+/// ships and the coefficients come from the caller's cited source; no
+/// fibre constants are baked in.
+///
+/// The stretch `λ_f` itself comes from the confined-compression state
+/// (uniaxial strain: axial stretch `1 − e`, lateral stretches 1):
+///
+/// ```text
+/// λ_f(e) = sqrt(1 − axis_projection·(2e − e²))
+/// ```
+///
+/// so compression (`e > 0`) shortens every family with a positive axis
+/// projection and tension (`e < 0`) lengthens it. A transverse family
+/// (projection 0) never changes length in confined compression at all.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct FiberFamily {
+    /// `cos²θ`: the squared projection of the fibre direction onto the
+    /// loading axis, in `[0, 1]`.
+    pub axis_projection: f64,
+    /// Small-strain fibre tangent modulus (MPa) — the stress-law slope
+    /// as the fibre first engages.
+    pub modulus: f64,
+    /// Exponential stiffening rate (dimensionless) of the tension law.
+    pub stiffening: f64,
+}
+
+impl FiberFamily {
+    /// Validates; `Err` for an axis projection outside `[0, 1]` or a
+    /// non-positive modulus or stiffening rate.
+    pub fn new(axis_projection: f64, modulus: f64, stiffening: f64) -> Result<Self, String> {
+        if !axis_projection.is_finite() || !(0.0..=1.0).contains(&axis_projection) {
+            return Err(format!(
+                "axis projection must be in [0, 1], got {axis_projection}"
+            ));
+        }
+        if !modulus.is_finite() || modulus <= 0.0 {
+            return Err(format!(
+                "fibre modulus must be positive and finite, got {modulus}"
+            ));
+        }
+        if !stiffening.is_finite() || stiffening <= 0.0 {
+            return Err(format!(
+                "fibre stiffening rate must be positive and finite, got {stiffening}"
+            ));
+        }
+        Ok(Self {
+            axis_projection,
+            modulus,
+            stiffening,
+        })
+    }
+
+    /// The fibre stretch at confined-compression strain `e` (compression
+    /// positive): `sqrt(1 − axis_projection·(2e − e²))`. Always real for
+    /// a projection in `[0, 1]` (the expression is bounded below by
+    /// `(1 − e)²`).
+    pub fn fibre_stretch(&self, e: f64) -> f64 {
+        (1.0 - self.axis_projection * (2.0 * e - e * e)).sqrt()
+    }
+
+    /// The fibre stress (MPa) at confined-compression strain `e` — the
+    /// tension-gated exponential law above. Exactly `0.0` whenever the
+    /// fibre is slack (`λ_f ≤ 1`), which in confined compression is
+    /// every `e ≥ 0`; negative (tensile) when engaged, per the crate's
+    /// compression-positive stress convention.
+    pub fn stress(&self, e: f64) -> f64 {
+        let lambda = self.fibre_stretch(e);
+        if lambda <= 1.0 {
+            return 0.0;
+        }
+        -self.modulus / self.stiffening * ((self.stiffening * (lambda - 1.0)).exp_m1())
+    }
+}
+
+/// A **fibre-reinforced solid matrix**: a ground-matrix drained stress
+/// `σ_matrix(e)` composed with the tension-only contributions of any
+/// number of [`FiberFamily`] families,
+///
+/// ```text
+/// σ_eff(e) = σ_matrix(e) + Σ_families σ_f(e)
+/// ```
+///
+/// producing exactly the increasing drained-stress closure
+/// [`NonlinearConfinedStepper`] takes — pass
+/// `|e| model.drained_stress(e)` as its `sigma_eff` argument.
+///
+/// # The confined-compression honesty notes
+///
+/// Under confined compression (`e ≥ 0`) a tension-only fibre family is
+/// **exactly silent**: every family with a positive axis projection is
+/// shortened (`λ_f < 1`), a transverse family is unchanged, and no
+/// family stretches — so `drained_stress` reduces to the ground matrix
+/// alone at every `e ≥ 0`, point for point (asserted). Fibre engagement
+/// happens on the tension side (`e < 0`, constitutive evaluation here)
+/// and in the configurations this crate does not solve transiently —
+/// unconfined compression's lateral expansion and shear, where
+/// fibre stiffening is exactly why meniscal tissue behaves the way it
+/// does. What this type contributes is the fibre law, the
+/// confined-state stretch projection, and the composition contract, so
+/// a caller with those configurations — or the `tpt-med-tissue` HGO
+/// path for the full 3-D case — starts from validated pieces.
+///
+/// One second-order consequence for the stepper: the interior nodes
+/// start *undrained* at `e = 0`, exactly on the tension gate, and
+/// [`NonlinearConfinedStepper`]'s central-difference tangent straddles
+/// the gate there — so the early transient picks up a smeared fibre
+/// stiffness the true compression-side tangent does not have. The
+/// consequence is bounded and one-directional (a slightly faster early
+/// drainage), the equilibrium is untouched (fibres silent at every
+/// `e > 0`, so both marches reach exactly `σ_eff⁻¹(σ₀)`), and the
+/// transient difference is at the fraction-of-a-percent level (also
+/// asserted). A caller who needs the kink-free transient exactly can
+/// supply fibres with a small `modulus`; a caller who needs the
+/// tension side resolved properly needs a one-sided tangent, which
+/// this stepper deliberately does not fake.
+#[derive(Debug, Clone)]
+pub struct FiberReinforcedSolid<M> {
+    /// The ground-matrix drained law `σ_matrix(e)` (MPa), increasing
+    /// with `σ_matrix(0) = 0` — e.g. the linear `e ↦ H_A·e` closure.
+    pub matrix: M,
+    /// The tension-only fibre families.
+    pub fibers: Vec<FiberFamily>,
+}
+
+impl<M: Fn(f64) -> f64> FiberReinforcedSolid<M> {
+    /// Validates the composition: the matrix must start at zero and the
+    /// total drained stress must be finite everywhere in `e ∈ [−1, 2]`
+    /// and **increasing across the compression range the stepper drives
+    /// and inverts** (`e ∈ [0, 2]`). The tension side is deliberately
+    /// *not* required to be increasing in `e`: tension stiffening means
+    /// the stress magnitude grows as `e` *falls*, which is the fibre
+    /// behaviour working correctly.
+    pub fn new(matrix: M, fibers: Vec<FiberFamily>) -> Result<Self, String> {
+        let model = Self { matrix, fibers };
+        model.validated()?;
+        Ok(model)
+    }
+
+    /// The total drained effective stress (MPa) at strain `e`.
+    pub fn drained_stress(&self, e: f64) -> f64 {
+        let mut s = (self.matrix)(e);
+        for f in &self.fibers {
+            s += f.stress(e);
+        }
+        s
+    }
+
+    /// The composition checks [`Self::new`] runs: `σ_eff(0) = 0` exactly
+    /// (to 1e-12), finitely evaluated across `e ∈ [−1, 2]`, and
+    /// increasing across the compression range `[0, 2]`.
+    pub fn validated(&self) -> Result<(), String> {
+        let zero = self.drained_stress(0.0);
+        if !zero.is_finite() || zero.abs() > 1.0e-12 {
+            return Err(format!("drained stress at e = 0 must vanish, got {zero}"));
+        }
+        for i in 0..=300 {
+            let e = -1.0 + 3.0 * (i as f64) / 300.0;
+            if !self.drained_stress(e).is_finite() {
+                return Err(format!("drained stress is not finite at e = {e:.3}"));
+            }
+        }
+        let mut previous = self.drained_stress(0.0);
+        for i in 0..=200 {
+            let e = 2.0 * (i as f64) / 200.0;
+            let s = self.drained_stress(e);
+            if !s.is_finite() {
+                return Err(format!("drained stress is not finite at e = {e:.3}"));
+            }
+            if s < previous {
+                return Err(format!(
+                    "drained stress must be increasing in compression: \
+                     {previous} before {s} at e = {e:.3}"
+                ));
+            }
+            previous = s;
+        }
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1079,5 +1279,183 @@ mod tests {
                 .is_err(),
             "a non-monotone law must be rejected, not silently marched"
         );
+    }
+
+    fn axial_fiber() -> FiberFamily {
+        // Caller-cited screening coefficients (nothing baked in): a 5 MPa
+        // fibre tangent with moderate exponential stiffening.
+        FiberFamily::new(1.0, 5.0, 8.0).expect("valid fibre")
+    }
+
+    #[test]
+    fn fibre_family_validates_its_parameters() {
+        assert!(FiberFamily::new(-0.1, 5.0, 8.0).is_err());
+        assert!(FiberFamily::new(1.1, 5.0, 8.0).is_err());
+        assert!(FiberFamily::new(0.5, 0.0, 8.0).is_err());
+        assert!(FiberFamily::new(0.5, 5.0, -1.0).is_err());
+        assert!(FiberFamily::new(0.5, f64::NAN, 8.0).is_err());
+    }
+
+    #[test]
+    fn fibre_stretch_map_is_exact_at_the_boundaries() {
+        // An axial fibre (projection 1) shortens by exactly the applied
+        // axial stretch: λ_f = 1 − e.
+        let axial = axial_fiber();
+        for e in [0.0, 0.05, 0.2, 0.5] {
+            assert!(
+                (axial.fibre_stretch(e) - (1.0 - e)).abs() < 1e-15,
+                "axial stretch at e = {e}: {}",
+                axial.fibre_stretch(e)
+            );
+        }
+        // A transverse fibre (projection 0) does not change length in
+        // confined compression, in tension or compression.
+        let transverse = FiberFamily::new(0.0, 5.0, 8.0).expect("valid");
+        for e in [-0.3, 0.0, 0.4] {
+            assert!((transverse.fibre_stretch(e) - 1.0).abs() < 1e-15);
+        }
+        // The map is exact where it matters: λ_f(0) = 1 identically.
+        assert_eq!(axial.fibre_stretch(0.0), 1.0);
+    }
+
+    #[test]
+    fn tension_only_gate_is_silent_throughout_compression() {
+        let axial = axial_fiber();
+        let oblique = FiberFamily::new(0.25, 5.0, 8.0).expect("valid");
+        for e in [0.0, 1.0e-4, 0.01, 0.1, 0.5, 1.0] {
+            assert_eq!(axial.stress(e), 0.0, "axial fibre at e = {e}");
+            assert_eq!(oblique.stress(e), 0.0, "oblique fibre at e = {e}");
+        }
+    }
+
+    #[test]
+    fn fibres_engage_in_tension_and_stiffen_exponentially() {
+        let fiber = axial_fiber();
+        // Zero stress exactly at e = 0; growing in magnitude in tension
+        // (negative in this crate's compression-positive convention).
+        assert_eq!(fiber.stress(0.0), 0.0);
+        let s1 = fiber.stress(-0.01);
+        let s2 = fiber.stress(-0.05);
+        let s3 = fiber.stress(-0.10);
+        assert!(s1 < 0.0 && s2 < s1 && s3 < s2);
+        // Exponential stiffening: the secant stiffness magnitude grows
+        // with stretch.
+        let secant_near = s1.abs() / 0.01;
+        let secant_far = s3.abs() / 0.10;
+        assert!(
+            secant_far > secant_near,
+            "secant must grow: {secant_far} vs {secant_near}"
+        );
+        // Hand-check the law at one point: λ_f(−0.1) with projection 1 is
+        // sqrt(1 + 0.2 + 0.01) = 1.1; σ = −(E/k)(e^{k(λ−1)} − 1).
+        let expected = -5.0 / 8.0 * (8.0f64 * (1.1 - 1.0)).exp_m1();
+        assert!((fiber.stress(-0.1) - expected).abs() < 1e-12);
+        // Continuity of the law at the gate: just past λ_f = 1 the
+        // stress sits on the fibre-modulus slope.
+        let just_engaged = fiber.stress(-1.0e-9);
+        assert!(
+            just_engaged < 0.0 && just_engaged > -5.0 * 1.0e-8,
+            "engagement starts at the fibre modulus slope, got {just_engaged}"
+        );
+    }
+
+    #[test]
+    fn composed_law_reduces_to_the_matrix_in_compression_bit_for_bit() {
+        let ha = 0.7;
+        let matrix = move |e: f64| ha * e;
+        let fibers = vec![
+            axial_fiber(),
+            FiberFamily::new(0.25, 5.0, 8.0).expect("valid"),
+            FiberFamily::new(0.0, 5.0, 8.0).expect("valid"),
+        ];
+        let reinforced = FiberReinforcedSolid::new(matrix, fibers).expect("valid composition");
+        for e in [0.0, 1.0e-4, 0.05, 0.2, 1.0] {
+            assert_eq!(
+                reinforced.drained_stress(e),
+                ha * e,
+                "fibre-augmented compression branch must equal the matrix law at e = {e}"
+            );
+        }
+        // …and in tension the fibres pull on top of the matrix (more
+        // tensile = more negative in this convention).
+        assert!(reinforced.drained_stress(-0.05) < ha * -0.05);
+    }
+
+    #[test]
+    fn composition_validates_monotonicity_and_zero() {
+        let ha = 0.7;
+        // A matrix that does not vanish at e = 0 is rejected.
+        let shifted = FiberReinforcedSolid::new(move |e: f64| ha * e + 0.1, vec![axial_fiber()]);
+        assert!(shifted.is_err());
+        // A matrix that decreases somewhere in the compression range the
+        // stepper drives (here: peaks at e = 0.5 then falls) is rejected.
+        let softening =
+            FiberReinforcedSolid::new(move |e: f64| ha * e * (1.0 - e), vec![axial_fiber()]);
+        assert!(softening.is_err());
+        // An empty fibre set on the linear matrix validates cleanly.
+        let bare = FiberReinforcedSolid::new(move |e: f64| ha * e, vec![]);
+        assert!(bare.is_ok());
+        // A tension-stiffening composition validates: non-monotone-in-e
+        // on the tension side is correct fibre behaviour, not an error.
+        let stiff_fibers = vec![
+            axial_fiber(),
+            FiberFamily::new(0.5, 20.0, 10.0).expect("valid"),
+        ];
+        let tension_stiffening = FiberReinforcedSolid::new(move |e: f64| ha * e, stiff_fibers);
+        assert!(tension_stiffening.is_ok());
+    }
+
+    #[test]
+    fn fibre_augmented_creep_matches_matrix_only_with_identical_equilibrium() {
+        // The silence contract has two parts: the equilibrium is exact
+        // (fibres carry nothing at e > 0, so both marches reach exactly
+        // σ0/H_A), and the transient differs only through the stepper's
+        // FD tangent straddling the tension gate near e = 0 — bounded,
+        // one-directional, fraction-of-a-percent (see the type's honesty
+        // note).
+        let ha = 0.7;
+        let fibers = vec![
+            axial_fiber(),
+            FiberFamily::new(0.5, 3.0, 6.0).expect("valid"),
+        ];
+        let reinforced =
+            FiberReinforcedSolid::new(move |e: f64| ha * e, fibers).expect("valid composition");
+        let stepper = NonlinearConfinedStepper::new(2.0, 32).expect("valid");
+        let law = ConstantPermeability { k: 0.002 };
+        let sigma0 = 0.15;
+        let equilibrium = sigma0 / ha;
+
+        // Equilibrium: identical to discretisation precision.
+        let t_eq = 1.0e6;
+        let with_fibers_eq = stepper
+            .creep_with_laws(sigma0, t_eq, &law, &|e| reinforced.drained_stress(e))
+            .expect("marches");
+        let matrix_only_eq = stepper
+            .creep_with_laws(sigma0, t_eq, &law, &|e| ha * e)
+            .expect("marches");
+        assert!(
+            (with_fibers_eq - equilibrium).abs() < 1e-9,
+            "fibre-augmented equilibrium {with_fibers_eq} vs {equilibrium}"
+        );
+        assert!(
+            (matrix_only_eq - equilibrium).abs() < 1e-9,
+            "matrix-only equilibrium {matrix_only_eq} vs {equilibrium}"
+        );
+
+        // Transient: close, and in the documented direction (the
+        // gate-straddling tangent drains a little faster).
+        let t = 60.0;
+        let with_fibers = stepper
+            .creep_with_laws(sigma0, t, &law, &|e| reinforced.drained_stress(e))
+            .expect("marches");
+        let matrix_only = stepper
+            .creep_with_laws(sigma0, t, &law, &|e| ha * e)
+            .expect("marches");
+        assert!(
+            (with_fibers - matrix_only).abs() < 0.01 * matrix_only,
+            "transient drift {with_fibers} vs {matrix_only} exceeds a percent"
+        );
+        assert!(with_fibers > matrix_only);
+        assert!(with_fibers > 0.0 && with_fibers < equilibrium);
     }
 }

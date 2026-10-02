@@ -63,6 +63,15 @@ than a finite-element code.
   gives the equilibrium-compaction evaluation point. Constant-`k` stays
   the closed-form baseline.
 
+- **Fibrous cartilage** — `FiberFamily` + `FiberReinforcedSolid`: a
+  fibre-reinforced solid matrix for meniscus/TMJ-disc/annulus screening.
+  Each family is tension-only (compression buckles collagen), at a
+  `cos²θ` projection to the loading axis, with a caller-cited exponential
+  tension law; the composition produces exactly the drained-stress
+  closure `NonlinearConfinedStepper` takes. Under confined compression
+  the fibres are exactly silent pointwise — engagement is on the tension
+  side and in the unconfined/shear states this crate does not solve.
+
 ## Conventions
 
 - Aggregate modulus `H_A` in **MPa**; permeability `k` in **mm⁴/(N·s)**;
@@ -124,6 +133,9 @@ fn main() {
 | `BiphasicMaterial::initial_displacement_fraction(sigma0)` | The `t = 0` value (zero for a step load) |
 | `BiphasicMaterial::fluid_pressure_fraction(time, terms)` | Fraction of the load still carried by interstitial fluid |
 | `BiphasicMaterial::gel_time()` | Time to 50 % of equilibrium displacement |
+| `FiberFamily { axis_projection, modulus, stiffening }` | One tension-only collagen family; `axis_projection` = `cos²θ` to the load axis; caller-cited law coefficients |
+| `FiberFamily::fibre_stretch(e)` / `stress(e)` | Confined-state stretch `sqrt(1 − proj·(2e − e²))` and the tension-gated exponential stress (negative = tensile) |
+| `FiberReinforcedSolid { matrix, fibers }` | Ground-matrix drained law composed with the fibre families — the increasing `σ_eff(e)` closure the nonlinear stepper takes |
 
 ## Verification
 
@@ -146,15 +158,26 @@ The series solution has analytic limits, and all of them are asserted:
 
 ## Known Limitations
 
-- **Linear** theory only. Confined compression of cartilage at 100 kPa is
-  within the linear regime, but impact loading is not.
-- Confined compression is one of several standard boundary conditions;
-  unconfined compression and shear are not implemented.
-- No nonlinearity in the permeability–strain coupling (the "biphasic
-  nonlinear" family), and no lubrication/repulsion term for the contact
-  interface.
+- The **closed-form series** are the constant-`k`, linear-matrix problem.
+  Nonlinear laws (strain-dependent `k`, nonlinear `σ_eff(e)`) go through
+  `ConfinedCreepStepper` / `NonlinearConfinedStepper`, which carry
+  discretisation error the series does not.
+- Confined compression is the solved configuration. The unconfined
+  **transient** (Bessel-series coefficients in paywalled cited literature)
+  and any unconfined/shear *time history* are not implemented — the
+  unconfined bookends and the fluid-free shear closed form are.
+- `SqueezeFilm` is the constitutive lubrication term; coupling it into the
+  biphasic creep path (a contact-solver-driven biphasic interface) remains
+  open.
+- **Fibrous-cartilage fibres are tension-only and exactly silent under
+  confined compression** — engagement needs tension or the lateral
+  expansion/shear states this crate does not solve transiently. The
+  stepper's FD tangent also straddles the tension gate near `e = 0` at
+  the undrained start (bounded, sub-percent, documented at
+  `FiberReinforcedSolid`).
 - The model is 1D through-thickness. A full 3D poroelastic solve is out of
-  scope for this crate.
+  scope for this crate (the `tpt-med-tissue` HGO path carries the full 3-D
+  fibre-reinforced case).
 
 ## Related Crates
 

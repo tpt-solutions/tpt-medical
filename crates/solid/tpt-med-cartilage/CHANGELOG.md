@@ -88,16 +88,37 @@ changes for consumers of this crate.
   strain, the error shrinks under refinement, and a compaction law (k
   falling as the matrix consolidates) is shown to slow the creep exactly
   as the physics requires while reaching the same equilibrium.
-- Crate README explaining why poroelastic rather than elastic: interstitial
-- Nonlinear biphasic theory proper (the strain-dependent permeability hook
-  and the time-stepping solver for non-constant `k` are delivered; a full
-- Fibrous-cartilage support (a fibre-reinforced solid matrix).
+- **`FiberFamily` / `FiberReinforcedSolid` — fibrous-cartilage support,
+  the fibre-reinforced solid matrix.** Each `FiberFamily` is a
+  tension-only collagen family at a fixed angle to the loading axis
+  (`cos²θ` axis projection): the confined-state fibre stretch
+  `λ_f(e) = sqrt(1 − projection·(2e − e²))` and a caller-cited
+  exponential tension law continuous at the gate with slope `modulus`
+  (MPa) and stiffening rate `stiffening` — negative (tensile) in the
+  crate's compression-positive sign convention, exactly `0.0` while
+  slack. `FiberReinforcedSolid::drained_stress` composes any number of
+  families with a ground-matrix closure into exactly the increasing
+  drained-stress closure `NonlinearConfinedStepper` takes, validated at
+  construction (`σ_eff(0) = 0`, finite across `e ∈ [−1, 2]`, increasing
+  across the compression range the stepper drives — the tension side is
+  deliberately not required monotone-in-e, because tension stiffening
+  grows as `e` *falls*). Two honesty notes ship with it: under confined
+  compression tension-only fibres are **exactly silent** pointwise (the
+  compression branch equals the matrix law, bit for bit, asserted), and
+  the stepper's central-difference tangent straddles the tension gate
+  for the undrained start near `e = 0`, so the transient picks up a
+  bounded, one-directional smear (asserted under a percent; the
+  equilibrium is exactly `σ_eff⁻¹(σ₀)` in both marches). Verified: the
+  stretch map exact at both boundary projections, the tension gate
+  silent through compression, exponential stiffening and a hand-checked
+  law value at `λ_f = 1.1`, engagement slope, composition equality and
+  validation rejections, and the equilibrium/transient stepper contract.
 
 ### Planned
 - (None: linear and nonlinear confined compression with constant or
-  strain-dependent permeability, unconfined limits, shear, and
-  squeeze-film lubrication are all delivered. Further needs arrive
-  through issues.)
+  strain-dependent permeability, unconfined limits, shear,
+  squeeze-film lubrication, and the fibre-reinforced solid matrix are
+  all delivered. Further needs arrive through issues.)
 
 ### Notes
 - The **term count** is a runtime parameter, not a hard-coded truncation. The
