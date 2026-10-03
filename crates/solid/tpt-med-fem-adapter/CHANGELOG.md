@@ -225,8 +225,11 @@ changes for consumers of this crate.
   list is empty — the RFC 0012 arc is complete.
 
 ### Planned
-- (None. The penalty and mixed paths, contact, friction and load
-  continuation are all delivered; further needs arrive through issues.)
+- `rfcs/0013-stent-level3-fem.md` (Draft): the Souza–Auricchio
+  superelastic constitutive model behind an off-by-default `superelastic`
+  feature, with the crown-ring/two-group fixtures and the RFC 0004
+  Level-3 acceptance items as its verification — the one scoped
+  follow-up; further needs arrive through issues.
 
 ## [0.1.0] - 2026-09-27
 

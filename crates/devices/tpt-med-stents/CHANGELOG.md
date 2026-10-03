@@ -72,8 +72,12 @@ changes for consumers of this crate.
   verdicts.
 
 ### Planned
-- **Level 3** — 3D superelastic FEM with frictional contact via
-  `tpt-fem-hyperelastic` / `tpt-fem-contact`.
+- **Level 3** — 3D superelastic FEM with frictional contact, scoped by
+  `rfcs/0013-stent-level3-fem.md` (Draft): the Souza–Auricchio model in
+  the fem-adapter behind a `superelastic` feature, cross-checked against
+  this crate's Level 1/2 metrics under RFC 0004's acceptance items. The
+  ring models stay the screening path; Level 3 exists to be measured
+  against them.
 - A first-class `tpt-med-hemodynamics` adapter (the coupling contract and
   fixed-point loop are shipped in `simulate_coupled_deployment`; the
   adapter lands with a real workflow that wants the wire-up done once,
