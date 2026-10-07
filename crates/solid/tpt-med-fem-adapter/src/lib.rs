@@ -98,6 +98,8 @@
 
 pub mod assembly;
 pub mod contact;
+#[cfg(feature = "superelastic")]
+pub mod deployment;
 pub mod friction;
 pub mod loadpath;
 pub mod mesh;

@@ -96,6 +96,20 @@ pub trait Constitutive {
     fn volumetric_piola(&self, _f: &Mat3) -> Mat3 {
         Mat3::ZERO
     }
+    /// First Piola-Kirchhoff stress at quadrature point `point` of element
+    /// `element`.
+    ///
+    /// The assembly routines call this rather than [`first_piola`] so a law
+    /// with **per-point internal state** (the superelastic model's martensite
+    /// fraction) can look its own state up. The default ignores the indices
+    /// and delegates, so every stateless law is unaffected. `point` indexes
+    /// the element family's rule at `AssemblyOptions::quadrature_order`, in
+    /// rule order.
+    ///
+    /// [`first_piola`]: Constitutive::first_piola
+    fn first_piola_at(&self, _element: usize, _point: usize, f: &Mat3) -> Mat3 {
+        self.first_piola(f)
+    }
 }
 
 impl Constitutive for TissueModel {
@@ -223,6 +237,12 @@ pub fn element_deformation_gradient<E: ReferenceElement + crate::mesh::ElementFa
 /// accurate on a unit-scale configuration and on a strongly stretched one; the
 /// bare `h` would lose half its digits in the second case.
 pub fn material_tangent(model: &dyn Constitutive, f: &Mat3, h: f64) -> Tensor4 {
+    material_tangent_of(&|g: &Mat3| model.first_piola(g), f, h)
+}
+
+/// [`material_tangent`] of an arbitrary stress function, so the assembler can
+/// difference the point-indexed [`Constitutive::first_piola_at`].
+fn material_tangent_of(stress: &dyn Fn(&Mat3) -> Mat3, f: &Mat3, h: f64) -> Tensor4 {
     let mut out = [[[[0.0f64; 3]; 3]; 3]; 3];
     for k in 0..3 {
         for l in 0..3 {
@@ -233,8 +253,8 @@ pub fn material_tangent(model: &dyn Constitutive, f: &Mat3, h: f64) -> Tensor4 {
             let mut fm = *f;
             let minus = fm.at(k, l) - step;
             fm.set(k, l, minus);
-            let pp = model.first_piola(&fp);
-            let pm = model.first_piola(&fm);
+            let pp = stress(&fp);
+            let pm = stress(&fm);
             for i in 0..3 {
                 for j in 0..3 {
                     out[i][j][k][l] = (pp.at(i, j) - pm.at(i, j)) / (plus - minus);
@@ -274,7 +294,7 @@ pub fn internal_force<E: ReferenceElement + crate::mesh::ElementFamily>(
     // element, giving a plausible but badly wrong answer rather than an error.
     let rule = E::quadrature_rule(opts.quadrature_order);
     for e in 0..mesh.element_count() {
-        for (xi, w) in rule.points.iter().zip(&rule.weights) {
+        for (q, (xi, w)) in rule.points.iter().zip(&rule.weights).enumerate() {
             let Some(grad) = mesh.physical_gradients(e, xi) else {
                 return Err(MeshError::DegenerateElement {
                     element: e,
@@ -303,7 +323,7 @@ pub fn internal_force<E: ReferenceElement + crate::mesh::ElementFamily>(
             // rule, the volumetric part is integrated on its own coarser rule.
             // With `None` both halves share one rule and this reduces to the
             // original single `P` integration, exactly.
-            let p_full = model.first_piola(&f);
+            let p_full = model.first_piola_at(e, q, &f);
             let p_vol = match opts.volumetric_quadrature_order {
                 Some(_) => model.volumetric_piola(&f),
                 None => Mat3::ZERO,
@@ -379,7 +399,7 @@ pub fn tangent_stiffness<E: ReferenceElement + crate::mesh::ElementFamily>(
     // element, giving a plausible but badly wrong answer rather than an error.
     let rule = E::quadrature_rule(opts.quadrature_order);
     for e in 0..mesh.element_count() {
-        for (xi, w) in rule.points.iter().zip(&rule.weights) {
+        for (q, (xi, w)) in rule.points.iter().zip(&rule.weights).enumerate() {
             let Some(grad) = mesh.physical_gradients(e, xi) else {
                 return Err(MeshError::DegenerateElement {
                     element: e,
@@ -400,11 +420,17 @@ pub fn tangent_stiffness<E: ReferenceElement + crate::mesh::ElementFamily>(
             // force splits.
             let a = match opts.volumetric_quadrature_order {
                 Some(_) => {
-                    let full = material_tangent(model, &f, opts.fd_step);
+                    let full = material_tangent_of(
+                        &|g: &Mat3| model.first_piola_at(e, q, g),
+                        &f,
+                        opts.fd_step,
+                    );
                     let vol = material_tangent(&VolumetricOnly(model), &f, opts.fd_step);
                     sub4(&full, &vol)
                 }
-                None => material_tangent(model, &f, opts.fd_step),
+                None => {
+                    material_tangent_of(&|g: &Mat3| model.first_piola_at(e, q, g), &f, opts.fd_step)
+                }
             };
             for (i, &ni) in mesh.elements()[e].iter().enumerate() {
                 for (j, &nj) in mesh.elements()[e].iter().enumerate() {

@@ -403,6 +403,151 @@ impl Constitutive for SuperelasticAt<'_> {
     }
 }
 
+/// Errors from advancing a [`SuperelasticField`].
+#[derive(Debug)]
+pub enum FieldError {
+    /// The mesh could not supply a deformation gradient (wrong DOF count,
+    /// degenerate element).
+    Mesh(crate::mesh::MeshError),
+    /// A point update failed.
+    Point(SuperelasticError),
+}
+
+impl core::fmt::Display for FieldError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Mesh(e) => write!(f, "{e}"),
+            Self::Point(e) => write!(f, "{e}"),
+        }
+    }
+}
+
+impl std::error::Error for FieldError {}
+
+/// Committed internal variables at every quadrature point of a mesh, as a
+/// [`Constitutive`] the assembly can use directly.
+///
+/// This is the per-point state storage RFC 0013 puts in the deployment
+/// driver: the assembly asks for stress through
+/// [`Constitutive::first_piola_at`], and each answer is the return mapping
+/// from that point's **committed** state at the trial deformation. Nothing is
+/// advanced during a Newton solve; [`commit`](Self::commit) advances every
+/// point once, after a converged step, so a cut-back step restarts from
+/// untouched state.
+///
+/// Used through the plain [`Constitutive::first_piola`] (no point identity)
+/// it returns a NaN stress rather than guess a state.
+#[derive(Debug, Clone)]
+pub struct SuperelasticField {
+    model: SouzaAuricchio,
+    points: usize,
+    quadrature_order: usize,
+    states: Vec<SuperelasticState>,
+}
+
+impl SuperelasticField {
+    /// A fresh (austenite, unloaded) field for `mesh`, indexed at
+    /// `quadrature_order` — which must equal the assembly's.
+    pub fn new<E: tpt_fem_element::ReferenceElement + crate::mesh::ElementFamily>(
+        model: SouzaAuricchio,
+        mesh: &crate::mesh::Mesh<E>,
+        quadrature_order: usize,
+    ) -> Self {
+        let points = E::quadrature_rule(quadrature_order).points.len();
+        Self {
+            model,
+            points,
+            quadrature_order,
+            states: vec![SuperelasticState::default(); mesh.element_count() * points],
+        }
+    }
+
+    /// The model.
+    pub fn model(&self) -> &SouzaAuricchio {
+        &self.model
+    }
+
+    /// The committed state at `(element, point)`.
+    pub fn state(&self, element: usize, point: usize) -> Option<&SuperelasticState> {
+        if point >= self.points {
+            return None;
+        }
+        self.states.get(element * self.points + point)
+    }
+
+    /// `(min, max, mean)` of the committed martensite fraction.
+    pub fn martensite_summary(&self) -> (f64, f64, f64) {
+        let mut lo = f64::INFINITY;
+        let mut hi = f64::NEG_INFINITY;
+        let mut sum = 0.0;
+        for s in &self.states {
+            lo = lo.min(s.xi);
+            hi = hi.max(s.xi);
+            sum += s.xi;
+        }
+        if self.states.is_empty() {
+            return (0.0, 0.0, 0.0);
+        }
+        (lo, hi, sum / self.states.len() as f64)
+    }
+
+    /// Advance every point's committed state to the displacement `u`.
+    ///
+    /// All-or-nothing: if any point fails, no state changes.
+    ///
+    /// # Errors
+    /// [`FieldError`] if a deformation gradient cannot be formed or a point
+    /// update fails.
+    pub fn commit<E: tpt_fem_element::ReferenceElement + crate::mesh::ElementFamily>(
+        &mut self,
+        mesh: &crate::mesh::Mesh<E>,
+        u: &[f64],
+    ) -> Result<(), FieldError> {
+        if u.len() != mesh.dof_count() {
+            return Err(FieldError::Mesh(crate::mesh::MeshError::DofCountMismatch {
+                expected: mesh.dof_count(),
+                found: u.len(),
+            }));
+        }
+        let rule = E::quadrature_rule(self.quadrature_order);
+        let mut next = Vec::with_capacity(self.states.len());
+        for e in 0..mesh.element_count() {
+            for (q, xi) in rule.points.iter().enumerate() {
+                let f = crate::assembly::element_deformation_gradient(mesh, e, u, xi).ok_or(
+                    FieldError::Mesh(crate::mesh::MeshError::DegenerateElement {
+                        element: e,
+                        jacobian_determinant: mesh.jacobian(e, xi).det(),
+                    }),
+                )?;
+                let committed = &self.states[e * self.points + q];
+                let up = self
+                    .model
+                    .update(&f, committed)
+                    .map_err(FieldError::Point)?;
+                next.push(up.state);
+            }
+        }
+        self.states = next;
+        Ok(())
+    }
+}
+
+impl Constitutive for SuperelasticField {
+    fn first_piola(&self, _f: &Mat3) -> Mat3 {
+        Mat3::from_array([f64::NAN; 9])
+    }
+
+    fn first_piola_at(&self, element: usize, point: usize, f: &Mat3) -> Mat3 {
+        let Some(state) = self.state(element, point) else {
+            return Mat3::from_array([f64::NAN; 9]);
+        };
+        match self.model.update(f, state) {
+            Ok(u) => u.piola,
+            Err(_) => Mat3::from_array([f64::NAN; 9]),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
