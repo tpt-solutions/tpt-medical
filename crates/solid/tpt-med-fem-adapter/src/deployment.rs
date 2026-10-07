@@ -17,15 +17,19 @@
 //!   recovery drives the expansion rather than a prescribed path.
 //!
 //! Planar axis-aligned contact (the adapter's existing pairing, optionally
-//! with friction) can ride along on any stage. **Not in this slice:** a
-//! radial rigid-cylinder vessel — the pairing resolves gaps along one
-//! coordinate axis, so a cylindrical wall needs a new radial pairing — and
-//! the crown-ring / two-group fixtures. Both are the next RFC 0013 slices.
+//! with friction) can ride along on any stage, and the driver owns an
+//! optional **radial wall** ([`Deployment3D::set_wall`]) whose friction
+//! history is committed after every converged increment exactly like the
+//! material state, so a cut-back increment restarts from the same friction
+//! state. **Not in this slice:** the crown-ring / two-group fixtures and the
+//! RFC 0004 acceptance studies.
 
 use crate::assembly::{internal_force, AssemblyOptions};
+use crate::contact::ContactPairing;
 use crate::mesh::{ElementFamily, Mesh, MeshError};
 use crate::solver::{newton_from, ContactConfig, SolveError, SolveOptions};
 use crate::superelastic::{FieldError, SouzaAuricchio, SuperelasticField};
+use crate::wall::{RadialWall, WallError, WallSummary};
 use std::collections::BTreeMap;
 use tpt_fem_element::ReferenceElement;
 
@@ -68,6 +72,8 @@ pub enum DeploymentError {
     Mesh(MeshError),
     /// A DOF index was outside the mesh.
     DofOutOfRange(usize),
+    /// The wall definition was invalid, or no wall is installed.
+    Wall(WallError),
     /// `release` named a DOF that is not currently prescribed.
     NotPrescribed(usize),
 }
@@ -87,6 +93,7 @@ impl std::fmt::Display for DeploymentError {
             Self::State(e) => write!(f, "{e}"),
             Self::Mesh(e) => write!(f, "{e}"),
             Self::DofOutOfRange(d) => write!(f, "dof {d} is outside the mesh"),
+            Self::Wall(e) => write!(f, "{e}"),
             Self::NotPrescribed(d) => write!(f, "dof {d} is not prescribed"),
         }
     }
@@ -122,6 +129,7 @@ pub struct Deployment3D<'m, E: ReferenceElement + ElementFamily> {
     opts: SolveOptions,
     u: Vec<f64>,
     prescribed: BTreeMap<usize, f64>,
+    wall: Option<(RadialWall, f64)>,
 }
 
 impl<'m, E: ReferenceElement + ElementFamily> Deployment3D<'m, E> {
@@ -153,7 +161,51 @@ impl<'m, E: ReferenceElement + ElementFamily> Deployment3D<'m, E> {
             opts,
             u,
             prescribed,
+            wall: None,
         })
+    }
+
+    /// Installs the vessel wall with normal penalty stiffness `penalty`,
+    /// replacing any previous wall and its friction history. When a stage is
+    /// also given a planar `ContactConfig`, that config's penalty is used for
+    /// both, as a solve carries a single penalty.
+    pub fn set_wall(&mut self, wall: RadialWall, penalty: f64) {
+        self.wall = Some((wall, penalty));
+    }
+
+    /// Moves the wall to a new radius (expanding or relaxing the vessel
+    /// between stages), keeping its friction history.
+    ///
+    /// # Errors
+    /// [`DeploymentError::Wall`] for a bad radius or when no wall is set.
+    pub fn move_wall(&mut self, radius: f64) -> Result<(), DeploymentError> {
+        let Some((w, pen)) = self.wall.take() else {
+            return Err(DeploymentError::Wall(WallError::InvalidRadius(radius)));
+        };
+        match w.clone().with_radius(radius) {
+            Ok(m) => {
+                self.wall = Some((m, pen));
+                Ok(())
+            }
+            Err(e) => {
+                self.wall = Some((w, pen));
+                Err(DeploymentError::Wall(e))
+            }
+        }
+    }
+
+    /// The wall's contact outcome at the current configuration.
+    ///
+    /// # Errors
+    /// [`DeploymentError::Mesh`].
+    pub fn wall_summary(&self) -> Result<Option<WallSummary>, DeploymentError> {
+        match &self.wall {
+            Some((w, pen)) => w
+                .summary(self.mesh, &self.u, *pen)
+                .map(Some)
+                .map_err(DeploymentError::Mesh),
+            None => Ok(None),
+        }
     }
 
     /// The current displacement.
@@ -262,6 +314,7 @@ impl<'m, E: ReferenceElement + ElementFamily> Deployment3D<'m, E> {
         if stage.steps == 0 {
             return Ok(report);
         }
+        let inactive = ContactPairing::inactive();
         let dt = 1.0 / stage.steps as f64;
         let mut reached = 0.0f64;
         while reached < 1.0 - 1e-12 {
@@ -272,13 +325,26 @@ impl<'m, E: ReferenceElement + ElementFamily> Deployment3D<'m, E> {
                 let mut held = self.prescribed.clone();
                 let load = setup(attempt, &mut held);
                 let dirichlet: Vec<(usize, f64)> = held.iter().map(|(&d, &v)| (d, v)).collect();
+                let cfg = match (&self.wall, contact) {
+                    (Some((w, _)), Some(c)) => Some(ContactConfig {
+                        radial: Some(w),
+                        ..c
+                    }),
+                    (Some((w, pen)), None) => Some(ContactConfig {
+                        pairing: &inactive,
+                        penalty: *pen,
+                        friction: None,
+                        radial: Some(w),
+                    }),
+                    (None, c) => c,
+                };
                 match newton_from(
                     self.mesh,
                     &self.field,
                     &load,
                     &dirichlet,
                     &self.opts,
-                    contact,
+                    cfg,
                     Some(&self.u),
                 ) {
                     Ok(r) => {
@@ -287,6 +353,14 @@ impl<'m, E: ReferenceElement + ElementFamily> Deployment3D<'m, E> {
                         let mut next = self.field.clone();
                         next.commit(self.mesh, &r.displacement)
                             .map_err(DeploymentError::State)?;
+                        // Advance the wall's friction history with the state.
+                        if let Some((w, stored)) = &self.wall {
+                            let pen = contact.map_or(*stored, |c| c.penalty);
+                            let advanced = w
+                                .committed(self.mesh, &r.displacement, pen)
+                                .map_err(DeploymentError::Mesh)?;
+                            self.wall = Some((advanced, *stored));
+                        }
                         self.field = next;
                         self.u = r.displacement;
                         self.prescribed = held;
@@ -560,5 +634,157 @@ mod tests {
             Deployment3D::new(&mesh, model(), opts(), &[(n + 1, 0.0)]),
             Err(DeploymentError::DofOutOfRange(_))
         ));
+    }
+}
+
+#[cfg(test)]
+mod wall_stage_tests {
+    use super::*;
+    use crate::friction::FrictionConfig;
+    use crate::mesh::{hex_box, Hex8Mesh};
+    use crate::solver::{Convergence, SolveOptions};
+    use crate::superelastic::SuperelasticParams;
+    use crate::wall::WallSide;
+
+    const L: f64 = 10.0;
+    const KAPPA: f64 = 1.0e7;
+
+    /// Quadrant block along z: symmetry on x = 0 / y = 0, z = 0 pinned, the
+    /// z-max face prescribed (held at zero until a stage moves it).
+    fn quadrant(mesh: &Hex8Mesh) -> (Deployment3D<'_, tpt_fem_element::Hex8>, Vec<usize>) {
+        let mut fixed = Vec::new();
+        for n in mesh.face_nodes(0, false) {
+            fixed.push((mesh.dof(n, 0), 0.0));
+        }
+        for n in mesh.face_nodes(1, false) {
+            fixed.push((mesh.dof(n, 1), 0.0));
+        }
+        for n in mesh.face_nodes(2, false) {
+            fixed.push((mesh.dof(n, 2), 0.0));
+        }
+        let top: Vec<usize> = mesh
+            .face_nodes(2, true)
+            .iter()
+            .map(|&n| mesh.dof(n, 2))
+            .collect();
+        for &d in &top {
+            fixed.push((d, 0.0));
+        }
+        let model = SouzaAuricchio::new(SuperelasticParams::default()).expect("model");
+        // Forces here reach ~1e5 (a 1e7 penalty over a 0.1 mm overlap), so the
+        // absolute residual floor must sit above double-precision noise at
+        // that scale rather than at the default 1e-10.
+        let opts = SolveOptions {
+            convergence: Convergence {
+                abs_tol: 1.0e-5,
+                ..Convergence::default()
+            },
+            ..SolveOptions::default()
+        };
+        (
+            Deployment3D::new(mesh, model, opts, &fixed).expect("dep"),
+            top,
+        )
+    }
+
+    /// Close the vessel onto the block in stages, the way a lumen meets a
+    /// stent, instead of imposing the whole overlap in one jump.
+    fn engage(dep: &mut Deployment3D<'_, tpt_fem_element::Hex8>, top: &[usize]) {
+        let hold: Vec<_> = top.iter().map(|&d| (d, 0.0)).collect();
+        let stage = StageOptions {
+            steps: 2,
+            max_cutbacks: 8,
+        };
+        for r in [14.12, 14.08, 14.04, 14.0] {
+            dep.move_wall(r).expect("move");
+            dep.prescribe(&hold, stage, None).expect("engage");
+        }
+    }
+
+    fn wall_for(mesh: &Hex8Mesh, radius: f64, mu: f64) -> RadialWall {
+        let w = RadialWall::new(2, [0.0; 2], radius, WallSide::Inside, 0..mesh.node_count())
+            .expect("wall");
+        if mu > 0.0 {
+            w.with_friction(FrictionConfig::new(mu, 1.0e6).expect("friction"))
+        } else {
+            w
+        }
+    }
+
+    fn slide(mu: f64) -> (f64, WallSummary) {
+        let mesh = hex_box(2, 2, 2, L, L, L).expect("box");
+        let (mut dep, top) = quadrant(&mesh);
+        dep.set_wall(wall_for(&mesh, 14.2, mu), KAPPA);
+        let stage = StageOptions {
+            steps: 6,
+            max_cutbacks: 8,
+        };
+        // The corner column sits at rho = 14.14, just inside the first radius.
+        engage(&mut dep, &top);
+        // Slide the top face axially against the wall.
+        let go: Vec<_> = top.iter().map(|&d| (d, 0.02)).collect();
+        dep.prescribe(&go, stage, None).expect("slide");
+        (
+            dep.reaction(&top).expect("reaction"),
+            dep.wall_summary().expect("summary").expect("wall"),
+        )
+    }
+
+    #[test]
+    fn wall_engages_and_the_block_transforms_at_the_squeezed_corner() {
+        let mesh = hex_box(2, 2, 2, L, L, L).expect("box");
+        let (mut dep, top) = quadrant(&mesh);
+        dep.set_wall(wall_for(&mesh, 14.2, 0.0), KAPPA);
+        engage(&mut dep, &top);
+        let s = dep.wall_summary().unwrap().unwrap();
+        assert!(s.active > 0, "{s:?}");
+        // Stiff penalty: penetration is a tiny fraction of the ~0.14 mm overlap.
+        assert!(s.max_penetration < 0.02, "{s:?}");
+        assert!(
+            dep.field().martensite_summary().1 > 0.0,
+            "the squeezed corner column should have transformed"
+        );
+    }
+
+    #[test]
+    fn wall_friction_resists_axial_sliding_within_the_coulomb_bound() {
+        let (r0, s0) = slide(0.0);
+        let mu = 0.3;
+        let (r1, s1) = slide(mu);
+        assert!(s0.active > 0 && s1.active > 0);
+        // Friction adds axial resistance on the top-face reaction...
+        let extra = (r1 - r0).abs();
+        assert!(
+            extra > 1e-3 * r0.abs().max(1.0),
+            "friction had no effect: {r0} vs {r1}"
+        );
+        // ...and cannot exceed mu times the total normal reaction (a slightly
+        // loose bound: both runs settle at marginally different normals).
+        assert!(
+            extra <= 1.05 * mu * s1.total_reaction.max(s0.total_reaction),
+            "friction {extra} exceeds mu N = {}",
+            mu * s1.total_reaction
+        );
+    }
+
+    #[test]
+    fn wall_can_be_moved_between_stages_and_is_validated() {
+        let mesh = hex_box(2, 2, 2, L, L, L).expect("box");
+        let (mut dep, top) = quadrant(&mesh);
+        assert!(matches!(dep.move_wall(1.0), Err(DeploymentError::Wall(_))));
+        dep.set_wall(wall_for(&mesh, 14.2, 0.0), KAPPA);
+        let hold: Vec<_> = top.iter().map(|&d| (d, 0.0)).collect();
+        let stage = StageOptions {
+            steps: 4,
+            max_cutbacks: 8,
+        };
+        engage(&mut dep, &top);
+        assert!(dep.wall_summary().unwrap().unwrap().active > 0);
+        assert!(matches!(dep.move_wall(-1.0), Err(DeploymentError::Wall(_))));
+        // Relax the vessel well clear of the block: contact lifts off.
+        dep.move_wall(20.0).expect("move");
+        dep.prescribe(&hold, stage, None).expect("relax");
+        assert_eq!(dep.wall_summary().unwrap().unwrap().active, 0);
+        assert!(dep.reaction(&top).unwrap().abs() < 1e-3);
     }
 }

@@ -107,6 +107,7 @@ pub mod mixed;
 pub mod solver;
 #[cfg(feature = "superelastic")]
 pub mod superelastic;
+pub mod wall;
 
 pub use assembly::{
     coo_max_abs_diff, element_deformation_gradient, internal_force, material_tangent,
@@ -126,6 +127,7 @@ pub use mixed::{solve_mixed_static, MixedOptions, MixedSolveResult};
 pub use solver::{
     residual, solve_static, ContactConfig, ContactSummary, SolveError, SolveOptions, SolveResult,
 };
+pub use wall::{RadialWall, WallError, WallSide, WallSummary, WallTerms};
 
 #[cfg(test)]
 mod tests;

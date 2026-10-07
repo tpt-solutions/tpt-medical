@@ -511,6 +511,7 @@ fn contact_holds_the_body_out_of_the_obstacle() {
         &s.dirichlet,
         &SolveOptions::default(),
         Some(ContactConfig {
+            radial: None,
             pairing: &s.pairing,
             penalty,
             friction: None,
@@ -571,6 +572,7 @@ fn contact_changes_the_answer_versus_no_contact() {
         &s.dirichlet,
         &SolveOptions::default(),
         Some(ContactConfig {
+            radial: None,
             pairing: &s.pairing,
             penalty: 1.0e4,
             friction: None,
@@ -597,6 +599,7 @@ fn pulling_away_leaves_the_active_set_empty() {
         &s.dirichlet,
         &SolveOptions::default(),
         Some(ContactConfig {
+            radial: None,
             pairing: &s.pairing,
             penalty: 1.0e4,
             friction: None,
@@ -634,6 +637,7 @@ fn contact_jacobian_matches_the_finite_differenced_residual() {
     let penalty = 1.0e3;
     let opts = SolveOptions::default();
     let cfg = Some(ContactConfig {
+        radial: None,
         pairing: &s.pairing,
         penalty,
         friction: None,
@@ -964,6 +968,7 @@ fn friction_changes_the_converged_answer() {
             &s.dirichlet,
             &opts,
             Some(ContactConfig {
+                radial: None,
                 pairing: &s.pairing,
                 penalty,
                 friction: mu.map(|m| FrictionConfig::new(m, 1.0e3).expect("valid")),

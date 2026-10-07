@@ -365,6 +365,13 @@ pub fn solve_mixed_static<E: ReferenceElement + crate::mesh::ElementFamily>(
             found: load.len(),
         });
     }
+    // The mixed solver freezes its contact terms per increment; the wall's
+    // history-carrying friction has no such treatment, so refuse it loudly.
+    if contact.is_some_and(|c| c.radial.is_some()) {
+        return Err(SolveError::Unsupported(
+            "a radial wall with the mixed u-p solver",
+        ));
+    }
     // The continuation walk mirrors the penalty solver's load path
     // exactly: equal nominal increments, a failed increment retried from
     // the last converged factor at half the remaining distance (progress
@@ -438,6 +445,7 @@ pub fn solve_mixed_static<E: ReferenceElement + crate::mesh::ElementFamily>(
                 ),
                 None => None,
             },
+            wall: None,
         }),
         None => None,
     };
@@ -973,6 +981,7 @@ mod tests {
             .expect("axis 1")
             .with_activation_tolerance(1.0e-2);
         let contact = Some(ContactConfig {
+            radial: None,
             pairing: &pairing,
             penalty: 1.0e4,
             friction: None,

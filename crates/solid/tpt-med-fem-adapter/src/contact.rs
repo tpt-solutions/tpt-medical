@@ -133,6 +133,18 @@ impl ContactPairing {
         })
     }
 
+    /// A pairing with no slave nodes: it constrains nothing. For a problem
+    /// whose only contact is a [`crate::RadialWall`], which rides on
+    /// [`crate::ContactConfig`] and so needs *some* pairing to sit beside.
+    pub fn inactive() -> Self {
+        Self {
+            axis: 0,
+            slave: Vec::new(),
+            master: vec![Vec3::new(0.0, 0.0, 0.0)],
+            activation_tolerance: 0.0,
+        }
+    }
+
     /// Sets the gap at or below which a contact is considered active.
     ///
     /// The default of `0.0` means *touching counts as active*, which is the

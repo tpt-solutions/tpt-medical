@@ -47,6 +47,7 @@ use crate::assembly::{internal_force, tangent_stiffness, AssemblyOptions, Consti
 use crate::contact::ContactPairing;
 use crate::friction::{friction_terms, FrictionConfig};
 use crate::mesh::{Mesh, MeshError};
+use crate::wall::{RadialWall, WallSummary};
 use std::cell::Cell;
 use std::collections::HashSet;
 use tpt_fem_element::ReferenceElement;
@@ -86,6 +87,9 @@ pub enum SolveError {
     /// The condensed linear system was singular (a floating structure, or a
     /// Dirichlet set that leaves a rigid-body mode unconstrained).
     Singular,
+    /// The requested combination is not supported by this solver (named in
+    /// the message) — rejected rather than silently ignored.
+    Unsupported(&'static str),
 }
 
 impl std::fmt::Display for SolveError {
@@ -106,6 +110,7 @@ impl std::fmt::Display for SolveError {
                  (free-DOF residual {residual_norm:e})"
             ),
             SolveError::Singular => write!(f, "the condensed linear system is singular"),
+            SolveError::Unsupported(what) => write!(f, "unsupported: {what}"),
         }
     }
 }
@@ -116,7 +121,8 @@ impl std::error::Error for SolveError {
             SolveError::Mesh(e) | SolveError::Contact(e) => Some(e),
             SolveError::LoadSizeMismatch { .. }
             | SolveError::NotConverged { .. }
-            | SolveError::Singular => None,
+            | SolveError::Singular
+            | SolveError::Unsupported(_) => None,
         }
     }
 }
@@ -172,6 +178,12 @@ pub struct ContactConfig<'a> {
     /// Optional Coulomb friction on the active contacts. `None` is exactly the
     /// previous frictionless behaviour, and costs nothing at solve time.
     pub friction: Option<FrictionConfig>,
+    /// Optional rigid analytic cylindrical wall (a vessel lumen), enforced by
+    /// the same penalty. `None` costs nothing. It composes with `pairing`:
+    /// for a wall-only problem pass [`ContactPairing::inactive`] as the
+    /// pairing. Wall friction lives on the [`RadialWall`] itself, because it
+    /// carries committed history.
+    pub radial: Option<&'a RadialWall>,
 }
 
 /// Contact outcome of a solve, for reporting and verification.
@@ -186,6 +198,8 @@ pub struct ContactSummary {
     /// How many active nodes had saturated at the Coulomb bound, or `None` when
     /// the solve ran without friction.
     pub slipping_nodes: Option<usize>,
+    /// The radial wall's outcome, or `None` when no wall was configured.
+    pub wall: Option<WallSummary>,
 }
 
 /// The converged result of a static solve.
@@ -259,6 +273,12 @@ fn residual_vector<E: ReferenceElement + crate::mesh::ElementFamily>(
                 r[i] -= v;
             }
         }
+        if let Some(wall) = cfg.radial {
+            let t = wall.terms(mesh, u, cfg.penalty)?;
+            for (i, v) in t.force.iter().enumerate() {
+                r[i] += v;
+            }
+        }
     }
     Ok(r)
 }
@@ -285,6 +305,12 @@ fn jacobian_matrix<E: ReferenceElement + crate::mesh::ElementFamily>(
                     friction.tangent.cols[i],
                     friction.tangent.vals[i],
                 );
+            }
+        }
+        if let Some(wall) = cfg.radial {
+            let t = wall.terms(mesh, u, cfg.penalty)?;
+            for i in 0..t.tangent.len() {
+                k.push(t.tangent.rows[i], t.tangent.cols[i], t.tangent.vals[i]);
             }
         }
     }
@@ -497,6 +523,13 @@ pub(crate) fn newton_from<E: ReferenceElement + crate::mesh::ElementFamily>(
                     friction_terms(mesh, cfg.pairing, &u, cfg.penalty, fcfg)
                         .map_err(SolveError::Contact)?
                         .slipping_nodes,
+                ),
+                None => None,
+            },
+            wall: match cfg.radial {
+                Some(w) => Some(
+                    w.summary(mesh, &u, cfg.penalty)
+                        .map_err(SolveError::Contact)?,
                 ),
                 None => None,
             },
