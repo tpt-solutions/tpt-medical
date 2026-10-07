@@ -103,6 +103,8 @@ pub mod loadpath;
 pub mod mesh;
 pub mod mixed;
 pub mod solver;
+#[cfg(feature = "superelastic")]
+pub mod superelastic;
 
 pub use assembly::{
     coo_max_abs_diff, element_deformation_gradient, internal_force, material_tangent,

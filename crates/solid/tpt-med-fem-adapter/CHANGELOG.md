@@ -12,6 +12,7 @@ changes for consumers of this crate.
 ## [Unreleased]
 
 ### Added
+- **`superelastic` feature (RFC 0013, first slice):** `superelastic::SouzaAuricchio` — a 3-D stateful superelastic point model (internal `ξ` and transformation direction `N`, signed-drive rate-independent kinetics sharing the 1-D plateau bounds, bisection return mapping with typed errors) plus `SuperelasticAt`, a `Constitutive` view at a committed state for the algorithmic tangent. Off by default; default build unchanged. Verified: elastic slope, hand-computed mid-plateau `ξ`, hysteresis and loop closure, forward plateau within 5 % of the 1-D model, partial-unload elasticity, tangent behaviour. Recorded departure from the RFC: St. Venant–Kirchhoff mixing rather than Neo-Hookean, and a stress-consistent reverse branch (the 1-D reverse is strain-linear). Deployment driver, per-quadrature state storage and crown-ring fixtures remain.
 - **Selective reduced integration of the volumetric penalty** (option C of the
   u-p discussion) — a cheap, opt-in mitigation for volumetric locking.
   `AssemblyOptions::volumetric_quadrature_order: Option<usize>`; `None` (the

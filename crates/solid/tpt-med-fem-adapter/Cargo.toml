@@ -21,5 +21,13 @@ tpt-fem-quadrature = { version = "=0.1.0" }
 tpt-fem-solve = { version = "=0.1.0" }
 tpt-fem-sparse = { version = "=0.1.0" }
 
+[features]
+# RFC 0013 first slice: Souza-Auricchio-style 3-D superelastic point model.
+# Off by default; the default build is unchanged.
+superelastic = []
+
+[dev-dependencies]
+tpt-med-stents = { path = "../../devices/tpt-med-stents", version = "0.1.0" }
+
 [lints]
 workspace = true

@@ -1,6 +1,6 @@
 # RFC 0013: Stent deployment Level 3 — 3D superelastic FEM with frictional contact
 
-- **Status:** Draft
+- **Status:** Accepted (2026-10-08, maintainer direction); first slice (constitutive model) implemented
 - **Started:** 2026-10-03
 - **Crates:** `tpt-med-fem-adapter` (constitutive model, deployment driver),
   `tpt-med-stents` (Level 1/2 cross-check fixtures and metrics)
