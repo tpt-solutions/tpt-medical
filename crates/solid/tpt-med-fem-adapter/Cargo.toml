@@ -28,6 +28,7 @@ superelastic = []
 
 [dev-dependencies]
 tpt-med-stents = { path = "../../devices/tpt-med-stents", version = "0.1.0" }
+tpt-med-units = { path = "../../core/tpt-med-units", version = "0.1.0" }
 
 [lints]
 workspace = true

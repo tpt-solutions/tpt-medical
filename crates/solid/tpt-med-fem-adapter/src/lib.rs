@@ -100,6 +100,8 @@ pub mod assembly;
 pub mod contact;
 #[cfg(feature = "superelastic")]
 pub mod deployment;
+#[cfg(feature = "superelastic")]
+pub mod fixtures;
 pub mod friction;
 pub mod loadpath;
 pub mod mesh;
@@ -129,5 +131,7 @@ pub use solver::{
 };
 pub use wall::{RadialWall, WallError, WallSide, WallSummary, WallTerms};
 
+#[cfg(all(test, feature = "superelastic"))]
+mod ring_studies;
 #[cfg(test)]
 mod tests;
