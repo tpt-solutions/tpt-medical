@@ -291,3 +291,246 @@ fn level_one_cross_check_on_the_refined_ring() {
         assert!(window >= 0.06, "m={m}: window {window}");
     }
 }
+
+// ---------------------------------------------------------------------
+// Level 2: two ring groups against a stepped lumen (dogboning)
+// ---------------------------------------------------------------------
+
+use crate::fixtures::StackedRings;
+use tpt_med_stents::simulate_tapered_deployment;
+
+/// Per-group outcome of a stepped-lumen deployment.
+#[derive(Debug, Clone, Copy)]
+pub struct GroupOutcome {
+    /// Radial force on this group (N).
+    pub force: f64,
+    /// Mean radius of this group's nodes in contact (mm); the group's
+    /// equilibrium diameter is twice this.
+    pub contact_radius: f64,
+}
+
+/// The lumen radius at the group centres: group `k` is compressed by
+/// `fractions[k]` of the nominal outer diameter, with a linear transition
+/// between the rings' axial bands.
+fn stepped_wall(stack: &StackedRings, fractions: &[f64], slaves: Vec<usize>) -> RadialWall {
+    let r0 = stack.spec.outer_radius();
+    let half = stack.spec.amplitude + stack.spec.width;
+    let base = r0 * (1.0 - fractions[0]);
+    let mut pts = Vec::new();
+    for (g, f) in stack.groups.iter().zip(fractions) {
+        let d = -r0 * (f - fractions[0]);
+        pts.push((g.z_center - half, d));
+        pts.push((g.z_center + half, d));
+    }
+    RadialWall::new(2, [0.0; 2], base, WallSide::Inside, slaves)
+        .expect("wall")
+        .with_profile(pts)
+        .expect("profile")
+}
+
+/// Deploy the stack against a lumen compressing group `k` by `fractions[k]`
+/// (closing the vessel in `stages` equal steps), and report each group.
+pub fn stepped_deployment(
+    stack: &StackedRings,
+    fractions: &[f64],
+    stages: usize,
+) -> Vec<GroupOutcome> {
+    assert_eq!(stack.groups.len(), fractions.len());
+    let model = SouzaAuricchio::new(SuperelasticParams::default()).expect("model");
+    let opts = SolveOptions {
+        convergence: Convergence {
+            abs_tol: 1e-7,
+            rel_tol: 1e-10,
+            max_iter: 60,
+        },
+        ..SolveOptions::default()
+    };
+    let pins = stack.pins();
+    let mut dep = Deployment3D::new(&stack.mesh, model, opts, &pins).expect("dep");
+    let stage = StageOptions {
+        steps: 1,
+        max_cutbacks: 10,
+    };
+    for k in 1..=stages {
+        let t = k as f64 / stages as f64;
+        let f: Vec<f64> = fractions.iter().map(|x| x * t).collect();
+        dep.set_wall(stepped_wall(stack, &f, stack.outer_nodes()), KAPPA);
+        dep.prescribe(&pins, stage, None).expect("stage");
+    }
+    let u = dep.displacement().to_vec();
+    stack
+        .groups
+        .iter()
+        .map(|g| {
+            let wall = stepped_wall(stack, fractions, g.outer_nodes.clone());
+            let s = wall.summary(&stack.mesh, &u, KAPPA).expect("summary");
+            let x = stack.mesh.positions(&u).expect("positions");
+            let (mut sum, mut n) = (0.0, 0usize);
+            for &node in &g.outer_nodes {
+                let a = x[node].to_array();
+                let rho = a[0].hypot(a[1]);
+                let z = a[2];
+                if rho > wall.radius_at(z) {
+                    sum += rho;
+                    n += 1;
+                }
+            }
+            GroupOutcome {
+                force: s.total_reaction,
+                contact_radius: if n > 0 { sum / n as f64 } else { 0.0 },
+            }
+        })
+        .collect()
+}
+
+/// Level 2's prediction for the same two-group problem.
+pub fn level_two(
+    spec: &CrownRingSpec,
+    crown_stiffness: f64,
+    fractions: &[f64],
+) -> tpt_med_stents::TaperedDeployment {
+    let nominal = 2.0 * spec.outer_radius();
+    let stent = StentModel {
+        expanded_diameter: nominal,
+        crimped_diameter: 0.5 * nominal,
+        n_crowns: spec.crowns as u32,
+        crown_stiffness,
+    };
+    let n = fractions.len();
+    let lumen: Vec<f64> = fractions.iter().map(|f| nominal * (1.0 - f)).collect();
+    simulate_tapered_deployment(
+        &stent,
+        &NitinolParams::default(),
+        &vec![nominal; n],
+        &vec![crown_stiffness; n],
+        &lumen,
+    )
+}
+
+/// Run the Level-2 comparison and return the figures the assertions and the
+/// recorded results use.
+pub struct LevelTwoReport {
+    /// Crown stiffness calibrated from the stack's own small uniform
+    /// compression (N/mm per crown per mm of diameter).
+    pub crown_stiffness: f64,
+    /// 3-D per-group outcomes at the stepped lumen.
+    pub groups: Vec<GroupOutcome>,
+    /// Level 2's per-group forces.
+    pub level_two_forces: Vec<f64>,
+    /// 3-D dogboning, `|d_0 - d_1| / nominal`.
+    pub dogboning_3d: f64,
+    /// Level 2's dogboning.
+    pub dogboning_l2: f64,
+}
+
+/// Two-group study: calibrate on a small uniform compression, then deploy
+/// into the stepped lumen `fractions`.
+pub fn level_two_report(
+    stack: &StackedRings,
+    calibration_fraction: f64,
+    fractions: [f64; 2],
+    stages: usize,
+) -> LevelTwoReport {
+    let spec = stack.spec;
+    let nominal = 2.0 * spec.outer_radius();
+    let cal = stepped_deployment(stack, &[calibration_fraction; 2], 1);
+    let k = cal[0].force / (spec.crowns as f64 * nominal * calibration_fraction);
+    let groups = stepped_deployment(stack, &fractions, stages);
+    let l2 = level_two(&spec, k, &fractions);
+    let d: Vec<f64> = groups.iter().map(|g| 2.0 * g.contact_radius).collect();
+    LevelTwoReport {
+        crown_stiffness: k,
+        level_two_forces: l2.groups.iter().map(|g| g.radial_force).collect(),
+        dogboning_3d: (d[0] - d[1]).abs() / nominal,
+        dogboning_l2: l2.dogboning,
+        groups,
+    }
+}
+
+#[test]
+fn tiny_two_group_ring_splits_force_like_level_two_and_superposes() {
+    let stack = tiny()
+        .build_stack(2, 2.0 * tiny().amplitude + 1.0)
+        .expect("stack");
+    let spec = stack.spec;
+    let nominal = 2.0 * spec.outer_radius();
+    let fr = [0.004, 0.010];
+    let rep = level_two_report(&stack, 0.002, fr, 2);
+    // Deeper lumen narrowing -> more force, and the split follows the
+    // compression ratio the way Level 2's linear law does (elastic window).
+    assert!(rep.groups[1].force > rep.groups[0].force);
+    for (g, l2) in rep.groups.iter().zip(&rep.level_two_forces) {
+        assert!(
+            (g.force / l2 - 1.0).abs() < 0.15,
+            "3-D {} vs Level 2 {}",
+            g.force,
+            l2
+        );
+    }
+    // The equilibrium diameters track the stepped lumen: dogboning is the
+    // kinematic step, to within the contact penetration.
+    assert!(
+        (rep.dogboning_3d - (fr[1] - fr[0])).abs() < 0.002,
+        "{}",
+        rep.dogboning_3d
+    );
+    assert!(rep.dogboning_l2 > 0.0);
+    // Unconnected rings superpose: group 1 under the step feels what the same
+    // ring alone feels at the same compression.
+    let solo = radial_curve(&spec, &[fr[1]])[0].force;
+    assert!(
+        (rep.groups[1].force - solo).abs() < 0.02 * solo,
+        "stack {} vs solo {}",
+        rep.groups[1].force,
+        solo
+    );
+    assert!(nominal > 0.0);
+}
+
+#[test]
+#[ignore = "release-profile study; minutes; see module docs"]
+fn level_two_dogboning_cross_check() {
+    let mut spec = CrownRingSpec::new(6);
+    spec.stations_per_crown = 12;
+    spec.width_elements = 1;
+    spec.thickness_elements = 2;
+    let stack = spec
+        .build_stack(2, 2.0 * spec.amplitude + 1.0)
+        .expect("stack");
+    // A lesion narrowing the second ring's lumen to 3x the first's compression,
+    // both inside the elastic window found by the Level 1 study (<= 4 %).
+    let fr = [0.01, 0.03];
+    let rep = level_two_report(&stack, 0.005, fr, 4);
+    println!(
+        "calibrated crown stiffness = {:.4} N/mm/crown",
+        rep.crown_stiffness
+    );
+    for (i, (g, l2)) in rep.groups.iter().zip(&rep.level_two_forces).enumerate() {
+        println!(
+            "group {i}: fraction {:.3}  F3D {:.4} N  F_L2 {:.4} N  ratio {:.3}  contact d {:.4} mm",
+            fr[i],
+            g.force,
+            l2,
+            g.force / l2,
+            2.0 * g.contact_radius
+        );
+    }
+    println!(
+        "dogboning: 3-D {:.5}  Level 2 {:.5}  (lumen step {:.5})",
+        rep.dogboning_3d,
+        rep.dogboning_l2,
+        fr[1] - fr[0]
+    );
+    let solo = radial_curve(&spec, &[fr[1]])[0].force;
+    println!(
+        "superposition: stack group 1 {:.4} N vs solo ring {:.4} N ({:.2} %)",
+        rep.groups[1].force,
+        solo,
+        100.0 * (rep.groups[1].force - solo) / solo
+    );
+    for (g, l2) in rep.groups.iter().zip(&rep.level_two_forces) {
+        assert!((g.force / l2 - 1.0).abs() < 0.15, "{} vs {}", g.force, l2);
+    }
+    assert!((rep.dogboning_3d - rep.dogboning_l2).abs() < 0.005);
+    assert!((rep.groups[1].force - solo).abs() < 0.02 * solo);
+}

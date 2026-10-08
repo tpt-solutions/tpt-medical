@@ -63,6 +63,8 @@ pub enum WallError {
     InvalidRadius(f64),
     /// The centre is not finite.
     InvalidCenter,
+    /// A radius profile is not finite and strictly increasing in `z`.
+    InvalidProfile,
 }
 
 impl std::fmt::Display for WallError {
@@ -71,6 +73,9 @@ impl std::fmt::Display for WallError {
             Self::AxisOutOfRange(a) => write!(f, "wall axis {a} is not 0, 1 or 2"),
             Self::InvalidRadius(r) => write!(f, "wall radius {r} must be finite and positive"),
             Self::InvalidCenter => write!(f, "wall centre must be finite"),
+            Self::InvalidProfile => {
+                write!(f, "radius profile must be finite with increasing z")
+            }
         }
     }
 }
@@ -86,6 +91,9 @@ pub struct RadialWall {
     side: WallSide,
     slave: Vec<usize>,
     friction: Option<FrictionConfig>,
+    /// Axial radius offsets `(z, Δr)`, linearly interpolated and held flat
+    /// beyond the ends; empty for a straight cylinder.
+    profile: Vec<(f64, f64)>,
     /// Committed displacement of each slave node at the last commit.
     anchor: Vec<[f64; 3]>,
     /// Committed friction force on each slave node at the last commit.
@@ -174,6 +182,7 @@ impl RadialWall {
             side,
             slave,
             friction: None,
+            profile: Vec::new(),
             anchor: vec![[0.0; 3]; n],
             held: vec![[0.0; 3]; n],
         })
@@ -183,6 +192,60 @@ impl RadialWall {
     pub fn with_friction(mut self, friction: FrictionConfig) -> Self {
         self.friction = Some(friction);
         self
+    }
+
+    /// Gives the lumen an axial profile: `points` are `(z, Δr)` pairs, the
+    /// radius at axial coordinate `z` being `radius + Δr(z)` by linear
+    /// interpolation, flat beyond the ends. A stenosis, a taper or a step
+    /// between two ring groups is a profile.
+    ///
+    /// The slope enters the contact gradient (the wall pushes axially where
+    /// it is inclined) and the Jacobian's rank-one part; the profile is
+    /// piecewise linear, so the radius' second derivative — an axial-axial
+    /// Hessian term — is zero except at the kinks, where it is not modelled.
+    ///
+    /// # Errors
+    /// [`WallError::InvalidProfile`] unless the `z` values are finite and
+    /// strictly increasing and the offsets finite.
+    pub fn with_profile(mut self, points: Vec<(f64, f64)>) -> Result<Self, WallError> {
+        let finite = points.iter().all(|(z, d)| z.is_finite() && d.is_finite());
+        let increasing = points.windows(2).all(|w| w[0].0 < w[1].0);
+        if !finite || !increasing {
+            return Err(WallError::InvalidProfile);
+        }
+        self.profile = points;
+        Ok(self)
+    }
+
+    /// The wall radius at axial coordinate `z`.
+    pub fn radius_at(&self, z: f64) -> f64 {
+        self.radius + self.offset_and_slope(z).0
+    }
+
+    /// `dR/dz` at axial coordinate `z` (zero beyond the profile's ends).
+    pub fn slope_at(&self, z: f64) -> f64 {
+        self.offset_and_slope(z).1
+    }
+
+    fn offset_and_slope(&self, z: f64) -> (f64, f64) {
+        let pts = &self.profile;
+        match pts.len() {
+            0 => (0.0, 0.0),
+            1 => (pts[0].1, 0.0),
+            _ => {
+                if z <= pts[0].0 {
+                    return (pts[0].1, 0.0);
+                }
+                if z >= pts[pts.len() - 1].0 {
+                    return (pts[pts.len() - 1].1, 0.0);
+                }
+                let i = pts.partition_point(|p| p.0 <= z) - 1;
+                let (z0, d0) = pts[i];
+                let (z1, d1) = pts[i + 1];
+                let slope = (d1 - d0) / (z1 - z0);
+                (d0 + slope * (z - z0), slope)
+            }
+        }
     }
 
     /// The cylinder axis.
@@ -255,31 +318,46 @@ impl RadialWall {
             if rho < TINY {
                 continue;
             }
-            let pen = s * (rho - self.radius);
+            let z = xa[self.axis];
+            let pen = s * (rho - self.radius_at(z));
             if pen <= 0.0 {
                 continue;
             }
-            // Unit normal of increasing penetration, in 3-D.
-            let mut n = [0.0; 3];
-            n[p] = s * rp / rho;
-            n[q] = s * rq / rho;
+            // Gradient of the penetration: radial in the transverse plane, and
+            // axial where the wall is inclined. Its norm is 1 for a straight
+            // cylinder, which makes every expression below reduce to the
+            // straight-wall one.
+            let mut g = [0.0; 3];
+            let mut rh = [0.0; 3];
+            rh[p] = rp / rho;
+            rh[q] = rq / rho;
+            g[p] = s * rh[p];
+            g[q] = s * rh[q];
+            g[self.axis] = -s * self.slope_at(z);
+            let gn = dot(&g, &g).sqrt();
+            // Unit normal, for projecting tangents.
+            let n = [g[0] / gn, g[1] / gn, g[2] / gn];
             let big_n = penalty * pen;
+            let normal_force = big_n * gn;
             out.active += 1;
             out.max_penetration = out.max_penetration.max(pen);
-            out.total_reaction += big_n;
+            out.total_reaction += normal_force;
 
             let dofs = [mesh.dof(node, 0), mesh.dof(node, 1), mesh.dof(node, 2)];
             for i in 0..3 {
-                out.force[dofs[i]] += big_n * n[i];
+                out.force[dofs[i]] += big_n * g[i];
             }
-            // H = κ [ n nᵀ + pen/ρ (P_t,2d) ], with the curvature part acting
-            // in the transverse plane only (`n` has no axial component).
-            for i in [p, q] {
-                for j in [p, q] {
-                    let nn = n[i] * n[j];
-                    let id = if i == j { 1.0 } else { 0.0 };
-                    let curv = s * pen / rho * (id - nn);
-                    out.tangent.push(dofs[i], dofs[j], penalty * (nn + curv));
+            // H = κ [ g gᵀ + pen·s/ρ (I - r̂r̂ᵀ)_transverse ].
+            for i in 0..3 {
+                for j in 0..3 {
+                    let curv = if (i == p || i == q) && (j == p || j == q) {
+                        let id = if i == j { 1.0 } else { 0.0 };
+                        s * pen / rho * (id - rh[i] * rh[j])
+                    } else {
+                        0.0
+                    };
+                    out.tangent
+                        .push(dofs[i], dofs[j], penalty * (g[i] * g[j] + curv));
                 }
             }
 
@@ -302,7 +380,7 @@ impl RadialWall {
                 held[2] - kt * ds[2],
             ];
             let tn = dot(&trial, &trial).sqrt();
-            let bound = fc.mu * big_n;
+            let bound = fc.mu * normal_force;
             let slip = tn > bound;
             let f = if slip && tn > TINY {
                 let sc = bound / tn;
@@ -332,7 +410,7 @@ impl RadialWall {
                         let rad = pt(i, j) - t_hat[i] * t_hat[j];
                         let mut v = bound / tn * kt * rad;
                         // ... minus the μN coupling: ∂f_i/∂u_j ∋ t_i μ κ n_j.
-                        v -= t_hat[i] * fc.mu * penalty * n[j];
+                        v -= t_hat[i] * fc.mu * penalty * gn * g[j];
                         out.tangent.push(dofs[i], dofs[j], v);
                     }
                 }
@@ -638,5 +716,54 @@ mod tests {
         // convergence, so the wall's total radial force on the body is
         // carried by the symmetry-plane reactions).
         assert!(stiff.residual_norm < 1e-6);
+    }
+
+    #[test]
+    fn profile_interpolates_clamps_and_validates() {
+        let w = RadialWall::new(2, [0.0; 2], 3.0, WallSide::Inside, [])
+            .unwrap()
+            .with_profile(vec![(0.0, 0.0), (2.0, -0.5), (3.0, -0.5)])
+            .unwrap();
+        assert!((w.radius_at(-1.0) - 3.0).abs() < 1e-15);
+        assert!((w.radius_at(1.0) - 2.75).abs() < 1e-15);
+        assert!((w.slope_at(1.0) + 0.25).abs() < 1e-15);
+        assert!((w.radius_at(2.5) - 2.5).abs() < 1e-15);
+        assert_eq!(w.slope_at(2.5), 0.0);
+        assert!((w.radius_at(9.0) - 2.5).abs() < 1e-15);
+        let bad = RadialWall::new(2, [0.0; 2], 3.0, WallSide::Inside, [])
+            .unwrap()
+            .with_profile(vec![(1.0, 0.0), (1.0, 0.1)]);
+        assert_eq!(bad.err(), Some(WallError::InvalidProfile));
+        let nan = RadialWall::new(2, [0.0; 2], 3.0, WallSide::Inside, [])
+            .unwrap()
+            .with_profile(vec![(0.0, f64::NAN)]);
+        assert_eq!(nan.err(), Some(WallError::InvalidProfile));
+    }
+
+    #[test]
+    fn inclined_wall_pushes_axially_and_its_jacobian_matches_finite_differences() {
+        let mesh = hex_box(1, 1, 1, 2.0, 2.0, 2.0).expect("box");
+        // A taper over the block's axial extent: the lumen narrows with z.
+        let wall = RadialWall::new(2, [0.3, 0.2], 1.7, WallSide::Inside, 0..mesh.node_count())
+            .unwrap()
+            .with_profile(vec![(-1.0, 0.2), (3.0, -0.4)])
+            .unwrap();
+        let u = perturbed(mesh.dof_count());
+        let t = wall.terms(&mesh, &u, 250.0).unwrap();
+        // The slope (dR/dz < 0) makes the penetration gradient point toward
+        // +z, so the penalty residual carries a positive axial component.
+        let axial: f64 = (0..mesh.node_count())
+            .map(|n| t.force[mesh.dof(n, 2)])
+            .sum();
+        assert!(axial > 0.0, "axial wall force {axial}");
+        fd_check(&wall, &mesh, &u, 250.0, 1e-6);
+        // A straight wall has no axial force from the normal contact.
+        let straight =
+            RadialWall::new(2, [0.3, 0.2], 1.7, WallSide::Inside, 0..mesh.node_count()).unwrap();
+        let ts = straight.terms(&mesh, &u, 250.0).unwrap();
+        let axial_s: f64 = (0..mesh.node_count())
+            .map(|n| ts.force[mesh.dof(n, 2)])
+            .sum();
+        assert!(axial_s.abs() < 1e-12, "{axial_s}");
     }
 }

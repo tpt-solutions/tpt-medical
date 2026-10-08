@@ -251,6 +251,173 @@ pub fn crown_ring(crowns: usize) -> Result<CrownRing, FixtureError> {
     CrownRingSpec::new(crowns).build()
 }
 
+/// One ring of a [`StackedRings`] fixture.
+#[derive(Debug, Clone)]
+pub struct RingGroup {
+    /// Axial coordinate of the ring's centre.
+    pub z_center: f64,
+    /// This ring's outer-surface nodes (global indices) — its wall slaves.
+    pub outer_nodes: Vec<usize>,
+    /// This ring's rigid-mode pins `(dof, value)` (global DOFs).
+    pub pins: Vec<(usize, f64)>,
+}
+
+/// Several crown rings stacked along the axis in one mesh — the Level-2
+/// "ring groups" geometry. The rings are **not connected**: Level 2 resolves
+/// the stent into axial groups that each reach their own equilibrium against
+/// the local lumen, with no axial coupling, and an unconnected stack is the
+/// 3-D object that model describes. (A connected stent adds link struts whose
+/// stiffness couples the groups; that is a separate fixture and a separate
+/// comparison.) Each ring is pinned independently.
+#[derive(Debug, Clone)]
+pub struct StackedRings {
+    /// The combined mesh.
+    pub mesh: Hex8Mesh,
+    /// The ring spec every group shares.
+    pub spec: CrownRingSpec,
+    /// The rings, in axial order.
+    pub groups: Vec<RingGroup>,
+    /// Centre-to-centre axial spacing.
+    pub spacing: f64,
+}
+
+impl StackedRings {
+    /// Every ring's pins, concatenated.
+    pub fn pins(&self) -> Vec<(usize, f64)> {
+        self.groups.iter().flat_map(|g| g.pins.clone()).collect()
+    }
+
+    /// Every ring's outer nodes, concatenated.
+    pub fn outer_nodes(&self) -> Vec<usize> {
+        self.groups
+            .iter()
+            .flat_map(|g| g.outer_nodes.clone())
+            .collect()
+    }
+}
+
+impl CrownRingSpec {
+    /// `groups` copies of this ring stacked along `z` at centre-to-centre
+    /// `spacing`, centred on `z = 0`.
+    ///
+    /// # Errors
+    /// [`FixtureError::TooCoarse`] for fewer than one group;
+    /// [`FixtureError::BadDimension`] if `spacing` does not clear the rings'
+    /// axial extent (`2A + 2w`), plus the single-ring errors.
+    pub fn build_stack(&self, groups: usize, spacing: f64) -> Result<StackedRings, FixtureError> {
+        if groups == 0 {
+            return Err(FixtureError::TooCoarse("no ring groups"));
+        }
+        if !spacing.is_finite() || spacing < 2.0 * self.amplitude + 2.0 * self.width {
+            return Err(FixtureError::BadDimension(
+                "spacing does not clear the rings",
+            ));
+        }
+        let one = self.build()?;
+        let mut nodes: Vec<Vec3> = Vec::with_capacity(one.mesh.node_count() * groups);
+        let mut elements: Vec<Vec<usize>> = Vec::with_capacity(one.mesh.element_count() * groups);
+        let mut out_groups = Vec::with_capacity(groups);
+        for k in 0..groups {
+            let dz = (k as f64 - 0.5 * (groups as f64 - 1.0)) * spacing;
+            let base = nodes.len();
+            for p in one.mesh.nodes() {
+                let a = p.to_array();
+                nodes.push(Vec3::new(a[0], a[1], a[2] + dz));
+            }
+            for e in one.mesh.elements() {
+                elements.push(e.iter().map(|&n| n + base).collect());
+            }
+            out_groups.push(RingGroup {
+                z_center: dz,
+                outer_nodes: one.outer_nodes.iter().map(|&n| n + base).collect(),
+                pins: one.pins.iter().map(|&(d, v)| (d + 3 * base, v)).collect(),
+            });
+        }
+        let mesh = Hex8Mesh::from_parts(nodes, elements).map_err(FixtureError::Mesh)?;
+        Ok(StackedRings {
+            mesh,
+            spec: *self,
+            groups: out_groups,
+            spacing,
+        })
+    }
+}
+
+/// The Level-2 fixture: two crown rings of `crowns` crowns, axially clear of
+/// each other by one strut-section gap (`spacing = 2A + 1 mm`), for
+/// dogboning and per-group equilibrium against a stepped lumen.
+///
+/// # Errors
+/// [`FixtureError`] as [`CrownRingSpec::build_stack`].
+pub fn two_group_ring(crowns: usize) -> Result<StackedRings, FixtureError> {
+    let spec = CrownRingSpec::new(crowns);
+    spec.build_stack(2, 2.0 * spec.amplitude + 1.0)
+}
+
+#[cfg(test)]
+mod stack_tests {
+    use super::*;
+
+    #[test]
+    fn two_group_ring_is_two_disjoint_valid_rings() {
+        let st = two_group_ring(6).expect("stack");
+        let one = CrownRingSpec::new(6).build().expect("ring");
+        assert_eq!(st.mesh.node_count(), 2 * one.mesh.node_count());
+        assert_eq!(st.mesh.element_count(), 2 * one.mesh.element_count());
+        let zero = vec![0.0; st.mesh.dof_count()];
+        assert!(st.mesh.inverted_elements(&zero).expect("check").is_empty());
+        assert_eq!(st.groups.len(), 2);
+        // Centred on z = 0, one spacing apart.
+        assert!((st.groups[0].z_center + 0.5 * st.spacing).abs() < 1e-12);
+        assert!((st.groups[1].z_center - 0.5 * st.spacing).abs() < 1e-12);
+        // Each ring's outer nodes lie within its own axial band, and the
+        // bands do not overlap.
+        let half = st.spec.amplitude + st.spec.width;
+        for g in &st.groups {
+            for &n in &g.outer_nodes {
+                let z = st.mesh.nodes()[n].to_array()[2];
+                assert!((z - g.z_center).abs() <= half, "node z {z} outside band");
+            }
+        }
+        assert!(st.groups[0].z_center + half < st.groups[1].z_center - half);
+        // No element joins the two rings.
+        let split = one.mesh.node_count();
+        for e in st.mesh.elements() {
+            let lo = e.iter().any(|&n| n < split);
+            let hi = e.iter().any(|&n| n >= split);
+            assert!(!(lo && hi), "an element spans both rings");
+        }
+        // Pins: four per ring, each ring's pins reference its own nodes.
+        assert_eq!(st.pins().len(), 8);
+        for (k, g) in st.groups.iter().enumerate() {
+            for &(d, _) in &g.pins {
+                assert_eq!(usize::from(d >= 3 * split), k, "pin dof {d} in wrong ring");
+            }
+        }
+    }
+
+    #[test]
+    fn stack_validation() {
+        let spec = CrownRingSpec::new(6);
+        assert!(matches!(
+            spec.build_stack(0, 3.0),
+            Err(FixtureError::TooCoarse(_))
+        ));
+        assert!(matches!(
+            spec.build_stack(2, 2.0),
+            Err(FixtureError::BadDimension(_))
+        ));
+        assert!(matches!(
+            spec.build_stack(2, f64::NAN),
+            Err(FixtureError::BadDimension(_))
+        ));
+        // One group reproduces the single ring.
+        let single = spec.build_stack(1, 3.0).expect("single");
+        assert_eq!(single.groups.len(), 1);
+        assert_eq!(single.groups[0].z_center, 0.0);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

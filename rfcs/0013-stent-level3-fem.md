@@ -1,6 +1,6 @@
 # RFC 0013: Stent deployment Level 3 — 3D superelastic FEM with frictional contact
 
-- **Status:** Accepted (2026-10-08, maintainer direction); slices 1 (constitutive model), 2 (per-point state, staged driver), 3 (radial wall contact) and 4 (crown-ring fixture, ring studies) implemented
+- **Status:** Accepted (2026-10-08, maintainer direction); slices 1 (constitutive model), 2 (per-point state, staged driver), 3 (radial wall contact) 4 (crown-ring fixture, ring studies) and 5 (two-group fixture, axial wall profile) implemented
 - **Started:** 2026-10-03
 - **Crates:** `tpt-med-fem-adapter` (constitutive model, deployment driver),
   `tpt-med-stents` (Level 1/2 cross-check fixtures and metrics)
@@ -249,6 +249,29 @@ Fixture: `fixtures::crown_ring` (swept sinusoidal centreline, `R = 4 mm`,
   transformation, ring ~50x too stiff). The plateau is real material
   behaviour but only appears in this fixture when the struts are strained past
   transformation — on a resolved ring that is beyond ~6 % compression.
+- **Level 2 cross-check: two ring groups, dogboning (2026-10-08).**
+  Fixture: `fixtures::two_group_ring` (two unconnected crown rings, axial
+  spacing `2A + 1 mm`, each pinned independently — Level 2's groups have no
+  axial coupling, and an unconnected stack is the 3-D object it describes) in
+  a `RadialWall` with an axial radius profile (new `with_profile`; the slope
+  enters the contact gradient and Jacobian, finite-difference verified).
+  Study: 6 crowns, 12 stations per crown (so, per the refinement results
+  above, the absolute force is not converged — only ratios are read),
+  crown stiffness calibrated at a small uniform compression
+  (`3.168 N/mm/crown`), then a stepped lumen compressing ring 0 by 1 % and
+  ring 1 by 3 % of diameter (inside the elastic window).
+  *Per-group radial force, 3-D / Level 2:* ring 0 `1.532 / 1.559 N` (`0.983`),
+  ring 1 `4.462 / 4.676 N` (`0.954`) — inside 15 % and consistent with the
+  Level 1 linearity result. *Dogboning:* 3-D `0.02000`, Level 2 `0.01898`,
+  lumen step `0.02000`. The 3-D value is the imposed step (a rigid wall
+  leaves the stent at the wall diameter); Level 2's `5 %` smaller figure is
+  its acute-recoil heuristic (the more-compressed group springs back more),
+  which **a rigid wall cannot exercise** — testing that term needs a
+  compliant vessel and is open. *Superposition:* ring 1 in the stack carries
+  `4.4620 N` against `4.4620 N` alone (`0.00 %`), confirming the stack is two
+  independent rings and the wall's profile is transparent inside each ring's
+  axial band. Acceptance-wise this extends item 1's linearity result to the
+  grouped model; it is not a validation of Level 2's recoil law.
 - **Still open:** acceptance item 2 (F2394-style curve on a benchmark
   geometry — needs a published stent geometry, not this sinusoid) and item 3
   (friction sensitivity as a V&V 40 assessment — the wall's friction exists
