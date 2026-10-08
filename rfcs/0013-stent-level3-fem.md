@@ -1,6 +1,6 @@
 # RFC 0013: Stent deployment Level 3 — 3D superelastic FEM with frictional contact
 
-- **Status:** Accepted (2026-10-08, maintainer direction); slices 1 (constitutive model), 2 (per-point state, staged driver) and 3 (radial wall contact) implemented
+- **Status:** Accepted (2026-10-08, maintainer direction); slices 1 (constitutive model), 2 (per-point state, staged driver), 3 (radial wall contact) and 4 (crown-ring fixture, ring studies) implemented
 - **Started:** 2026-10-03
 - **Crates:** `tpt-med-fem-adapter` (constitutive model, deployment driver),
   `tpt-med-stents` (Level 1/2 cross-check fixtures and metrics)
@@ -201,6 +201,58 @@ the same standard the mixed formulation set.
   is rigid), stent-vessel migration/foreshortening dynamics, and fatigue
   (RFC 0004's named follow-up). The `experimental` gate stays on until
   all three acceptance items pass.
+
+## Verification results (2026-10-08, crown ring, 6 crowns, 0.2 x 0.15 mm strut)
+
+Fixture: `fixtures::crown_ring` (swept sinusoidal centreline, `R = 4 mm`,
+`A = 1 mm`); wall: `RadialWall` at `k = 1e5 N/mm`; material: default
+`SuperelasticParams`. Studies live in `ring_studies.rs` (release-profile,
+`#[ignore]`d, command in the module docs).
+
+- **Code verification.** Rigid-mode pins carry no load: pin reactions stay
+  below `1e-9 N` against forces of `0.3-6 N` (and `< 2 %` on the tiny CI
+  ring). Uniaxial loop identity, return-map spot checks, the wall Jacobian
+  and the driver's cutback/release behaviour are covered in the earlier
+  slices' suites.
+- **Calculation verification (item 4).** *Section mesh is irrelevant:*
+  1x2, 2x2, 2x3 elements across the strut move the 0.5 % radial stiffness by
+  0.65 % (44.91 / 44.66 / 44.62 N/mm at 8 stations per crown). *The centreline
+  resolution is the whole error:* the faceted polyline is a stiff polygon.
+  Stiffness at 0.5 % compression against stations per crown `m`:
+  `m = 12, 16, 24, 32` -> `19.01, 12.13, 7.745, 6.279 N/mm` (per mm of
+  diameter). Observed order `2.13` on `(16, 24, 32)` and `2.34` on
+  `(12, 16, 24)` — second order, as chord geometry predicts — with Richardson
+  limits `4.54` and `4.98 N/mm`. **The finest mesh (`m = 32`) is still about
+  38 % above the limit, and the cross-check mesh (`m = 24`) about 60 %: the
+  absolute radial force of this fixture is not converged and must not be
+  quoted as a prediction.** Hex8 with a faceted centreline needs either more
+  stations or curved elements (Hex20) — the answer to the RFC's Tet10-vs-Hex8
+  question is "neither is the issue; the centreline is".
+- **Level 1 cross-check (item 5), what it does and does not show.** Level 1's
+  `crown_stiffness` is an *input*, so the check calibrates it from the 3-D
+  ring's own 0.5 % stiffness and tests Level 1's **linearity** — the ratio
+  `F_3D / F_L1` is insensitive to the overall stiffness scale, which is why it
+  can be read even though the absolute force is not converged. Ratio at
+  1-4 % of diameter: `0.983 / 0.965 / 0.952 / 0.940` (`m = 16`) and
+  `0.982 / 0.964 / 0.950 / 0.938` (`m = 24`) — mesh-insensitive and inside
+  15 %. Beyond that the agreement depends on when the strut transforms, which
+  moves outward as the mesh softens toward convergence: the 15 % window ends
+  at **6 %** of diameter for `m = 16` and **8 %** for `m = 24`
+  (`xi_max` 0.07 / 0.08 at the last point), so 6-8 % is a *lower bound* on the
+  converged window. **Acceptance item 1 is therefore discharged only in this
+  sense (linearity within 15 % over >= 6 % of diameter); it is not a
+  validation of Level 1's absolute crown stiffness**, which needs an
+  independent derivation (beam theory or a converged 3-D value) and is open.
+- **A recorded false start.** A first ring with 4 stations per crown showed a
+  superelastic *plateau* from 3 % compression and a 1 % agreement window. Both
+  were locking artefacts of the stiff polygon (struts over-strained, early
+  transformation, ring ~50x too stiff). The plateau is real material
+  behaviour but only appears in this fixture when the struts are strained past
+  transformation — on a resolved ring that is beyond ~6 % compression.
+- **Still open:** acceptance item 2 (F2394-style curve on a benchmark
+  geometry — needs a published stent geometry, not this sinusoid) and item 3
+  (friction sensitivity as a V&V 40 assessment — the wall's friction exists
+  and is verified at the unit level, the study does not).
 
 ## Unresolved questions
 
