@@ -132,6 +132,8 @@ pub use solver::{
 pub use wall::{RadialWall, WallError, WallSide, WallSummary, WallTerms};
 
 #[cfg(all(test, feature = "superelastic"))]
+mod friction_studies;
+#[cfg(all(test, feature = "superelastic"))]
 mod ring_studies;
 #[cfg(test)]
 mod tests;

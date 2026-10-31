@@ -284,7 +284,7 @@ fn residual_vector<E: ReferenceElement + crate::mesh::ElementFamily>(
 }
 
 /// Assembles `df_int/du` plus the active contact stiffness.
-fn jacobian_matrix<E: ReferenceElement + crate::mesh::ElementFamily>(
+pub(crate) fn jacobian_matrix<E: ReferenceElement + crate::mesh::ElementFamily>(
     mesh: &Mesh<E>,
     model: &dyn Constitutive,
     contact: Option<ContactConfig<'_>>,
@@ -303,7 +303,7 @@ fn jacobian_matrix<E: ReferenceElement + crate::mesh::ElementFamily>(
                 k.push(
                     friction.tangent.rows[i],
                     friction.tangent.cols[i],
-                    friction.tangent.vals[i],
+                    -friction.tangent.vals[i],
                 );
             }
         }

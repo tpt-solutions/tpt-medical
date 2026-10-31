@@ -109,7 +109,10 @@ pub struct FrictionTerms {
     /// Friction force on each node, in global DOF order. Only the tangential
     /// DOFs of active nodes are ever non-zero.
     pub force: Vec<f64>,
-    /// The exact derivative `d(force)/d(u)` of [`FrictionTerms::force`].
+    /// The derivative `d(force)/d(u)` of [`FrictionTerms::force`] (exact on
+    /// the stick branch; the slip branch omits the `d(bound)/d(u)` coupling
+    /// through the normal gap). The solver subtracts the force from the
+    /// residual, so it adds **`-tangent`** to the Jacobian.
     pub tangent: Coo,
     /// How many active nodes are saturated at the Coulomb bound.
     pub slipping_nodes: usize,
@@ -199,7 +202,7 @@ pub fn friction_terms<E: ReferenceElement + crate::mesh::ElementFamily>(
             // this leaves a stuck node free to creep tangentially in the linear
             // solve, which is exactly the artefact friction exists to prevent.
             for &d in &dofs {
-                tangent.push(d, d, cfg.tangential_stiffness);
+                tangent.push(d, d, -cfg.tangential_stiffness);
             }
             states.push(FrictionState {
                 tangential_axes,

@@ -208,6 +208,22 @@ impl<'m, E: ReferenceElement + ElementFamily> Deployment3D<'m, E> {
         }
     }
 
+    /// The wall's friction force per slave node (slave order) at the current
+    /// configuration, or `None` without a wall. Read-only: the friction
+    /// history is only advanced by a converged stage.
+    ///
+    /// # Errors
+    /// [`DeploymentError::Mesh`].
+    pub fn wall_friction(&self) -> Result<Option<Vec<[f64; 3]>>, DeploymentError> {
+        match &self.wall {
+            Some((w, pen)) => w
+                .terms(self.mesh, &self.u, *pen)
+                .map(|t| Some(t.friction_force))
+                .map_err(DeploymentError::Mesh),
+            None => Ok(None),
+        }
+    }
+
     /// The current displacement.
     pub fn displacement(&self) -> &[f64] {
         &self.u

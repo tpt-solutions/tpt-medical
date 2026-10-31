@@ -874,7 +874,8 @@ fn a_stuck_node_still_resists_a_tangential_perturbation() {
         assert_eq!(st.slip_norm, 0.0);
         assert_eq!(st.force, [0.0, 0.0], "no slip, no force");
     }
-    // Each stuck node contributes a +k_t diagonal at each tangential DOF.
+    // Each stuck node contributes a -k_t diagonal at each tangential DOF:
+    // `tangent` is d(force)/du and the restoring force opposes the motion.
     assert_eq!(
         terms.tangent.len(),
         2 * terms.states.len(),
@@ -882,8 +883,8 @@ fn a_stuck_node_still_resists_a_tangential_perturbation() {
     );
     let sum: f64 = terms.tangent.vals.iter().sum();
     assert!(
-        (sum - kt * 2.0 * terms.states.len() as f64).abs() < 1.0e-9 * kt,
-        "tangent diagonal should be k_t per tangential DOF, got {sum}"
+        (sum + kt * 2.0 * terms.states.len() as f64).abs() < 1.0e-9 * kt,
+        "tangent diagonal should be -k_t per tangential DOF, got {sum}"
     );
 }
 
@@ -1806,4 +1807,69 @@ fn reduced_volumetric_integration_is_a_no_op_for_a_law_without_one() {
         "an `FnModel` has no volumetric part, so the option must be a no-op; \
          it changed the force by {diff}"
     );
+}
+
+#[test]
+fn friction_jacobian_is_the_derivative_of_the_friction_residual() {
+    // Residual-level check of the sign convention. `friction_terms` returns the
+    // force and its derivative `d force / d u`; the solver subtracts the force
+    // from the residual (`r -= force`), so the Jacobian must carry
+    // `- d force / d u`. Differencing the full residual with and without
+    // friction isolates exactly the friction contribution (the pairing and the
+    // normal terms cancel in the difference), and comparing against the
+    // difference of the assembled Jacobians tests what Newton actually uses.
+    use crate::solver::jacobian_matrix;
+    let (s, u) = sheared_configuration(-0.3, 0.01, 0.001);
+    let penalty = 1.0e4;
+    let cfg = FrictionConfig::new(0.5, 1.0e3).expect("valid");
+    let model = TissueModel::NeoHookean(NeoHookeanParams { c10: 0.49, d1: 0.5 });
+    let opts = SolveOptions::default();
+    let n = s.mesh.dof_count();
+    let load = vec![0.0; n];
+    let contact = |friction: Option<FrictionConfig>| {
+        Some(ContactConfig {
+            pairing: &s.pairing,
+            penalty,
+            friction,
+            radial: None,
+        })
+    };
+    let dense = |coo: &tpt_fem_sparse::Coo| {
+        let mut m = vec![vec![0.0; n]; n];
+        for i in 0..coo.len() {
+            m[coo.rows[i]][coo.cols[i]] += coo.vals[i];
+        }
+        m
+    };
+    let kf = dense(
+        &jacobian_matrix(&s.mesh, &model, contact(Some(cfg)), &opts.assembly, &u).expect("k"),
+    );
+    let k0 =
+        dense(&jacobian_matrix(&s.mesh, &model, contact(None), &opts.assembly, &u).expect("k"));
+    let resid = |probe: &[f64], c: Option<FrictionConfig>| {
+        crate::solver::residual(&s.mesh, &model, &load, probe, &opts, contact(c)).expect("r")
+    };
+    let step = 1.0e-7;
+    let mut probe = u.clone();
+    let mut checked = 0usize;
+    for b in 0..n {
+        probe.copy_from_slice(&u);
+        probe[b] = u[b] + step;
+        let (wp, np) = (resid(&probe, Some(cfg)), resid(&probe, None));
+        probe[b] = u[b] - step;
+        let (wm, nm) = (resid(&probe, Some(cfg)), resid(&probe, None));
+        for a in 0..n {
+            let fd = ((wp[a] - np[a]) - (wm[a] - nm[a])) / (2.0 * step);
+            let an = kf[a][b] - k0[a][b];
+            if fd == 0.0 && an == 0.0 {
+                continue;
+            }
+            checked += 1;
+            assert!(
+                (fd - an).abs() < 1.0e-4 * fd.abs().max(an.abs()).max(1.0),
+                "dr_friction[{a}][{b}]: finite difference {fd}, assembled Jacobian {an}"
+            );
+        }
+    }
+    assert!(checked > 0, "the fixture must exercise friction");
 }
