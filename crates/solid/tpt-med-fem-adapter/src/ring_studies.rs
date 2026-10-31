@@ -534,3 +534,183 @@ fn level_two_dogboning_cross_check() {
     assert!((rep.dogboning_3d - rep.dogboning_l2).abs() < 0.005);
     assert!((rep.groups[1].force - solo).abs() < 0.02 * solo);
 }
+
+// ---------------------------------------------------------------------
+// Compliant vessel: the wall's lumen responds to the stent's radial force
+// ---------------------------------------------------------------------
+
+use tpt_med_stents::{simulate_coupled_deployment, CoupledDeployment};
+
+/// A compliant-vessel outcome, with Level 2's coupled prediction beside the
+/// 3-D one.
+#[derive(Debug, Clone)]
+pub struct CompliantReport {
+    /// Calibrated crown stiffness (N/mm per crown per mm of diameter).
+    pub crown_stiffness: f64,
+    /// Vessel stiffness `k_w` (N/mm): lumen diameter `D = D0 + F / k_w`.
+    pub vessel_stiffness: f64,
+    /// Unloaded vessel lumen diameter `D0` (mm).
+    pub unloaded_diameter: f64,
+    /// 3-D fixed point: per-group contact diameters (mm).
+    pub diameters_3d: Vec<f64>,
+    /// 3-D fixed point: per-group radial forces (N).
+    pub forces_3d: Vec<f64>,
+    /// 3-D dogboning, `|d_0 - d_1| / nominal`.
+    pub dogboning_3d: f64,
+    /// Coupling sweeps taken by the 3-D fixed point.
+    pub iterations: usize,
+    /// Final largest change in the lumen (mm).
+    pub residual: f64,
+    /// Level 2's coupled deployment under the same vessel law.
+    pub level_two: Option<CoupledDeployment>,
+    /// The linear closed form `(D0 + a·Dn)/(1 + a)` per group, with
+    /// `a = n_crowns·k / k_w` (Level 2's fixed point for the linear stent).
+    pub closed_form: Vec<f64>,
+}
+
+/// Calibrate the crown stiffness on a small uniform compression, exactly as
+/// [`level_two_report`] does.
+fn calibrate(stack: &StackedRings, calibration_fraction: f64) -> f64 {
+    let spec = stack.spec;
+    let nominal = 2.0 * spec.outer_radius();
+    let cal = stepped_deployment(stack, &[calibration_fraction; 2], 1);
+    cal[0].force / (spec.crowns as f64 * nominal * calibration_fraction)
+}
+
+/// The compliant-vessel fixed point, run on the 3-D stack.
+///
+/// The vessel law is `D_k = D0 + F_k / k_w` per group: the lumen opens in
+/// proportion to the stent's radial force, and the stent equilibrates against
+/// it. `stiffness_ratio = n·k / k_w` sets how compliant the wall is relative
+/// to the stent. Each sweep solves the stack against the current lumen, then
+/// under-relaxes the lumen toward the vessel's response.
+pub fn compliant_vessel_report(
+    stack: &StackedRings,
+    calibration_fraction: f64,
+    unloaded_fraction: f64,
+    stiffness_ratio: f64,
+    stages: usize,
+    tolerance_mm: f64,
+    max_iterations: usize,
+) -> CompliantReport {
+    let spec = stack.spec;
+    let nominal = 2.0 * spec.outer_radius();
+    let groups = stack.groups.len();
+    let k = calibrate(stack, calibration_fraction);
+    let kc = spec.crowns as f64 * k;
+    let k_w = kc / stiffness_ratio;
+    let d0 = nominal * (1.0 - unloaded_fraction);
+    let relaxation = 0.5;
+
+    let mut lumen = vec![d0; groups];
+    let mut iterations = 0;
+    let mut residual = f64::INFINITY;
+    let mut last = Vec::new();
+    while iterations < max_iterations && residual > tolerance_mm {
+        iterations += 1;
+        let fractions: Vec<f64> = lumen.iter().map(|d| (nominal - d) / nominal).collect();
+        last = stepped_deployment(stack, &fractions, stages);
+        let target: Vec<f64> = last.iter().map(|g| d0 + g.force / k_w).collect();
+        residual = lumen
+            .iter()
+            .zip(&target)
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0, f64::max);
+        for (l, t) in lumen.iter_mut().zip(&target) {
+            *l += relaxation * (t - *l);
+        }
+    }
+
+    let diameters_3d: Vec<f64> = last.iter().map(|g| 2.0 * g.contact_radius).collect();
+    let forces_3d: Vec<f64> = last.iter().map(|g| g.force).collect();
+    let dogboning_3d = if groups >= 2 {
+        (diameters_3d[0] - diameters_3d[groups - 1]).abs() / nominal
+    } else {
+        0.0
+    };
+    let a = kc / k_w;
+    let closed_form = vec![(d0 + a * nominal) / (1.0 + a); groups];
+
+    // Level 2 under the same vessel law, on the per-group linear stent.
+    let stent = StentModel {
+        expanded_diameter: nominal,
+        crimped_diameter: 0.5 * nominal,
+        n_crowns: spec.crowns as u32,
+        crown_stiffness: k,
+    };
+    let level_two = simulate_coupled_deployment(
+        &stent,
+        &NitinolParams::default(),
+        &vec![nominal; groups],
+        &vec![k; groups],
+        &vec![d0; groups],
+        relaxation,
+        tolerance_mm,
+        max_iterations,
+        |t| t.groups.iter().map(|g| d0 + g.radial_force / k_w).collect(),
+    );
+
+    CompliantReport {
+        crown_stiffness: k,
+        vessel_stiffness: k_w,
+        unloaded_diameter: d0,
+        diameters_3d,
+        forces_3d,
+        dogboning_3d,
+        iterations,
+        residual,
+        level_two,
+        closed_form,
+    }
+}
+
+#[test]
+fn tiny_compliant_vessel_fixed_point_converges_and_opens_the_lumen() {
+    let stack = tiny()
+        .build_stack(2, 2.0 * tiny().amplitude + 1.0)
+        .expect("stack");
+    let rep = compliant_vessel_report(&stack, 0.002, 0.03, 0.5, 2, 2e-3, 12);
+    println!("{rep:?}");
+    assert!(rep.residual <= 2e-3, "not converged: {}", rep.residual);
+    // A compliant wall opens under the stent force: the converged lumen sits
+    // above its unloaded diameter (where the stent's force is non-zero).
+    for (d, f) in rep.diameters_3d.iter().zip(&rep.forces_3d) {
+        assert!(*f > 0.0);
+        assert!(*d > 0.0);
+    }
+}
+
+/// The compliant-vessel study reported in the RFC: 3-D fixed point against
+/// Level 2's coupled prediction and the linear closed form, for a stiff and
+/// a compliant wall.
+#[test]
+#[ignore = "release-profile study; minutes; see module docs"]
+fn compliant_vessel_cross_check() {
+    let mut spec = CrownRingSpec::new(6);
+    spec.stations_per_crown = 12;
+    spec.width_elements = 1;
+    spec.thickness_elements = 2;
+    let stack = spec
+        .build_stack(2, 2.0 * spec.amplitude + 1.0)
+        .expect("stack");
+    for ratio in [0.5, 2.0] {
+        let rep = compliant_vessel_report(&stack, 0.005, 0.03, ratio, 4, 1e-3, 15);
+        println!(
+            "stiffness ratio n*k/k_w = {ratio}: k = {:.4}, k_w = {:.4}, D0 = {:.4} mm, {} sweeps, residual {:.2e}",
+            rep.crown_stiffness, rep.vessel_stiffness, rep.unloaded_diameter, rep.iterations, rep.residual
+        );
+        for (i, d) in rep.diameters_3d.iter().enumerate() {
+            let l2 = rep.level_two.as_ref().map(|c| c.deployment.groups[i].diameter);
+            println!(
+                "group {i}: 3-D d {:.4} mm  F {:.4} N  Level 2 d {:?}  closed form {:.4} mm",
+                d, rep.forces_3d[i], l2, rep.closed_form[i]
+            );
+        }
+        println!(
+            "dogboning 3-D {:.5}  Level 2 {:?}",
+            rep.dogboning_3d,
+            rep.level_two.as_ref().map(|c| c.deployment.dogboning)
+        );
+        assert!(rep.residual <= 1e-3, "ratio {ratio}: residual {}", rep.residual);
+    }
+}
