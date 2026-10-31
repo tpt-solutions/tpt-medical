@@ -138,10 +138,7 @@ pub fn friction_run(spec: &CrownRingSpec, mu: f64, fraction: f64, deltas: &[f64]
             active: s.active,
         });
     }
-    FrictionRun {
-        radial_force,
-        pull,
-    }
+    FrictionRun { radial_force, pull }
 }
 
 fn tiny() -> CrownRingSpec {
@@ -223,15 +220,103 @@ fn friction_sensitivity_sweep() {
             };
             println!(
                 "{mu:.1} {:11.5} {:+9.2e} {:9.3} {:8.4} {:8.4} {:11.4} {}/{}",
-                run.radial_force,
-                rel,
-                p.delta,
-                p.pull_force,
-                bound,
-                ratio,
-                p.slipping,
-                p.active
+                run.radial_force, rel, p.delta, p.pull_force, bound, ratio, p.slipping, p.active
             );
         }
     }
+}
+
+/// ASME V&V 40 assessment of the question "how much does wall friction move
+/// the radial force of a crown-ring deployment?" (RFC 0004 acceptance item 3;
+/// RFC 0013 verification item 7).
+///
+/// The risk and influence are proposed (Medium risk, Significant influence)
+/// and need confirming by the maintainer. The acceptance bounds are proposed
+/// too: a 10 % radial-force sensitivity and a 0.999 Coulomb ratio on slipping
+/// contact. Validation is left empty on purpose: no bench friction data
+/// exists in the workspace, so the assessment must report that gap rather
+/// than close it.
+#[test]
+#[ignore = "release-profile study; minutes; see module docs"]
+fn vv40_assessment_of_the_friction_question() {
+    use tpt_med_vv40::{
+        Acceptance, CredibilityAssessment, EvidenceMetric, ModelInfluence, ModelRisk,
+        VerificationActivity, VerificationType,
+    };
+
+    let mut spec = CrownRingSpec::new(6);
+    spec.stations_per_crown = 12;
+    spec.width_elements = 1;
+    spec.thickness_elements = 2;
+    let deltas = [0.01, 0.02, 0.05];
+    let mu = 0.3;
+    let base = friction_run(&spec, 0.0, 0.02, &deltas);
+    let rough = friction_run(&spec, mu, 0.02, &deltas);
+
+    let frictionless_pull = base
+        .pull
+        .iter()
+        .map(|p| p.pull_force.abs())
+        .fold(0.0, f64::max);
+    // Taken at the largest translation, where the sliding nodes have
+    // saturated; the first step is still in the stick-to-slip transition.
+    let last = rough.pull.last().expect("points");
+    let coulomb_ratio = last.pull_force / (mu * last.normal_total);
+    let sensitivity = (rough.radial_force - base.radial_force).abs() / base.radial_force;
+
+    let mut code = VerificationActivity {
+        kind: VerificationType::CodeVerification,
+        description: "Zero-friction limit and Coulomb bound on rigid axial translation".into(),
+        results: "friction_studies::frictionless_pull_out_is_exactly_zero and \
+                  pull_out_obeys_the_coulomb_bound (release run of the refined ring)"
+            .into(),
+        metrics: Vec::new(),
+    };
+    code.with_metric(EvidenceMetric {
+        name: "frictionless_pull_out_n".into(),
+        value: frictionless_pull,
+        acceptance: Acceptance::at_most(1e-12),
+    })
+    .with_metric(EvidenceMetric {
+        name: "coulomb_ratio_when_sliding".into(),
+        value: coulomb_ratio,
+        acceptance: Acceptance {
+            max: None,
+            min: Some(0.999),
+        },
+    });
+    let mut sens = VerificationActivity {
+        kind: VerificationType::SensitivityAnalysis,
+        description: "Radial force against wall Coulomb coefficient, mu = 0 to 0.3".into(),
+        results: "friction_sensitivity_sweep (2 % closing, 6 crowns x 12 stations x 1 x 2 section)"
+            .into(),
+        metrics: Vec::new(),
+    };
+    sens.with_metric(EvidenceMetric {
+        name: "radial_force_sensitivity_mu_0_3".into(),
+        value: sensitivity,
+        acceptance: Acceptance::at_most(0.10),
+    });
+
+    let assessment = CredibilityAssessment {
+        question_of_interest: "How much does wall friction change the radial force of a \
+                               crown-ring stent deployment?"
+            .into(),
+        risk: ModelRisk::Medium,
+        influence: ModelInfluence::Significant,
+        verification: vec![code.clone(), sens.clone()],
+        validation: Vec::new(),
+    };
+
+    assert!(code.metrics_adequate(), "{code:?}");
+    assert!(sens.metrics_adequate(), "{sens:?}");
+    // Verification goals are met; the validation gap is the finding.
+    assert_eq!(
+        assessment.evaluate(),
+        vec!["validation coverage 0 < 1 required".to_string()],
+        "{}",
+        assessment.to_json()
+    );
+    assert!(!assessment.is_credible());
+    println!("{}", assessment.to_json());
 }
