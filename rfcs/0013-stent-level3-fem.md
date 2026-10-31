@@ -272,6 +272,10 @@ Fixture: `fixtures::crown_ring` (swept sinusoidal centreline, `R = 4 mm`,
   independent rings and the wall's profile is transparent inside each ring's
   axial band. Acceptance-wise this extends item 1's linearity result to the
   grouped model; it is not a validation of Level 2's recoil law.
+- **Standard attribution to check:** an Instron overview describes ASTM
+  F2394 as a balloon-expandable securement guide, not a self-expanding
+  radial-stiffness standard. The "F2394-style" label here and in RFC 0004
+  needs verifying against the standard before any F2394 claim is relied on.
 - **Still open:** acceptance item 2 (F2394-style curve on a benchmark
   geometry — needs a published stent geometry, not this sinusoid) and item 3
   (friction sensitivity as a V&V 40 assessment — the wall's friction exists
