@@ -700,7 +700,10 @@ fn compliant_vessel_cross_check() {
             rep.crown_stiffness, rep.vessel_stiffness, rep.unloaded_diameter, rep.iterations, rep.residual
         );
         for (i, d) in rep.diameters_3d.iter().enumerate() {
-            let l2 = rep.level_two.as_ref().map(|c| c.deployment.groups[i].diameter);
+            let l2 = rep
+                .level_two
+                .as_ref()
+                .map(|c| c.deployment.groups[i].diameter);
             println!(
                 "group {i}: 3-D d {:.4} mm  F {:.4} N  Level 2 d {:?}  closed form {:.4} mm",
                 d, rep.forces_3d[i], l2, rep.closed_form[i]
@@ -711,6 +714,10 @@ fn compliant_vessel_cross_check() {
             rep.dogboning_3d,
             rep.level_two.as_ref().map(|c| c.deployment.dogboning)
         );
-        assert!(rep.residual <= 1e-3, "ratio {ratio}: residual {}", rep.residual);
+        assert!(
+            rep.residual <= 1e-3,
+            "ratio {ratio}: residual {}",
+            rep.residual
+        );
     }
 }
